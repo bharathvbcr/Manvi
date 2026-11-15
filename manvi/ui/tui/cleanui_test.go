@@ -133,7 +133,7 @@ func TestACallAndItsResultAreOneRow(t *testing.T) {
 		t.Fatalf("a call and its result drew %d rows", len(rows))
 	}
 	row := rows[0].line.Text()
-	for _, want := range []string{th.Glyphs().Pass, "Read a/b.go", "40 lines"} {
+	for _, want := range []string{th.Glyphs().Bullet, "Read a/b.go", "40 lines"} {
 		if !strings.Contains(row, want) {
 			t.Fatalf("the row %q does not say %q", row, want)
 		}
@@ -312,12 +312,12 @@ func TestAnEditBehindADecisionSaysHowItCameOut(t *testing.T) {
 	// The tool's "patched a.go" under a row that already says "Edited a.go" is
 	// not drawn: the call and the decision on it are the whole of it.
 	got := rows(ui.Event{Kind: ui.KindToolResult, Text: "patched a.go (4 bytes)"})
-	if len(got) != 2 || got[0] != th.Glyphs().Tool+"  Edited a.go  +2  -1" {
+	if len(got) != 2 || got[0] != th.Glyphs().Bullet+"  Edited a.go  +2  -1" {
 		t.Fatalf("an edit that worked behind a decision reads %q", got)
 	}
 
 	got = rows(ui.Event{Kind: ui.KindToolResult, IsError: true, Text: "target not found"})
-	if len(got) != 3 || got[0] != th.Glyphs().Tool+"  Editing a.go  · failed" {
+	if len(got) != 3 || got[0] != th.Glyphs().Bullet+"  Editing a.go  · failed" {
 		t.Fatalf("an edit that failed behind a decision reads %q", got)
 	}
 	if !strings.HasPrefix(got[2], th.Glyphs().Block) || !strings.Contains(got[2], "target not found") {
@@ -354,7 +354,7 @@ func TestARefusalIsSaidOnce(t *testing.T) {
 	if strings.Count(all, reason) != 1 {
 		t.Fatalf("the refusal is said %d times:\n%s", strings.Count(all, reason), all)
 	}
-	if got[1] != th.Glyphs().Tool+"  Writing manvi/.env  · failed" {
+	if got[1] != th.Glyphs().Bullet+"  Writing manvi/.env  · failed" {
 		t.Fatalf("a refused write reads %q", got[1])
 	}
 	if !strings.HasPrefix(got[2], th.Glyphs().Block) || !strings.Contains(got[2], "path.protected (hard)") {
@@ -403,7 +403,7 @@ func TestAResultTakesOnlyTheCallStraightBeforeIt(t *testing.T) {
 	s.Append(ui.Event{Kind: ui.KindPolicy, Rule: "exec.allowlist", Severity: "warn", Text: "allowed by the allowlist"})
 	s.Append(ui.Event{Kind: ui.KindToolResult, Text: "ok\n"})
 	rows := s.rows(th, 80)
-	if len(rows) != 3 || !strings.HasPrefix(rows[0].line.Text(), th.Glyphs().Tool) {
+	if len(rows) != 3 || !strings.HasPrefix(rows[0].line.Text(), th.Glyphs().Bullet) {
 		t.Fatalf("a call with a decision on it drew %d rows", len(rows))
 	}
 	if got := rows[1].line.Text(); !strings.Contains(got, "allowed by the allowlist") || !strings.Contains(got, "exec.allowlist (warn)") {
@@ -569,7 +569,7 @@ func TestAFoldNeverHidesAQualification(t *testing.T) {
 				t.Fatalf("a folded %s entry hides %q:\n%s", ev.Kind, want, got)
 			}
 		}
-		if e.Event.GrantID != "" && strings.HasPrefix(got, th.Glyphs().Pass) {
+		if e.Event.GrantID != "" && (strings.HasPrefix(got, th.Glyphs().Pass) || strings.HasPrefix(got, th.Glyphs().Bullet)) {
 			t.Fatalf("a granted result carries the pass mark:\n%s", got)
 		}
 	}
@@ -802,10 +802,20 @@ func TestMarkdownConstructs(t *testing.T) {
 	if rows[0][1].Style.Fg != th.Danger || rows[1][1].Style.Fg != th.Success || rows[2][1].Style.Fg == th.Success {
 		t.Errorf("a diff fence is not coloured as a diff: %+v", rows)
 	}
-	// Code sits on the inset surface out to the pane's edge.
-	code := renderMarkdown("```\nx\n```", th, 20, false)[0]
-	if code.Width() != 20 || code[len(code)-1].Style.Bg != th.BgInset {
-		t.Errorf("a code row is %d wide on %+v", code.Width(), code[len(code)-1].Style.Bg)
+	// Code is set apart by the rule in front of it, on the transcript's own
+	// ground: nothing in a reply sits on a fill, a code block and a word of
+	// inline code included.
+	for _, src := range []string{"```\nx\n```", "run `go vet` first", "```diff\n+new\n```"} {
+		for _, row := range renderMarkdown(src, th, 20, false) {
+			for _, span := range row {
+				if span.Style.Bg != th.Bg {
+					t.Errorf("%q draws %q on %+v, not the transcript's ground", src, span.Text, span.Style.Bg)
+				}
+			}
+		}
+	}
+	if code := renderMarkdown("```\nx\n```", th, 20, false)[0]; !strings.HasPrefix(code.Text(), th.Glyphs().VBar+" x") {
+		t.Errorf("a code row is not behind its rule: %q", code.Text())
 	}
 }
 
@@ -880,7 +890,7 @@ func TestAFinishedThoughtIsItsHeadingAlone(t *testing.T) {
 	s.Append(ui.Event{Kind: ui.KindTurnEnd})
 	s.Append(ui.Event{Kind: ui.KindText, Text: "done"})
 	own := rowsOf(s.Entries()[0], th, 80)
-	if len(own) != 1 || strings.TrimSpace(own[0]) != th.Glyphs().Thought+"  Thought" {
+	if len(own) != 1 || strings.TrimSpace(own[0]) != th.Glyphs().Bullet+"  Thought" {
 		t.Fatalf("a finished thought drew %q", own)
 	}
 	// Whose thought it was is still said.
@@ -953,17 +963,18 @@ func TestTheSessionOpeningIsOneRowWhereItFits(t *testing.T) {
 
 // The key row names the keys of the moment and always the way to the rest. It
 // does not carry ctrl+c, which the working row offers while there is a turn to
-// stop, or the session keys, which the palette and the help list.
+// stop, the session keys, which the palette and the help list, or enter, which
+// the composer it sits under is for.
 func TestTheKeyRowIsShortAndAlwaysPointsToTheRest(t *testing.T) {
 	th := Dark()
 	b := render.NewBuffer(120, 1)
 	DrawShortcutBar(b, b.Bounds(), th, CtxPrompt)
 	got := strings.Join(strings.Fields(bufferString(b)), " ")
-	if got != "enter send tab focus ctrl+p commands F1 more" {
+	if got != "tab focus ctrl+p commands F1 more" {
 		t.Fatalf("the key row reads %q", got)
 	}
 	// Every key it left out is still bound and still listed by the help.
-	for _, label := range []string{"cancel turn", "quit", "dashboard", "sessions"} {
+	for _, label := range []string{"send", "cancel turn", "quit", "dashboard", "sessions"} {
 		found := false
 		for _, bd := range allBindings() {
 			found = found || bd.Label == label
@@ -1142,8 +1153,8 @@ func TestThePostureIsAWordNotAChip(t *testing.T) {
 		t.Fatalf("posture colours: strict %v, dev %v, yolo %v", strict.Fg, dev.Fg, yolo.Fg)
 	}
 	for name, s := range map[string]render.Style{"strict": strict, "dev": dev, "yolo": yolo} {
-		if s.Bg != th.BgRaised {
-			t.Fatalf("the %s posture sits on a fill of its own", name)
+		if s.Bg != th.Bg {
+			t.Fatalf("the %s posture sits on a fill", name)
 		}
 	}
 }
@@ -1160,7 +1171,9 @@ func TestACallReadsAsWhatWasDone(t *testing.T) {
 		rows := s.rows(th, 100)
 		return running, strings.TrimSpace(rows[0].line.Text()), rows[0].line
 	}
-	pass, tool := th.Glyphs().Pass, th.Glyphs().Tool
+	// A call that is running keeps the tool mark; a result that passed has the
+	// routine one.
+	pass, tool := th.Glyphs().Bullet, th.Glyphs().Tool
 	for _, c := range []struct {
 		tool, args, result string
 		running, done      string
@@ -1219,8 +1232,35 @@ func TestACallReadsAsWhatWasDone(t *testing.T) {
 	for _, span := range line {
 		colours[strings.TrimSpace(span.Text)] = span.Style.Fg
 	}
-	if colours["Edited"] != th.Fg || colours["a.go"] != th.Info || colours["+2"] != th.Success || colours["-1"] != th.Danger {
+	if colours["Edited"] != th.FgMuted || colours["a.go"] != th.Info || colours["+2"] != th.Success || colours["-1"] != th.Danger {
 		t.Fatalf("an edit's row is coloured %v", colours)
+	}
+	// A file the turn changed is the one thing in the work log that is
+	// coloured. What it read, ran or searched is a step quieter than the reply.
+	for _, c := range []struct{ tool, args, word string }{
+		{"devcouncil_read_file", `{"path":"a.go"}`, "a.go"},
+		{"devcouncil_exec_command", `{"command":"gofmt"}`, "gofmt"},
+		{"devcouncil_grep", `{"pattern":"flush","path":"ui"}`, "flush"},
+	} {
+		_, _, line := row(c.tool, c.args, "one\ntwo\n", false)
+		for _, span := range line {
+			if strings.TrimSpace(span.Text) == c.word && span.Style.Fg != th.FgMuted {
+				t.Fatalf("%s draws %q in %v, want the quiet text colour", c.tool, c.word, span.Style.Fg)
+			}
+			if strings.TrimSpace(span.Text) != "" && (span.Style.Fg == th.Fg || span.Style.Attrs&render.Bold != 0) {
+				t.Fatalf("%s draws %q as loud as the reply", c.tool, span.Text)
+			}
+		}
+	}
+	// Sixteen colours have one dark grey, which is a label's colour and not a
+	// row's: there the log keeps the text colour.
+	low := PickThemeByNameUnchecked("dark", render.ANSI16, true)
+	ls := NewScrollback()
+	ls.Append(ui.Event{Kind: ui.KindToolStart, Tool: "devcouncil_read_file", Arguments: []byte(`{"path":"a.go"}`)})
+	for _, span := range ls.rows(low, 80)[0].line {
+		if strings.Contains(span.Text, "Reading") && span.Style.Fg != low.Fg {
+			t.Fatalf("at sixteen colours a call is drawn in %v", span.Style.Fg)
+		}
 	}
 
 	// A patch allowed to replace its target wherever it occurs has no size: how
@@ -1309,5 +1349,210 @@ func TestACallWithItsOwnRowIsPastTenseOnceAnswered(t *testing.T) {
 	}
 	if len(rows) != 3 {
 		t.Fatalf("drew %d rows, want the call, the decision and the failure", len(rows))
+	}
+}
+
+// Nothing is pinned to the top of the screen. What the session is sits on one
+// row under the composer, on the screen's own ground, beside the keys of the
+// moment; the top row is the transcript's.
+func TestTheFrameHasNoTopBarAndOneQuietFooter(t *testing.T) {
+	a, _ := newTestApp()
+	v := a.Current()
+	v.Status.Model, v.Status.Posture = "claude-opus-5-5", "strict"
+	v.Status.GitBranch = "main"
+	v.Apply(ui.Event{Kind: ui.KindTurnStart, Text: "hello"})
+	const w, h = 100, 24
+	b := render.NewBuffer(w, h)
+	a.Dispatch(ActionResize{W: w, H: h})
+	a.Draw(b)
+	row := func(y int) string {
+		var sb strings.Builder
+		for x := 0; x < w; x++ {
+			if r := b.Cell(x, y).R; r != 0 {
+				sb.WriteRune(r)
+			}
+		}
+		return sb.String()
+	}
+	if top := row(0); strings.Contains(top, "strict") || strings.Contains(top, "claude-opus-5-5") {
+		t.Fatalf("the status is still on the top row: %q", top)
+	}
+	foot := row(h - 1)
+	for _, want := range []string{"strict", "claude-opus-5-5", "main", "ctrl+p commands", "F1 more"} {
+		if !strings.Contains(foot, want) {
+			t.Fatalf("the footer is missing %q: %q", want, foot)
+		}
+	}
+	th := a.Theme
+	for x := 0; x < w; x++ {
+		if c := b.Cell(x, h-1); c.Style.Bg != th.Bg {
+			t.Fatalf("the footer is on a fill at column %d: %+v", x, c.Style.Bg)
+		}
+		if c := b.Cell(x, h-1); c.R > ' ' && c.Style.Attrs&render.Bold != 0 {
+			t.Fatalf("a strict session with nothing to flag draws %q in bold on the footer", string(c.R))
+		}
+	}
+	// The composer's frame is a neutral rule, not the brand colour: focus is
+	// the prompt mark inside it.
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := b.Cell(x, y)
+			if strings.ContainsRune("╭╮╰╯─│", c.R) && c.Style.Fg == th.BorderFocus {
+				t.Fatalf("the composer frame is drawn in the brand colour at %d,%d", x, y)
+			}
+		}
+	}
+}
+
+// What needs seeing on the footer is still drawn strong, and a narrow footer
+// keeps the keys and the notices before it keeps the status.
+func TestTheFooterKeepsWhatMatters(t *testing.T) {
+	th := Dark()
+	draw := func(w int, st Status, extra ...string) (string, *render.Buffer) {
+		b := render.NewBuffer(w, 1)
+		DrawFooter(b, b.Bounds(), th, st, CtxPrompt, 0, nil, false, extra...)
+		return strings.Join(strings.Fields(bufferString(b)), " "), b
+	}
+	st := Status{Posture: "strict", Model: "claude-opus-5-5", GitBranch: "main", Grants: 2}
+	wide, b := draw(110, st)
+	if !strings.Contains(wide, "2 granted") || !strings.Contains(wide, "F1 more") {
+		t.Fatalf("a wide footer reads %q", wide)
+	}
+	x := strings.Index(bufferString(b), "granted")
+	if b.Cell(x, 0).Style.Attrs&render.Bold == 0 || b.Cell(x, 0).Style.Fg != th.Fg {
+		t.Fatalf("a grant on the footer is drawn %+v, want it strong", b.Cell(x, 0).Style)
+	}
+	// Narrow: the notice and the way to the rest of the keys survive, and the
+	// posture is the last of the status to go.
+	narrow, _ := draw(64, st, "2 more approval(s) waiting")
+	if !strings.Contains(narrow, "2 more approval(s) waiting") || !strings.Contains(narrow, "strict") {
+		t.Fatalf("a narrow footer reads %q", narrow)
+	}
+	tiny, _ := draw(40, st, "scrolled back — G for latest")
+	if !strings.Contains(tiny, "scrolled back") {
+		t.Fatalf("a footer too narrow for both dropped the notice: %q", tiny)
+	}
+}
+
+// A run that is not strict says so on a row of its own above the composer, and
+// a passing message at the top of the screen cannot cover it.
+func TestTheNotStrictRowSitsAboveTheComposer(t *testing.T) {
+	a, _ := newTestApp()
+	v := a.Current()
+	v.Status.Posture, v.Status.Grants = "strict", 1
+	const w, h = 100, 24
+	a.Dispatch(ActionResize{W: w, H: h})
+	a.setNotice("copied", StatusInfo)
+	rows := screen(a, w, h)
+	at := -1
+	for y, r := range rows {
+		if strings.Contains(r, "not a strict run") {
+			at = y
+		}
+	}
+	if at < 0 {
+		t.Fatalf("the frame does not say the run is not strict:\n%s", strings.Join(rows, "\n"))
+	}
+	if at < h/2 || at >= h-1 {
+		t.Fatalf("the not-strict row is on row %d of %d, want it above the composer", at, h)
+	}
+	if !strings.Contains(rows[0], "copied") {
+		t.Fatalf("the passing message is not on the top row: %q", rows[0])
+	}
+}
+
+// A routine row has one quiet mark, and a row with something to flag — a call
+// with no result among them — keeps a mark of its own shape. Without Unicode
+// the marks are words and stay.
+func TestRoutineRowsShareOneQuietMark(t *testing.T) {
+	th := unicodeDark()
+	g := th.Glyphs()
+	s := NewScrollback()
+	s.Append(ui.Event{Kind: ui.KindReasoning, Text: "thinking"})
+	s.Append(ui.Event{Kind: ui.KindToolStart, Tool: "devcouncil_read_file", Arguments: []byte(`{"path":"a.go"}`)})
+	s.Append(ui.Event{Kind: ui.KindToolResult, Text: "x\ny\n"})
+	s.Append(ui.Event{Kind: ui.KindToolStart, Tool: "devcouncil_exec_command", Arguments: []byte(`{"command":"go test"}`)})
+	s.Append(ui.Event{Kind: ui.KindToolResult, IsError: true, Text: "FAIL\nFAIL\n"})
+	s.Append(ui.Event{Kind: ui.KindToolStart, Tool: "devcouncil_write_file", Arguments: []byte(`{"path":"b.go","content":"x\n"}`)})
+	s.Append(ui.Event{Kind: ui.KindToolResult, Text: "wrote b.go (2 bytes)", GrantID: "G-1", GrantedBy: "human", Rule: "scope"})
+	s.Append(ui.Event{Kind: ui.KindToolStart, Tool: "devcouncil_list_dir", Arguments: []byte(`{"path":"."}`)})
+	var marks []string
+	for _, r := range s.rows(th, 80) {
+		text := r.line.Text()
+		if strings.HasPrefix(text, " ") || text == "" {
+			continue
+		}
+		mark := strings.Fields(text)[0]
+		marks = append(marks, mark)
+		if mark == g.Bullet && r.line[0].Style.Fg != th.FgSubtle {
+			t.Fatalf("the routine mark is drawn in %v", r.line[0].Style.Fg)
+		}
+	}
+	// The last call has no result: it is running, or never came back, and
+	// keeps the tool mark so it does not read as one of the passes above it.
+	want := []string{g.Bullet, g.Bullet, g.Block, g.Granted, g.Tool}
+	if strings.Join(marks, " ") != strings.Join(want, " ") {
+		t.Fatalf("the marks down the log are %q, want %q", marks, want)
+	}
+
+	plain := NoColorTheme()
+	pg := plain.Glyphs()
+	var words []string
+	for _, r := range s.rows(plain, 80) {
+		if text := r.line.Text(); text != "" && !strings.HasPrefix(text, " ") {
+			words = append(words, strings.Fields(text)[0])
+		}
+	}
+	if got, want := strings.Join(words, " "), strings.Join([]string{pg.Thought, pg.Pass, pg.Block, pg.Granted, pg.Tool}, " "); got != want {
+		t.Fatalf("without Unicode the marks are %q, want %q", got, want)
+	}
+}
+
+// A terminal too short for everything keeps the row that says the run is not
+// strict: the composer gives way to it, down to a terminal of two rows.
+func TestAShortTerminalKeepsTheNotStrictRow(t *testing.T) {
+	for _, h := range []int{2, 3, 4, 6, 10} {
+		a, _ := newTestApp()
+		a.Current().Status.Posture, a.Current().Status.Grants = "strict", 1
+		a.Dispatch(ActionResize{W: 80, H: h})
+		rows := screen(a, 80, h)
+		if !strings.Contains(strings.Join(rows, "\n"), "not a strict run") {
+			t.Fatalf("a terminal of %d rows does not say the run is not strict:\n%s", h, strings.Join(rows, "\n"))
+		}
+		if last := rows[len(rows)-1]; !strings.Contains(last, "strict") {
+			t.Fatalf("a terminal of %d rows lost the posture: %q", h, last)
+		}
+	}
+}
+
+// The keys of a focused transcript are many. They take their share of the
+// footer and no more, so the model does not come and go with the focus; the
+// sparkline is gated on the whole row's width, not on the status's share.
+func TestTheFooterSharesItsRow(t *testing.T) {
+	th := Dark()
+	st := Status{Posture: "strict", Model: "claude-opus-5-5", GitBranch: "main", Busy: true}
+	draw := func(w int, ctx Context, spark []float64) string {
+		b := render.NewBuffer(w, 1)
+		DrawFooter(b, b.Bounds(), th, st, ctx, 0, spark, true)
+		return bufferString(b)
+	}
+	for _, ctx := range []Context{CtxPrompt, CtxScrollback} {
+		got := draw(96, ctx, nil)
+		if !strings.Contains(got, "claude-opus-5-5") || !strings.Contains(got, "F1 more") {
+			t.Fatalf("at 96 columns the footer reads %q", got)
+		}
+	}
+	// The key that opens a folded result is on the row when the transcript has
+	// the keys: every result opens folded, so it is the one a reader needs.
+	if got := draw(96, CtxScrollback, nil); !strings.Contains(got, "fold") {
+		t.Fatalf("a focused transcript's footer does not offer fold: %q", got)
+	}
+	spark := []float64{1, 4, 2, 8, 3, 6}
+	bars := func(s string) bool { return strings.ContainsAny(s, "▁▂▃▄▅▆▇█") }
+	if wide := draw(140, CtxPrompt, spark); !bars(wide) {
+		t.Fatalf("a wide footer draws no sparkline while a turn runs: %q", wide)
+	}
+	if narrow := draw(100, CtxPrompt, spark); bars(narrow) {
+		t.Fatalf("a footer under %d columns draws the sparkline: %q", sparkFrom, narrow)
 	}
 }

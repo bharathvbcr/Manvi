@@ -136,18 +136,38 @@ under **Unreleased** in the same commit as the code.
     The working row gives a long label the width of the row before it scrolls
     it. The mark for a refusal or a failure is `✕`, not the `⛔` emoji, which a
     terminal paints in colours of its own.
-  - The palette is the brand's red for the interface, one blue for what a turn
-    worked on (a file, a command, code), greys for text, and the failure red.
+  - The palette is the brand's red for the interface, one blue for a file a
+    turn changed and for code in a reply, greys for text, and the failure red.
     Green is a line a diff adds, or the count of them, and nothing else. The
     yellow, orange and purple are gone, and so is the green tick: a pass is
     grey, a demotion bold, a pass a grant cleared underlined, an unrun check
     slanted and underlined, at every colour depth.
-  - No status colour is a fill. The posture is a word on the status bar (quiet
-    for strict, bold for a relaxed posture, the failure red for yolo), not a
-    filled chip; the row that says a run is not strict is bold text, not a
-    yellow bar; the dashboard's blocked and error states are words.
+  - The work of a turn is a step quieter than its reply. A call's row is in
+    the secondary text colour, and the one coloured thing in it is a file the
+    turn edited, wrote or deleted; in the text colour, every row of the log
+    stood level with the answer. A call that has returned, a result that
+    passed and a thought share one quiet mark (`•`). A call still running, a
+    failure, a grant, a caution and an unrun check keep marks of their own, so
+    the marks down the left edge are the exceptions. Without Unicode the marks are words and are unchanged.
+  - Nothing is pinned to the top of the screen. What the session is (posture,
+    model, branch, context, tokens, grants) is one row under the composer, on
+    the screen's own ground and in the quietest text colours, sharing the row
+    with the keys of the moment; it was a raised bar across the top with the
+    model in bold. A grant, a context window nearly full and a lease running
+    out are still drawn strong. The posture is never dropped from that row,
+    however narrow. The row that says a run is not strict sits directly above
+    the composer. The key row no longer lists `enter send`.
+  - The composer's frame is a neutral rule, a step brighter while it has the
+    keys. In the brand's red it was the largest red area on the screen, in a
+    red close to a failure's.
+  - Nothing in the transcript sits on a fill: a code block is set apart by the
+    rule down its left edge, and inline code by its colour.
+  - No status colour is a fill. The posture is a word (quiet for strict, bold
+    for a relaxed posture, the failure red for yolo), not a filled chip; the
+    row that says a run is not strict is bold text, not a yellow bar; the
+    dashboard's blocked and error states are words.
   - A tool call and its result are one row: the outcome's mark, the call, and
-    how much came back (`✓ Read reader.go · 213 lines`), where a result
+    how much came back (`• Read reader.go · 213 lines`), where a result
     used to print up to 2,000 lines under a row for the call. One line of
     output is shown in place of the count where the row has room. A failure
     says so on the call's row (`✕ Ran go test ./... · failed`) and keeps the

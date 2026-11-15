@@ -210,11 +210,22 @@ const (
 	callFailed
 )
 
+// writes reports whether a tool changes a file: the calls whose subject is
+// drawn in the one colour the transcript keeps for that.
+func writes(tool string) bool {
+	switch strings.TrimPrefix(tool, toolPrefix) {
+	case "patch_file", "write_file", "delete_file":
+		return true
+	}
+	return false
+}
+
 // callLine is a tool call's row: what was done, to what.
 //
-// The subject is in the one colour the transcript gives to what a turn worked
-// on — a file, a command, a pattern, another agent — so a column of calls reads
-// down its subjects.
+// The row is a step quieter than the reply it led to: the work of a turn is a
+// log to look back through, and in the text colour every row of it stood level
+// with the answer. One thing in it is coloured, and that is a file the turn
+// changed, so the edits are what a glance down the log finds.
 func callLine(ev ui.Event, th Theme, state callState) render.Line {
 	sized := state == callDone
 	done := sized
@@ -223,25 +234,35 @@ func callLine(ev ui.Event, th Theme, state callState) render.Line {
 		done = act.doing == "Running"
 	}
 	verb, subject, where, fields, known := callSubject(ev, done)
-	line := render.Styled(verb, th.Base())
+	// On a terminal of sixteen colours the secondary text colour is the one
+	// dark grey, which is a label's colour and not a row's.
+	quiet, quieter := th.Muted(), th.Subtle()
+	if th.reducedPalette() {
+		quiet, quieter = th.Base(), th.Muted()
+	}
+	what := quiet
+	if writes(ev.Tool) {
+		what = th.Status(StatusInfo)
+	}
+	line := render.Styled(verb, quiet)
 	if subject != "" {
-		line = line.Append(" "+render.TruncateWidth(subject, 96, "…"), th.Status(StatusInfo))
+		line = line.Append(" "+render.TruncateWidth(subject, 96, "…"), what)
 	}
 	if !known {
 		// Its arguments, since nothing here knows which of them matters.
 		if detail := toolDetail(ev); detail != "" {
-			line = line.Append("  "+detail, th.Muted())
+			line = line.Append("  "+detail, quieter)
 		}
 		return line
 	}
 	if where != "" {
-		line = line.Append(" in "+render.TruncateWidth(where, 48, "…"), th.Muted())
+		line = line.Append(" in "+render.TruncateWidth(where, 48, "…"), quiet)
 	}
 	if _, fixed, _ := actFor(ev.Tool); fixed != "" {
 		// The tool's name gave the subject, so what it was called with is still
 		// to be said: the message of a commit, the ref of a show.
 		if detail := toolDetail(ev); detail != "" {
-			line = line.Append("  "+detail, th.Muted())
+			line = line.Append("  "+detail, quieter)
 		}
 	}
 	if !sized {

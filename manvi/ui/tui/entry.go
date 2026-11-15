@@ -718,6 +718,23 @@ func (e *Entry) summarized() bool {
 	return e.Folded && e.Event.Kind != ui.KindToolResult
 }
 
+// routine reports whether the entry is a row of the work log with nothing to
+// flag: a call, a thought, or a result that passed with no qualification.
+func (e *Entry) routine() bool {
+	switch e.Event.Kind {
+	case ui.KindReasoning:
+		return true
+	case ui.KindToolStart:
+		// One with no result yet keeps the tool mark. It is running, or it
+		// never came back, and under the routine mark it differed from the
+		// passes around it by the tense of its verb alone.
+		return e.result != nil
+	case ui.KindToolResult:
+		return e.Status() == StatusPass
+	}
+	return false
+}
+
 // clock is the event's time of day, or empty when it carries none.
 func (e *Entry) clock() string {
 	if e.Event.At.IsZero() {
@@ -1228,6 +1245,15 @@ func (e *Entry) gutterLine(th Theme, l render.Line, g Glyphs) render.Line {
 	case e.Event.Kind == ui.KindReasoning:
 		st = th.Subtle()
 	}
+	if th.Unicode && e.routine() {
+		// One quiet mark for a row with nothing to flag: a call that has
+		// returned, a result that passed, a thought. A column of ticks, gears and stars made every row
+		// look like it had something to say, and the rows that do — a failure, a
+		// grant, a caution — were six shapes among six. Without Unicode the
+		// marks are words ("ok", ">>") and stay as they are: there a running
+		// call and a finished one would otherwise differ by tense alone.
+		marker, st = g.Bullet, th.Subtle()
+	}
 	pad := gutter - render.StringWidth(marker)
 	if pad < 1 {
 		pad = 1
@@ -1371,7 +1397,7 @@ func parseInlineSpans(line string, th Theme, baseStyle render.Style) render.Line
 				code := string(runes[i+1 : j])
 				// The informational colour, not the brand's red: red text in the
 				// middle of a sentence reads as the part that went wrong.
-				res = res.Append(code, th.Inset().Foreground(th.Info))
+				res = res.Append(code, th.Status(StatusInfo))
 				i = j + 1
 				continue
 			}
@@ -1398,7 +1424,7 @@ func parseInlineSpans(line string, th Theme, baseStyle render.Style) render.Line
 func highlightCodeLine(raw string, th Theme, lang string) render.Line {
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
-		return render.Styled(raw, render.Style{Fg: th.FgSubtle, Bg: th.BgInset, Attrs: render.Italic})
+		return render.Styled(raw, render.Style{Fg: th.FgSubtle, Bg: th.Bg, Attrs: render.Italic})
 	}
 
 	if strings.Contains(raw, "\"") || strings.Contains(raw, "'") {
@@ -1409,7 +1435,7 @@ func highlightCodeLine(raw string, th Theme, lang string) render.Line {
 		for _, r := range raw {
 			if !inQuote && (r == '"' || r == '\'') {
 				if cur.Len() > 0 {
-					line = line.Append(cur.String(), render.Style{Fg: th.Fg, Bg: th.BgInset})
+					line = line.Append(cur.String(), render.Style{Fg: th.Fg, Bg: th.Bg})
 					cur.Reset()
 				}
 				inQuote = true
@@ -1417,7 +1443,7 @@ func highlightCodeLine(raw string, th Theme, lang string) render.Line {
 				cur.WriteRune(r)
 			} else if inQuote && r == quoteChar {
 				cur.WriteRune(r)
-				line = line.Append(cur.String(), render.Style{Fg: th.FgMuted, Bg: th.BgInset})
+				line = line.Append(cur.String(), render.Style{Fg: th.FgMuted, Bg: th.Bg})
 				cur.Reset()
 				inQuote = false
 			} else {
@@ -1425,9 +1451,9 @@ func highlightCodeLine(raw string, th Theme, lang string) render.Line {
 			}
 		}
 		if cur.Len() > 0 {
-			style := render.Style{Fg: th.Fg, Bg: th.BgInset}
+			style := render.Style{Fg: th.Fg, Bg: th.Bg}
 			if inQuote {
-				style = render.Style{Fg: th.FgMuted, Bg: th.BgInset}
+				style = render.Style{Fg: th.FgMuted, Bg: th.Bg}
 			}
 			line = line.Append(cur.String(), style)
 		}
@@ -1443,9 +1469,9 @@ func highlightCodeLine(raw string, th Theme, lang string) render.Line {
 		w := cur.String()
 		cur.Reset()
 		if codeKeywords[w] {
-			line = line.Append(w, render.Style{Fg: th.Info, Bg: th.BgInset, Attrs: render.Bold})
+			line = line.Append(w, render.Style{Fg: th.Info, Bg: th.Bg, Attrs: render.Bold})
 		} else {
-			line = line.Append(w, render.Style{Fg: th.Fg, Bg: th.BgInset})
+			line = line.Append(w, render.Style{Fg: th.Fg, Bg: th.Bg})
 		}
 	}
 
@@ -1454,7 +1480,7 @@ func highlightCodeLine(raw string, th Theme, lang string) render.Line {
 			cur.WriteRune(r)
 		} else {
 			flushWord()
-			line = line.Append(string(r), render.Style{Fg: th.FgMuted, Bg: th.BgInset})
+			line = line.Append(string(r), render.Style{Fg: th.FgMuted, Bg: th.Bg})
 		}
 	}
 	flushWord()
@@ -1680,7 +1706,7 @@ func (st *mdState) line(out []render.Line, raw string, th Theme, width int) []re
 
 	case mdDiffHeader, mdHunk, mdAdded, mdRemoved:
 		if st.inCode {
-			return codeRows(out, diffLine(k, expandTabs(raw), th, th.BgInset), th, width)
+			return codeRows(out, diffLine(k, expandTabs(raw), th, th.Bg), th, width)
 		}
 		st.diff = true
 		return append(out, diffLine(k, expandTabs(raw), th, th.Bg).Wrap(width)...)
@@ -1748,12 +1774,12 @@ func (st *mdState) line(out []render.Line, raw string, th Theme, width int) []re
 	return append(out, parseInlineSpans(raw, th, th.Base()).Wrap(width)...)
 }
 
-// codeRows appends a line of a code block: a rule, then the line on the inset
-// surface out to the pane's edge, wrapped when it is longer than the pane. It
-// was cut at the edge, which ended a long line in an ellipsis and left its end
-// unreadable at any width.
+// codeRows appends a line of a code block: a rule, then the line, wrapped when
+// it is longer than the pane. It was cut at the edge, which ended a long line
+// in an ellipsis and left its end unreadable at any width. The rule is what
+// sets the block apart; it sits on the transcript's own ground, not a fill.
 func codeRows(out []render.Line, l render.Line, th Theme, width int) []render.Line {
-	rule := render.Styled(th.Glyphs().VBar+" ", render.Style{Fg: th.ruleColor(), Bg: th.BgInset})
+	rule := render.Styled(th.Glyphs().VBar+" ", render.Style{Fg: th.ruleColor(), Bg: th.Bg})
 	inner := width - rule.Width()
 	if inner < 1 {
 		inner = 1
@@ -1763,7 +1789,7 @@ func codeRows(out []render.Line, l render.Line, th Theme, width int) []render.Li
 		rows = []render.Line{nil}
 	}
 	for _, r := range rows {
-		out = append(out, rule.Concat(r).Pad(width, render.Style{Bg: th.BgInset}).Truncate(width))
+		out = append(out, rule.Concat(r).Pad(width, render.Style{Bg: th.Bg}).Truncate(width))
 	}
 	return out
 }

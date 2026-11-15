@@ -216,11 +216,6 @@ func PickThemeByNameUnchecked(name string, profile render.Profile, unicode bool)
 	return t
 }
 
-// Inset is the recessed surface style for code blocks, diffs, and input boxes.
-func (t Theme) Inset() render.Style {
-	return render.Style{Fg: t.Fg, Bg: t.BgInset}
-}
-
 // monochrome reports whether the terminal will be sent no colour at all, so
 // that a role which differs from another only by hue would arrive identical.
 func (t Theme) monochrome() bool {

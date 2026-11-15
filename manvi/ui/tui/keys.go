@@ -153,7 +153,7 @@ var bindings = []Binding{
 	{Keys: []string{"ctrl+k"}, Cmd: CmdDeleteToEnd, Ctx: CtxApproval},
 
 	// Prompt.
-	{Keys: []string{"enter"}, Cmd: CmdSubmit, Ctx: CtxPrompt, Label: "send", Hint: true},
+	{Keys: []string{"enter"}, Cmd: CmdSubmit, Ctx: CtxPrompt, Label: "send"},
 	{Keys: []string{"shift+enter", "alt+enter"}, Cmd: CmdNewline, Ctx: CtxPrompt, Label: "newline"},
 	{Keys: []string{"ctrl+m"}, Cmd: CmdMultiline, Ctx: CtxPrompt, Label: "multiline"},
 	{Keys: []string{"up"}, Cmd: CmdHistoryPrev, Ctx: CtxPrompt, Label: "history"},
@@ -479,8 +479,8 @@ func (a *App) scrollbackKey(v *AgentView, binding string, ctx Context) bool {
 	}
 	sb := v.Scroll
 	// The page size is the transcript's own height from the last frame, not a
-	// figure derived from the terminal's — those differ by the status bar, the
-	// strict banner, the composer, and whatever else the layout placed.
+	// figure derived from the terminal's — those differ by the composer, the
+	// footer, the strict banner, and whatever else the layout placed.
 	page := sb.Viewport()
 	switch resolve(binding, CtxScrollback) {
 	case CmdScrollUp:

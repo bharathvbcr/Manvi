@@ -106,9 +106,19 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 		return
 	}
 	g := th.Glyphs()
-	bg := th.BgRaised
-	base := render.Style{Fg: th.FgMuted, Bg: bg}
+	// On the screen's own ground, in the two quietest text colours. It was a
+	// raised bar across the top row with the model in bold: the first thing in
+	// the frame, saying what does not change from one turn to the next. What
+	// does need seeing — a grant, a full context window, a lease running out —
+	// is still drawn strong, and is the only thing on the row that is.
+	bg := th.Bg
+	base := render.Style{Fg: th.FgSubtle, Bg: bg}
+	name := render.Style{Fg: th.FgMuted, Bg: bg}
 	strong := render.Style{Fg: th.Fg, Bg: bg, Attrs: render.Bold}
+	if th.reducedPalette() {
+		// One dark grey is all a sixteen-colour terminal has for both.
+		base = name
+	}
 	b.Fill(r, ' ', base)
 
 	type segment struct {
@@ -132,14 +142,14 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 	// bar has to be able to tell the two apart without reading.
 	// It is a word, not a block of colour behind one: a filled chip was the
 	// brightest thing on the screen and said one word.
-	postureStyle := render.Style{Fg: th.FgMuted, Bg: bg, Attrs: render.Bold}
+	postureStyle := name
 	switch {
 	case st.Posture == "":
 		postureStyle = render.Style{Fg: th.FgSubtle, Bg: bg}
 	case st.Posture == flags.PostureYolo:
-		postureStyle.Fg = th.Danger
+		postureStyle = render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold}
 	case flags.DescribePosture(st.Posture).Relaxed:
-		postureStyle.Fg = th.Fg
+		postureStyle = strong
 	}
 	put(0, false, render.Styled(orDash(st.Posture), postureStyle))
 
@@ -161,7 +171,7 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 		put(2, false, task)
 	}
 	if st.Model != "" {
-		model := render.Styled(st.Model, strong)
+		model := render.Styled(st.Model, name)
 		put(3, false, model)
 		if st.Provider != "" {
 			// A segment of its own that joins the model without a separator, so
@@ -184,7 +194,7 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 	}
 
 	// Right-hand cluster: what the session has spent and leaned on.
-	if st.Busy && len(spark) > 2 && r.W >= 110 {
+	if st.Busy && len(spark) > 2 {
 		put(10, true, render.Sparkline(spark, render.Style{Fg: th.AccentDim, Bg: bg}))
 	}
 	if st.ContextMax > 0 && st.ContextUsed > 0 {
@@ -376,6 +386,62 @@ func DrawShortcutBar(b *render.Buffer, r render.Rect, th Theme, ctx Context, ext
 	if r.Empty() {
 		return
 	}
+	line, fill := shortcutLine(th, ctx, r.W, extra...)
+	b.Fill(r, ' ', fill)
+	line.Truncate(r.W).Draw(b, r.X, r.Y)
+}
+
+// DrawFooter paints the one row under the composer: what the session is on the
+// left, and the keys of the moment on the right.
+//
+// The posture is never given up: it is the one fact that changes what the rest
+// of the screen means, so the keys are cut to leave it room. After it the keys
+// and the notices beside them come first. They say what the operator can do
+// next and what just changed — more approvals waiting, a transcript scrolled
+// back — and the rest of the status gives up segments to make room for them,
+// as it does on any narrow row.
+func DrawFooter(b *render.Buffer, r render.Rect, th Theme, st Status, ctx Context, tick int, spark []float64, fxOn bool, extra ...string) {
+	if r.Empty() {
+		return
+	}
+	posture := 1 + render.StringWidth(orDash(st.Posture)) + 2
+	// The keys leave room for the posture and the model. With the transcript
+	// focused there are eight of them, and given the whole row they left the
+	// status its posture alone, so the model came and went with the focus.
+	// What does not fit is behind F1, as it always was. A notice outranks the
+	// model: it says what just changed, and the model has not.
+	keep := posture
+	if st.Model != "" {
+		keep += render.StringWidth(st.Model) + 2
+	}
+	budget := r.W - keep
+	notices := 0
+	for _, s := range extra {
+		notices += 1 + render.StringWidth(s)
+	}
+	budget = min(max(budget, notices), r.W-posture)
+	hints, fill := shortcutLine(th, ctx, budget, extra...)
+	b.Fill(r, ' ', fill)
+	if hints.Width() > budget {
+		hints = hints.Truncate(max(budget, 0))
+	}
+	if r.W < sparkFrom {
+		// The throughput sparkline is for a row with room to spare, measured
+		// on the whole row and not on the status's share of it.
+		spark = nil
+	}
+	room := r.W - hints.Width() - 1
+	DrawStatusBar(b, render.Rect{X: r.X, Y: r.Y, W: room, H: 1}, th, st, tick, spark, fxOn)
+	hints.Draw(b, r.Right()-hints.Width()-1, r.Y)
+}
+
+// sparkFrom is the narrowest footer that draws the throughput sparkline.
+const sparkFrom = 110
+
+// shortcutLine is the key hints for a context, cut to width, and the style the
+// rest of their row is filled with.
+func shortcutLine(th Theme, ctx Context, width int, extra ...string) (render.Line, render.Style) {
+	r := render.Rect{W: width, H: 1}
 	// The one row of key hints, and the quietest row on the screen: the key in
 	// the secondary text colour, its label a step below, and space between
 	// items instead of a rule. In the brand colour and bold, with a bar between
@@ -389,8 +455,6 @@ func DrawShortcutBar(b *render.Buffer, r render.Rect, th Theme, ctx Context, ext
 		keyStyle.Attrs |= render.Bold
 		labelStyle.Attrs |= render.Dim
 	}
-	b.Fill(r, ' ', labelStyle)
-
 	line := render.Line{}
 	for _, s := range extra {
 		line = line.Append(" "+s, render.Style{Fg: th.FgMuted, Bg: bg, Attrs: render.Italic})
@@ -423,7 +487,7 @@ func DrawShortcutBar(b *render.Buffer, r render.Rect, th Theme, ctx Context, ext
 			line = line.Concat(more)
 		}
 	}
-	line.Truncate(r.W).Draw(b, r.X, r.Y)
+	return line, labelStyle
 }
 
 func orDash(s string) string {

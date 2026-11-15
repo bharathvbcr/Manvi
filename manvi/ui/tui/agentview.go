@@ -286,27 +286,42 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		v.Status.BusySecs = int(time.Since(v.busySince).Seconds())
 	}
 
+	// Nothing is pinned to the top: the transcript has the screen down to the
+	// composer, and what the session is — posture, model, branch, context — is
+	// one quiet row under it, shared with the keys of the moment.
 	area := r
-	statusRow, area := area.SplitTop(1)
-	DrawStatusBar(b, statusRow, th, v.Status, tick, spark, fxOn)
+	area, footer := area.SplitBottom(1)
 
-	if strict, _ := v.Status.StrictSummary(); !strict {
-		var banner render.Rect
-		banner, area = area.SplitTop(1)
-		DrawStrictBanner(b, banner, th, v.Status)
+	// A run that is not strict says so on a row of its own, directly above
+	// where the operator types: it is the one statement on screen that changes
+	// what every result above it means, and it is never folded into the row of
+	// status under the composer, which a narrow terminal abbreviates. Its row
+	// is set aside before the composer is sized, so on a terminal too short
+	// for both it is the composer that gives way.
+	strict, _ := v.Status.StrictSummary()
+	room := area.H
+	if !strict {
+		room--
 	}
-
-	area, hintRow := area.SplitBottom(1)
 
 	// The composer, sized to its content, from the bottom up.
 	promptH := v.promptHeight(area.W) + 2 // frame
-	if promptH > area.H/2 {
-		promptH = area.H / 2
+	if promptH > room/2 {
+		promptH = room / 2
 	}
 	if promptH < 3 {
 		promptH = 3
 	}
+	if promptH > room {
+		promptH = max(room, 0)
+	}
 	area, promptRect := area.SplitBottom(promptH)
+
+	if !strict {
+		var banner render.Rect
+		area, banner = area.SplitBottom(1)
+		DrawStrictBanner(b, banner, th, v.Status)
+	}
 
 	// Queued follow-ups sit directly above the composer, where they explain why
 	// typing while busy did not send.
@@ -379,7 +394,7 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 	if v.Scroll.SearchQuery() != "" {
 		extra = append(extra, v.Scroll.SearchStatus()+" (n/N)")
 	}
-	DrawShortcutBar(b, hintRow, th, ctx, extra...)
+	DrawFooter(b, footer, th, v.Status, ctx, tick, spark, fxOn, extra...)
 	return caret
 }
 
@@ -402,10 +417,14 @@ func (v *AgentView) drawQueue(b *render.Buffer, r render.Rect, th Theme) {
 }
 
 func (v *AgentView) drawPrompt(b *render.Buffer, r render.Rect, th Theme, tick int, fxOn bool) render.Rect {
+	// The frame is a neutral rule, a step brighter while the composer has the
+	// keys. In the brand colour it was the largest area of red on the screen,
+	// in a red a glance could not tell from a failure's; the prompt mark inside
+	// it carries the brand and the focus both.
 	focused := v.Focus == CtxPrompt && v.approval == nil
 	border := th.Border
 	if focused {
-		border = th.BorderFocus
+		border = th.FgSubtle
 	}
 
 	// The frame carries a word only when the word changes what Enter does: a
