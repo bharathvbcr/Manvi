@@ -27,6 +27,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Human Override** | `manvi allow PATH --reason TEXT` | Record an audited human grant in the ledger to unblock a soft policy denial. |
 | **Native Tools List** | `manvi tools` | List all 51 native tools (50 in a repository with no skills) and their parameter schemas. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
+| **Cloud or Local** | `manvi use [cloud\|local] [--model ID] [--base-url URL] [--json]` | Make Manvi's own user config the one cloud/local switch for every app that runs manvi (a shell, GitPulse, a script). Bare, report which is in force, where that came from (`default`, `config`, `env`, `flag`), the model each mode would use, any environment variable that shadows the saved choice, and the user config path; `--json` prints the same as a host contract (fields are added, never renamed). `use cloud` saves `llm.provider.default: anthropic`, and with `--model` the main tier `llm.tier.main` (checked against the Anthropic catalogue). `use local` saves `llm.provider.default: local` and optionally `llm.local.base_url` (an http(s) URL with a host, no credentials, query or fragment) and `llm.local.model`. The write goes to the user config (refused when that path is inside the repository), is atomic (temporary file and rename, `0600`), keeps every other line, and is read back through the real loader so the status printed is what the next run sees. It touches no credential: the key is whatever the host already supplies, and the status carries no credential state. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
 | **Sub-agent Roles** | `manvi agents` | Show each sub-agent role, the tier it runs on, and the model that tier resolves to for the default provider (role → tier → model). |
 | **Tier Profile** | `manvi tiers` | Print the model and effort each tier runs at — `advisor`, `main`, `heavy`, `lite`, `basic` — the setting and layer each value came from, and the effort ceiling each tier inherits. Runs the same check a session runs at startup, prints the table either way, and exits 1 on a profile a session would refuse. See [Tier profile](#tier-profile). |
@@ -375,12 +376,20 @@ places, lowest first:
    `~/Library/Application Support/manvi/config.yaml`, on Linux
    `~/.config/manvi/config.yaml`), or the absolute path in `MANVI_USER_CONFIG`.
    It uses the same format as `.devcouncil/config.yaml`, carries `llm.tier.*`
-   keys and the four endpoint and provider keys only — any other key is refused, naming it — and is refused outright if
+   keys, the four endpoint and provider keys, and `llm.local.model` only — any other key is refused, naming it — and is refused outright if
    it resolves, through the variable or a symlink, to a path inside the
    repository. Values from it show as origin `config` in `manvi flags` and as
    `user config <path>` in `manvi tiers`. A process with no user config
    directory (no `HOME`) and no `MANVI_USER_CONFIG` has no user config, as if
    the file were absent; a relative `MANVI_USER_CONFIG` is refused.
+
+   `llm.local.model` is allowed here because it names a model id for the local
+   server and chooses no credential and no endpoint; `manvi use local --model`
+   saves it. It was never operator scope, so `.devcouncil/config.yaml` may set
+   it too: the user config is read after that file and wins over it, then
+   `MANVI_LLM_LOCAL_MODEL` wins over both, and `MANVI_MODEL` wins over every
+   setting for a run. `manvi use` reports each of those as `shadowed_by` rather
+   than letting a saved choice look applied.
 2. The environment, `MANVI_LLM_TIER_*`.
 3. `manvi flags set llm.tier.<tier> MODEL` (or `/flags set` in the TUI), on human
    authority.

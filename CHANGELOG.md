@@ -23,6 +23,23 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `manvi use [cloud|local] [--model ID] [--base-url URL] [--json]`: Manvi's own
+  user config as the single cloud/local switch for every host. `use cloud` saves
+  `llm.provider.default: anthropic` (and, with `--model`, `llm.tier.main`,
+  checked against the Anthropic catalogue); `use local` saves `local` and
+  optionally `llm.local.base_url` (an http(s) URL with a host, no credentials,
+  query or fragment) and `llm.local.model`. The file is the operator user config
+  (`MANVI_USER_CONFIG` or `<user config dir>/manvi/config.yaml`), refused when
+  inside the repository; the write is atomic (`0600`), keeps every other line,
+  refuses a key written in nested form, and is re-read through the real loader.
+  Bare `manvi use` and `--json` report mode, provider and where it came from
+  (`default`, `config`, `env`, `flag`), the effective model, what each mode
+  would use, and `shadowed_by` for an environment variable
+  (`MANVI_LLM_PROVIDER_DEFAULT`, `MANVI_MODEL`, `MANVI_LLM_TIER_MAIN`,
+  `MANVI_LLM_LOCAL_*`) that wins over the saved value, never silently. It reads
+  and writes no credential. `llm.local.model` is now allowed in the user config:
+  it chooses no credential and no endpoint. Documented in
+  `docs/CLI_AND_CONFIGURATION.md`.
 - `work.assist.complete`: a host-only one-shot completion for the host's own AI
   features (explain a commit, write a commit message, suggest a branch name),
   made by the provider and model the enhancement selection names, so the host

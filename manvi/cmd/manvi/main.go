@@ -45,6 +45,8 @@ Usage:
                                     reconcile retains reservations left by exited processes
   manvi tiers                       Show the model and effort each tier runs at, and where each came from
   manvi local [--resolve]           Find local model servers; --resolve prints what a run would use
+  manvi use [cloud|local] [--json]  Choose, for every app that runs manvi, the cloud (Claude) or a local model server;
+                                    cloud takes --model, local takes --base-url and --model
   manvi pull                        Fast-forward the current branch; refuses a dirty tree
   manvi push                        Push the current branch to its configured upstream
   manvi issues                      Report open GitHub issues, newest activity first
@@ -418,6 +420,8 @@ func run(out, notes io.Writer, args []string) error {
 		return showTiers(out, reg)
 	case "budget":
 		return budgetCommand(context.Background(), out, args[1:])
+	case "use":
+		return runUse(out, reg, args[1:], func() (*flags.Registry, error) { return newRegistry(configPath()) })
 	case "local":
 		return showLocal(context.Background(), out, reg, args[1:])
 	case "pull", "push", "issues":

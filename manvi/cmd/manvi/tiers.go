@@ -179,6 +179,14 @@ var endpointKeys = []string{
 // isEndpointKey reports whether a config key is one of endpointKeys.
 func isEndpointKey(key string) bool { return slices.Contains(endpointKeys, key) }
 
+// isUserConfigKey reports whether the user config may set a key: tier keys, the
+// endpoint keys, and llm.local.model. That last one names a model id for the
+// local server and chooses no credential and no endpoint, so it is safe in a
+// file only the operator writes; 'manvi use local --model' saves it there.
+func isUserConfigKey(key string) bool {
+	return isTierKey(key) || isEndpointKey(key) || key == flags.LLMLocalModel
+}
+
 // operatorScopeRules is the one table of what the repository file may not set.
 // Rules are tried in order and the first that matches names its keys.
 var operatorScopeRules = []operatorScopeRule{
@@ -323,7 +331,7 @@ func refuseUserConfigInside(path, root string) error {
 
 // loadUserConfig applies the user config to the config layer.
 //
-// It carries tier settings and the endpoint keys (isEndpointKey) and nothing
+// It carries tier settings, the endpoint keys (isEndpointKey) and llm.local.model, and nothing
 // else. It shares the config layer with the repository file, and for these keys
 // that is unambiguous — the repository can never supply one, see
 // operatorScopeRules — but for any other key an origin of "config" would no
@@ -346,15 +354,15 @@ func loadUserConfig(reg *flags.Registry, path, root string) error {
 	}
 	var other []string
 	for key := range layer.Values {
-		if !isTierKey(key) && !isEndpointKey(key) {
+		if !isUserConfigKey(key) {
 			other = append(other, key)
 		}
 	}
 	if len(other) > 0 {
 		slices.Sort(other)
-		return fmt.Errorf("user config %s sets %s; it carries %s* and provider endpoint settings (%s) only — "+
+		return fmt.Errorf("user config %s sets %s; it carries %s*, provider endpoint settings (%s) and %s only — "+
 			"put the rest in the repository's config.yaml or the environment",
-			path, strings.Join(other, ", "), tierPrefix, strings.Join(endpointKeys, ", "))
+			path, strings.Join(other, ", "), tierPrefix, strings.Join(endpointKeys, ", "), flags.LLMLocalModel)
 	}
 	if err := reg.LoadLayer(layer); err != nil {
 		return fmt.Errorf("user config %s: %w", path, err)
