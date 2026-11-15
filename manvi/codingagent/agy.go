@@ -10,11 +10,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
 
 var agyHandshake = 15 * time.Second
+
+const (
+	maxAgyMcpServers = 16
+	agyCloseRPCGrace = 100 * time.Millisecond
+)
 
 type agyPending struct {
 	source        Request
@@ -36,12 +42,18 @@ type agyOutbound struct {
 // JSON-RPC 2.0 stdio transport into a managed coding session.
 type Agy struct {
 	mu               sync.Mutex
+	writeMu          sync.Mutex
+	closeRPCOnce     sync.Once
 	options          Options
 	initializing     bool
 	ready            bool
 	wire             *connection
 	effective        Effective
 	sessionID        string
+	sessionRef       atomic.Pointer[string]
+	turnActive       atomic.Bool
+	protocolFault    atomic.Bool
+	haltedAtomic     atomic.Bool
 	turnID           string
 	promptID         json.RawMessage
 	emittedTurnStart bool
@@ -64,9 +76,9 @@ type Agy struct {
 // stays bounded to built-in commands.
 func agyArgs(mode string) []string {
 	if mode == "bypass" {
-		return []string{"acp", "--dangerously-skip-permissions", "--include-default-customizations=false"}
+		return []string{"acp", "--stdio", "--dangerously-skip-permissions", "--include-default-customizations=false"}
 	}
-	return []string{"acp", "--sandbox", "--include-default-customizations=false"}
+	return []string{"acp", "--stdio", "--sandbox", "--include-default-customizations=false"}
 }
 
 // StartAgy starts the Antigravity ACP stdio server process without negotiating
@@ -107,6 +119,11 @@ func startAgy(ctx context.Context, options Options, argv func(mode string) []str
 	if _, _, _, _, err := agyPolicy(options); err != nil {
 		return nil, beforeStart(err)
 	}
+	mcpServers, err := normalizeAgyMcpServers(options.McpServers)
+	if err != nil {
+		return nil, beforeStart(err)
+	}
+	options.McpServers = mcpServers
 	wire, err := startConnection(ctx, program, argv(options.Mode), cwd, validateAgyFrame)
 	if err != nil {
 		return nil, err
@@ -149,6 +166,44 @@ func agyPolicy(o Options) (acpMode, approval, reviewer string, sandbox Sandbox, 
 	}
 }
 
+func normalizeAgyMcpServers(servers []McpServer) ([]McpServer, error) {
+	if len(servers) > maxAgyMcpServers {
+		return nil, fmt.Errorf("managed Antigravity accepts at most %d explicit MCP servers", maxAgyMcpServers)
+	}
+	out := make([]McpServer, 0, len(servers))
+	seenNames := make(map[string]bool, len(servers))
+	for _, srv := range servers {
+		if !opaque(srv.Name) || seenNames[srv.Name] {
+			return nil, errors.New("managed Antigravity MCP server requires a unique opaque name")
+		}
+		seenNames[srv.Name] = true
+		if !filepath.IsAbs(srv.Command) || strings.ContainsAny(srv.Command, "\x00\r\n") || !utf8.ValidString(srv.Command) {
+			return nil, errors.New("managed Antigravity MCP server requires an absolute executable path")
+		}
+		args := make([]string, len(srv.Args))
+		for i, a := range srv.Args {
+			if strings.ContainsRune(a, 0) || !utf8.ValidString(a) || len(a) > 4096 {
+				return nil, errors.New("managed Antigravity MCP server argument is invalid")
+			}
+			args[i] = a
+		}
+		env := make([]McpEnvVar, len(srv.Env))
+		for i, ev := range srv.Env {
+			if !opaque(ev.Name) || strings.ContainsRune(ev.Name, '=') || strings.ContainsRune(ev.Value, 0) || !utf8.ValidString(ev.Value) || len(ev.Value) > 16384 {
+				return nil, errors.New("managed Antigravity MCP server environment entry is invalid")
+			}
+			env[i] = ev
+		}
+		out = append(out, McpServer{
+			Name:    srv.Name,
+			Command: srv.Command,
+			Args:    args,
+			Env:     env,
+		})
+	}
+	return out, nil
+}
+
 func validateAgyFrame(raw []byte) error {
 	seen, err := validateFrameShape(raw, "Antigravity")
 	if err != nil {
@@ -173,6 +228,8 @@ func validateAgyFrame(raw []byte) error {
 }
 
 func (s *Agy) send(ctx context.Context, frame agyOutbound) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	frame.JSONRPC = "2.0"
 	encoded, err := json.Marshal(frame)
 	if err != nil {
@@ -251,18 +308,22 @@ func (s *Agy) Initialize(ctx context.Context) error {
 		return errors.New("managed Antigravity omitted or failed its ACP server identity check")
 	}
 
+	mcpServers := s.options.McpServers
+	if mcpServers == nil {
+		mcpServers = []McpServer{}
+	}
 	var sessionReply json.RawMessage
 	resumed := opaque(s.options.Resume)
 	if resumed {
 		sessionReply, err = s.call(ready, "session/resume", map[string]any{
 			"sessionId":  s.options.Resume,
 			"cwd":        s.options.Cwd,
-			"mcpServers": []any{},
+			"mcpServers": mcpServers,
 		})
 	} else {
 		sessionReply, err = s.call(ready, "session/new", map[string]any{
 			"cwd":        s.options.Cwd,
-			"mcpServers": []any{},
+			"mcpServers": mcpServers,
 		})
 	}
 	if err != nil {
@@ -326,11 +387,15 @@ func (s *Agy) Initialize(ctx context.Context) error {
 	}
 
 	s.sessionID = session.SessionID
+	sidCopy := session.SessionID
+	s.sessionRef.Store(&sidCopy)
 	for _, queued := range s.queue {
 		if len(queued.ID) > 0 {
+			s.protocolFault.Store(true)
 			return errors.New("managed Antigravity issued a callback before any turn started")
 		}
 		if _, _, err := s.event(queued); err != nil {
+			s.protocolFault.Store(true)
 			return err
 		}
 	}
@@ -366,6 +431,62 @@ func (s *Agy) Effective() Effective {
 
 func (s *Agy) Close() (Exit, error) {
 	s.ledger.closed.Store(true)
+	s.closeRPCOnce.Do(func() {
+		sid := s.sessionRef.Load()
+		if sid == nil || *sid == "" || s.wire == nil || s.wire.stdin == nil ||
+			s.wire.ctx.Err() != nil || s.protocolFault.Load() || s.haltedAtomic.Load() {
+			return
+		}
+		if !s.writeMu.TryLock() {
+			return
+		}
+		defer s.writeMu.Unlock()
+		if s.wire.ctx.Err() != nil || s.protocolFault.Load() || s.haltedAtomic.Load() {
+			return
+		}
+		var buf bytes.Buffer
+		if s.turnActive.Load() {
+			if raw, err := json.Marshal(agyOutbound{
+				JSONRPC: "2.0",
+				Method:  "session/cancel",
+				Params:  map[string]any{"sessionId": *sid},
+			}); err == nil {
+				buf.Write(raw)
+				buf.WriteByte('\n')
+			}
+		}
+		if raw, err := json.Marshal(agyOutbound{
+			JSONRPC: "2.0",
+			ID:      s.wire.nextID(),
+			Method:  "session/close",
+			Params:  map[string]any{"sessionId": *sid},
+		}); err == nil {
+			buf.Write(raw)
+			buf.WriteByte('\n')
+		}
+		if buf.Len() == 0 {
+			return
+		}
+		payload := buf.Bytes()
+		done := make(chan struct{})
+		go func() {
+			_, _ = s.wire.stdin.Write(payload)
+			close(done)
+		}()
+		timer := time.NewTimer(agyCloseRPCGrace)
+		defer timer.Stop()
+		select {
+		case <-done:
+			_ = s.wire.stdin.Close()
+			grace := time.NewTimer(75 * time.Millisecond)
+			select {
+			case <-s.wire.done:
+			case <-grace.C:
+			}
+			grace.Stop()
+		case <-timer.C:
+		}
+	})
 	return s.wire.close()
 }
 
@@ -399,6 +520,7 @@ func (s *Agy) sendPrompt(ctx context.Context, text string) error {
 	s.promptID = id
 	s.turnID = turnID
 	s.emittedTurnStart = false
+	s.turnActive.Store(true)
 	return nil
 }
 
@@ -412,6 +534,7 @@ func (s *Agy) ContinueTurn(ctx context.Context, message string) error {
 		return err
 	}
 	if drainErr != nil {
+		s.protocolFault.Store(true)
 		return RefuseContinue(fmt.Errorf("the finished turn's events could not be read: %w", drainErr))
 	}
 	for id, p := range s.pending {
@@ -423,6 +546,7 @@ func (s *Agy) ContinueTurn(ctx context.Context, message string) error {
 	s.ledger.turns++
 	if err := s.sendPrompt(ctx, message); err != nil {
 		s.ledger.halted = true
+		s.haltedAtomic.Store(true)
 		return &unresolvedDelivery{cause: err}
 	}
 	return nil
@@ -435,6 +559,7 @@ func (s *Agy) ContinueTurn(ctx context.Context, message string) error {
 // The first event is returned; the rest are queued behind it in order.
 func (s *Agy) finishTurn(status string) Event {
 	s.finished = true
+	s.turnActive.Store(false)
 	s.ledger.last = status
 	return leadWith(&s.deferred, append(s.withdrawPending(), Event{Status: status}))
 }
@@ -515,6 +640,7 @@ func (s *Agy) next(ctx context.Context) (Event, error) {
 		}
 		e, meaningful, err := s.event(p)
 		if err != nil {
+			s.protocolFault.Store(true)
 			return Event{}, err
 		}
 		if meaningful {
