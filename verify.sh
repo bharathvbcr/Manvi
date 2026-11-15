@@ -2,28 +2,88 @@
 # One gate for both planes. Every phase in the strategy ends in a command that
 # can fail; this is that command.
 #
-#   ./verify.sh          format check, vet/clippy, lint, vulnerabilities, tests, coverage
-#   ./verify.sh --fix    rewrite formatting in place first
-#   ./verify.sh --race   the Go suite again under the race detector
-#   ./verify.sh --fuzz   every declared fuzz target actually executed
+#   ./verify.sh                 format check, vet/clippy, lint, vulnerabilities, tests, coverage
+#   ./verify.sh --fix           rewrite formatting in place first
+#   ./verify.sh --race          the Go suite again under the race detector
+#   ./verify.sh --fuzz          every declared fuzz target actually executed
+#   ./verify.sh --leg NAME      only the steps of one leg (see LEGS below)
+#   ./verify.sh --list-legs     the legs, one per line
 #
-# The last two are opt-in and take one flag at a time; run the script twice to
-# get both. They are separate from the default run for opposite reasons: --race
-# needs cgo, and --fuzz spends a budget per target rather than answering a fixed
-# question.
+# --fix, --race and --fuzz are opt-in and take one flag at a time; run the
+# script twice to get more than one. They are separate from the default run for
+# opposite reasons: --race needs cgo, and --fuzz spends a budget per target
+# rather than answering a fixed question. --leg combines with any one of them.
+#
+# Legs. The default run is every leg, in file order, in one process: that is what
+# a developer runs and it is unchanged. CI runs one leg per job so the legs run
+# in parallel (.github/workflows/verify.yml). Each region of steps below is
+# wrapped in `if leg_runs <name>; then … fi # end leg <name>`, and
+# scripts/verify-lib.test.mjs fails when a step sits outside every region, when
+# a leg has no step, or when the workflow's matrix and this list disagree — so a
+# step cannot be dropped by the split without a test going red. A leg that
+# executes no step fails rather than passing as an empty run.
+#
+#   go-test   the Go suite with coverage, the skip report and the cross-boundary counts
+#   rust      the Rust workspace and everything that drives its binaries
+#   checks    format, vet, lint, vulnerabilities and nil analysis, the native
+#             broker, and the release, docs, wire and TUI contracts
+#   bench     the benchmark instrument's suites and the Python lint
+ALL_LEGS="go-test rust checks bench"
 set -euo pipefail
 
 cd "$(dirname "$0")"
 FIX=0
 RACE=0
 FUZZ=0
-case "${1:-}" in
-  --fix)  FIX=1 ;;
-  --race) RACE=1 ;;
-  --fuzz) FUZZ=1 ;;
-  "")     ;;
-  *)      printf 'usage: %s [--fix|--race|--fuzz]\n' "$0" >&2; exit 2 ;;
-esac
+LEG=""
+MODE_FLAGS=0
+
+usage() {
+  printf 'usage: %s [--leg NAME] [--fix|--race|--fuzz] | --list-legs\n' "$0" >&2
+  printf '  legs: %s\n' "$ALL_LEGS" >&2
+  exit 2
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --fix)  FIX=1;  MODE_FLAGS=$(( MODE_FLAGS + 1 )) ;;
+    --race) RACE=1; MODE_FLAGS=$(( MODE_FLAGS + 1 )) ;;
+    --fuzz) FUZZ=1; MODE_FLAGS=$(( MODE_FLAGS + 1 )) ;;
+    --leg)
+      shift
+      [[ -n "${1:-}" ]] || usage
+      LEG="$1" ;;
+    --list-legs)
+      # Word splitting is the point: ALL_LEGS is a space-separated list.
+      # shellcheck disable=SC2086
+      printf '%s\n' $ALL_LEGS
+      exit 0 ;;
+    *) usage ;;
+  esac
+  shift
+done
+(( MODE_FLAGS <= 1 )) || usage
+# An unknown leg is refused, never run as an empty selection: a typo that
+# selected nothing would otherwise be a gate that passed by running nothing.
+if [[ -n "$LEG" && " $ALL_LEGS " != *" $LEG "* ]]; then
+  printf 'unknown leg: %s\n' "$LEG" >&2
+  usage
+fi
+# An option that its leg does not run would be accepted and do nothing, which is
+# the failure this script exists to refuse. --race is a step of go-test; --fuzz
+# is a step of checks.
+if (( RACE )) && [[ -n "$LEG" && "$LEG" != go-test ]]; then
+  printf -- '--race is a step of the go-test leg, not of %s\n' "$LEG" >&2
+  usage
+fi
+if (( FUZZ )) && [[ -n "$LEG" && "$LEG" != checks ]]; then
+  printf -- '--fuzz is a step of the checks leg, not of %s\n' "$LEG" >&2
+  usage
+fi
+
+# leg_runs <name>: whether the selected leg includes this region. No selection
+# is every leg.
+leg_runs() { [[ -z "$LEG" || "$LEG" == "$1" ]]; }
 
 # count_files reports how many files a directory holds, and zero for a directory
 # that is not there.
@@ -98,6 +158,10 @@ GO_COVER_FLOOR=78
 # fails the gate — timing is a diagnostic, not a check.
 STEP_NAME=""
 STEP_START=0
+# How many steps this invocation entered. The verdict prints it with the leg, and
+# a selected leg that entered none fails: a region wrapper that stopped matching
+# its leg would otherwise leave a job that ran nothing and said PASS.
+STEPS_RUN=0
 step_mark() {
   if [[ -n "${MANVI_STEP_TIMES:-}" && -n "$STEP_NAME" ]]; then
     { printf '%d\t%s\n' "$(( SECONDS - STEP_START ))" "$STEP_NAME" >>"$MANVI_STEP_TIMES"; } 2>/dev/null || true
@@ -184,7 +248,7 @@ fuzz_seconds() {
 export CGO_ENABLED=0
 
 fail() { printf '\n\033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
-step() { step_mark; STEP_NAME="$1"; printf '\n\033[36m==>\033[0m %s\n' "$1"; }
+step() { step_mark; STEP_NAME="$1"; STEPS_RUN=$(( STEPS_RUN + 1 )); printf '\n\033[36m==>\033[0m %s\n' "$1"; }
 
 # A gate that could not run must not be indistinguishable from a gate that ran
 # and passed. The steps below need tools this repository cannot vendor, so a
@@ -227,6 +291,7 @@ cgo_on() {
 }
 in_manvi() { (cd manvi && "$@"); }
 
+if leg_runs checks; then
 step "Release — notes, assets and workflow"
 if have node; then
   node --test scripts/check-release.test.mjs scripts/release-scripts.test.mjs scripts/check-verify-gaps.test.mjs scripts/verify-lib.test.mjs scripts/verify-gates-cannot-run.test.mjs scripts/go-test-report.test.mjs || fail "release checks"
@@ -262,6 +327,9 @@ step "Go — vet"
 # This gate exists because they did once skip: the store package located the
 # Rust workspace with a hand-counted relative path, the path was wrong by one
 # level, and `go test ./...` printed "ok" for a package that executed nothing.
+fi # end leg checks
+
+if leg_runs go-test; then
 step "Go — test"
 # MANVI_TEST_ALLOW_SKIP is the opt-in's name from before testsupport moved to
 # DevCouncil. It no longer opts anything in — testsupport fails a test that
@@ -422,6 +490,9 @@ printf '    covered: %s%% of statements across the tree (floor %s%%); weakest pa
 # encoding/json once the parser was made to refuse everything the struct decoder
 # refused. The first measurement was not wrong, it was measuring the wrong
 # condition.
+fi # end leg go-test
+
+if leg_runs checks; then
 step "Go — module files are tidy"
 # `go mod tidy -diff` exits 1 on a difference and 0 on none, and the diff is the
 # message. It needs the replaced sibling modules to resolve, which the steps
@@ -558,6 +629,9 @@ else
 fi
 
 
+fi # end leg checks
+
+if leg_runs rust; then
 step "Rust — format"
 if (( FIX )); then
   (cd crates && cargo fmt --all)
@@ -574,6 +648,9 @@ step "Rust — clippy"
 # every platform (each OS's backend is cfg-gated), so the same three checks as
 # the crates workspace run here, and its tests are counted for the same reason
 # theirs are: a suite that stopped being compiled in exits 0.
+fi # end leg rust
+
+if leg_runs checks; then
 step "Rust — native broker (format, clippy, test)"
 if (( FIX )); then
   (cd native && cargo fmt --all)
@@ -595,6 +672,9 @@ printf '    covered: %s native broker tests, formatted and clippy-clean\n' "$nat
 # auditing crates/ alone left it unchecked. Unsound advisories are denied too:
 # cargo audit exits 0 on them by default, and RUSTSEC-2026-0386 (tokio AsyncFd
 # I/O safety) is one. Unmaintained stays a printed warning, not a failure.
+fi # end leg checks
+
+if leg_runs rust; then
 step "Rust — supply chain"
 if have cargo-audit; then
   (cd crates && cargo audit --quiet --deny unsound) || fail "cargo audit found a vulnerable or unsound crate in crates/"
@@ -930,6 +1010,9 @@ rm -rf "$grepdir"
 # `devmap status` is the probe rather than `manvi map status`: the latter prints
 # the unavailability and returns nil, so its exit status is 0 whether the index
 # opened or not, and gating on it would rebuild the same lie in a new place.
+fi # end leg rust
+
+if leg_runs checks; then
 step "Repo navigation"
 mapbin="${MANVI_MAP_BINARY:-devmap}"
 graph="${MANVI_GRAPH:-.devcouncil/code_graph.json}"
@@ -1408,6 +1491,9 @@ fi
 # the cell-assembly refusals that keep two protocols out of one cell, and the
 # containment the verifier relies on. An instrument nothing checks is an
 # instrument nobody can trust, so it is checked here with everything else.
+fi # end leg checks
+
+if leg_runs bench; then
 step "Bench — instrument, statistics and cell assembly"
 # The two wire suites are in this list for the same reason the rest of it is.
 # A provider client that talks to no one during verification is never exercised,
@@ -1445,8 +1531,18 @@ if command -v ruff >/dev/null 2>&1; then
 else
   notcovered 'ruff is not installed — bench/ and scripts/*.py are unlinted here'
 fi
+fi # end leg bench
+
+if [[ -n "$LEG" ]] && (( STEPS_RUN == 0 )); then
+  fail "leg ${LEG} entered no step, so nothing ran; its region wrappers no longer select it"
+fi
 
 VERDICT_REACHED=1
+# Which leg this was and how many steps it entered, before the verdict so that
+# scripts/check-verify-gaps.mjs can refuse a CI job whose log names a different
+# leg than the one the job was asked to run. It is not part of the verdict line,
+# which that script and the node tests match by text.
+printf '\nleg: %s (%d step(s) ran)\n' "${LEG:-all}" "$STEPS_RUN"
 # "PASS all gates" is only true when all of them ran. Every NOT COVERED above
 # is collected rather than left to scroll past, and the verdict names them,
 # because a reader who sees a green PASS does not go back and re-read forty

@@ -2,7 +2,11 @@
 # The two guards over a verify.sh log that every verify.yml job runs after
 # verify.sh, so that no job can pass on a gate that did not run.
 #
-#   usage: check-verify-log.sh <verify.log> <runner os label> [default|race|fuzz]
+#   usage: check-verify-log.sh <verify.log> <runner os label> [default|race|fuzz] [leg]
+#
+# leg is the verify.sh leg the job ran (CI runs one per job); omitted, the log is
+# a whole-script run. A named leg is also checked against the leg line verify.sh
+# prints, so a job cannot be handed another leg's log or a leg that ran nothing.
 #
 # verify.sh degrades a gate it cannot run to NOT COVERED and still exits 0,
 # which is the honest answer on a laptop and the wrong one on a runner:
@@ -14,9 +18,10 @@
 # jobs call: a fuzz leg that degraded to NOT COVERED was a green check.
 set -euo pipefail
 
-log="${1:?usage: check-verify-log.sh <verify.log> <runner os label> [mode]}"
-os="${2:?usage: check-verify-log.sh <verify.log> <runner os label> [mode]}"
+log="${1:?usage: check-verify-log.sh <verify.log> <runner os label> [mode] [leg]}"
+os="${2:?usage: check-verify-log.sh <verify.log> <runner os label> [mode] [leg]}"
 mode="${3:-default}"
+leg="${4:-all}"
 here="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ ! -s "$log" ]]; then
@@ -31,4 +36,4 @@ if grep -n 'is not installed' "$log"; then
   exit 1
 fi
 echo "No analysis tool was missing."
-node "$here/check-verify-gaps.mjs" "$log" "$os" "$mode"
+node "$here/check-verify-gaps.mjs" "$log" "$os" "$mode" "$leg"

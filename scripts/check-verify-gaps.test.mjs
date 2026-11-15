@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { compare, parseVerdict } from "./check-verify-gaps.mjs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { LEGS, compare, parseLeg, parseVerdict } from "./check-verify-gaps.mjs";
 
 const EXPECTED = JSON.parse(readFileSync(new URL("./verify-expected-gaps.json", import.meta.url), "utf8"));
 
@@ -100,4 +104,84 @@ test("every expected skip names a Go test that still exists", () => {
       .some((file) => new RegExp(`^func ${top}\\(`, "m").test(readFileSync(new URL(file, dir), "utf8")));
     assert.ok(declared, `${name}: no func ${top} in ${pkg}; delete the stale entry`);
   }
+});
+
+// ---------------------------------------------------------------- legs
+//
+// CI runs one verify.sh leg per job. What is checked for a leg is that leg's
+// gaps and skips, and a log that does not say it was that leg is refused.
+
+const GUARD = fileURLToPath(new URL("./check-verify-gaps.mjs", import.meta.url));
+
+test("every expected entry names known legs, and gaps and skips sit where verify.sh produces them", () => {
+  for (const entry of [...EXPECTED.gaps, ...EXPECTED.skips]) {
+    const name = entry.text ?? entry.test;
+    assert.ok(Array.isArray(entry.legs) && entry.legs.length > 0, `${name} names no leg`);
+    for (const leg of entry.legs) assert.ok(LEGS.includes(leg), `${name} names an unknown leg: ${leg}`);
+  }
+  // A skip is a Go test that skipped, which only the go-test leg runs; the
+  // gaps come from the wire and navigation steps, which are in checks.
+  for (const s of EXPECTED.skips) assert.deepEqual(s.legs, ["go-test"], s.test);
+  for (const g of EXPECTED.gaps) assert.deepEqual(g.legs, ["checks"], g.text);
+});
+
+test("a leg is compared only against its own entries", () => {
+  const found = parseVerdict(UBUNTU);
+  // The whole-script verdict holds both legs' gaps, so judged as one leg each
+  // half of it is unexpected there.
+  const asGoTest = compare(found, EXPECTED, "ubuntu-latest", "default", "go-test");
+  assert.equal(asGoTest.unexpectedGaps.length, 3, "checks-leg gaps must not be excused in the go-test leg");
+  assert.equal(asGoTest.unexpectedSkips.length, 0);
+  const asChecks = compare(found, EXPECTED, "ubuntu-latest", "default", "checks");
+  assert.equal(asChecks.unexpectedGaps.length, 0);
+  assert.equal(asChecks.unexpectedSkips.length, UBUNTU_SKIPS.length, "go-test-leg skips must not be excused in the checks leg");
+});
+
+test("an entry that names no leg excuses nothing in a leg run, and everything in a whole run", () => {
+  const found = { gaps: ["g"], skips: [] };
+  const expected = { gaps: [{ text: "g", os: ["ubuntu-latest"] }], skips: [] };
+  assert.deepEqual(compare(found, expected, "ubuntu-latest", "default", "checks").unexpectedGaps, ["g"]);
+  assert.deepEqual(compare(found, expected, "ubuntu-latest", "default", "all").unexpectedGaps, []);
+  assert.deepEqual(compare(found, expected, "ubuntu-latest").unexpectedGaps, []);
+});
+
+test("the leg line is read, and anything that is not that line is not", () => {
+  assert.deepEqual(parseLeg("noise\n\x1b[0mleg: go-test (9 step(s) ran)\nPASS\n"), { leg: "go-test", steps: 9 });
+  assert.deepEqual(parseLeg("leg: all (39 step(s) ran)"), { leg: "all", steps: 39 });
+  assert.equal(parseLeg("PASS all gates"), null);
+  assert.equal(parseLeg("  leg: rust (2 step(s) ran)"), null, "only the line verify.sh prints, at the start of a line");
+});
+
+/** Runs the guard CLI on a log. */
+function guard(log, ...args) {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), "leg-log-")), "verify.log");
+  writeFileSync(file, log);
+  const run = spawnSync(process.execPath, [GUARD, file, ...args], { encoding: "utf8" });
+  return { status: run.status, out: `${run.stdout}${run.stderr}` };
+}
+const PASS = "\x1b[32mPASS\x1b[0m all gates\n";
+
+test("the guard CLI accepts a leg log that names its leg, and refuses the three ways a leg log can be wrong", () => {
+  const ok = guard(`leg: bench (2 step(s) ran)\n${PASS}`, "ubuntu-latest", "default", "bench");
+  assert.equal(ok.status, 0, ok.out);
+
+  const wrong = guard(`leg: rust (7 step(s) ran)\n${PASS}`, "ubuntu-latest", "default", "bench");
+  assert.equal(wrong.status, 2);
+  assert.match(wrong.out, /asked to run the bench leg and its log is the rust leg's/);
+
+  const empty = guard(`leg: bench (0 step(s) ran)\n${PASS}`, "ubuntu-latest", "default", "bench");
+  assert.equal(empty.status, 2);
+  assert.match(empty.out, /ran no step/);
+
+  const unsaid = guard(PASS, "ubuntu-latest", "default", "bench");
+  assert.equal(unsaid.status, 2);
+  assert.match(unsaid.out, /does not say which leg it ran/);
+});
+
+test("the guard CLI keeps judging a whole-script log with no leg, and refuses an unknown leg", () => {
+  assert.equal(guard(PASS, "ubuntu-latest", "default").status, 0);
+  assert.equal(guard(PASS, "ubuntu-latest", "default", "all").status, 0);
+  const unknown = guard(PASS, "ubuntu-latest", "default", "nonsense");
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.out, /usage:/);
 });
