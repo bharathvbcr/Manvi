@@ -6,6 +6,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
@@ -50,6 +51,14 @@ type App struct {
 	now func() time.Time
 
 	tick int
+	// emptyAt is the tick at which the screen last had no session on it, which
+	// is where the mark's unfold starts: zero for a launch into the empty
+	// screen, and the tick the last session was closed after that. nudgeAt is
+	// the tick of the last input on that screen, which the mark answers with a
+	// glint. Both are read only while there are no sessions, where every tick
+	// already repaints, so neither adds a repaint.
+	emptyAt int
+	nudgeAt int
 	// tickMoved is set by each ActionTick; see TickMoved.
 	tickMoved bool
 	width     int
@@ -276,6 +285,12 @@ func (a *App) Dispatch(act Action) []Effect {
 	switch act.(type) {
 	case ActionKey, ActionRune, ActionPaste, ActionClick, ActionScroll:
 		a.noteOverlayInput()
+		// Input on the empty screen nudges the mark. Not while an overlay is
+		// open: the operator is then typing into the overlay, which is drawn
+		// over the mark, and a glint behind it would be motion with no reader.
+		if len(a.views) == 0 && a.overlay == nil && logo.NudgeDue(a.tick, a.nudgeAt) {
+			a.nudgeAt = a.tick
+		}
 	}
 	switch t := act.(type) {
 	case ActionTick:
@@ -643,6 +658,9 @@ func (a *App) RemoveSession(id string) {
 			a.leaveCurrent()
 		}
 		a.views = append(a.views[:i], a.views[i+1:]...)
+		if len(a.views) == 0 {
+			a.emptyAt = a.tick
+		}
 		switch {
 		case i < a.active:
 			// The index named the view that was on screen; the splice moved

@@ -77,8 +77,15 @@ func (a *App) drawEmpty(b *render.Buffer, r render.Rect) {
 	if top < r.Y {
 		top = r.Y
 	}
-	used := logo.Draw(b, render.Rect{X: r.X, Y: top, W: r.W, H: r.H - (top - r.Y)},
-		th.Logo(), blocks, "the DevCouncil execution harness")
+	// The ribbon draws itself in when this screen appears, carries a glint now
+	// and then, and answers a keypress with another. All of it is the mark's
+	// own function of the tick, and with animation off it is the still mark.
+	motion := logo.Motion{}
+	if a.fxOn() {
+		motion = logo.Motion{Live: true, Tick: a.tick, Start: a.emptyAt, Nudge: a.nudgeAt}
+	}
+	used := logo.DrawAt(b, render.Rect{X: r.X, Y: top, W: r.W, H: r.H - (top - r.Y)},
+		th.Logo(), blocks, "the DevCouncil execution harness", motion)
 
 	// The hint types itself out once at startup — a first-run cue that the
 	// keys on it are live, timed to finish inside the first couple of seconds.

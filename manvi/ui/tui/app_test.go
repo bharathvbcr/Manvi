@@ -993,13 +993,41 @@ func TestEmptyPaneDrawsTheMark(t *testing.T) {
 	b := render.NewBuffer(80, 24)
 	a.Draw(b)
 	got := bufferText(b)
-	if !strings.Contains(got, "█") {
-		t.Fatalf("the empty pane drew no tile:\n%s", got)
+	// The top of the ribbon's first peak and the foot of its first leg: two
+	// rows of the six-row mark, so this is the full rung and not a smaller one.
+	for _, want := range []string{"▐███▙", "▟██▛"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the empty pane drew no ribbon (missing %q):\n%s", want, got)
+		}
 	}
 	for _, want := range []string{"manvi", "the DevCouncil execution harness", "ctrl+n"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("the empty pane is missing %q:\n%s", want, got)
 		}
+	}
+
+	// The ribbon is a slanted shape inside a rectangle of cells, and the cells
+	// it leaves empty are still written. On the rows the mark occupies, none
+	// of them may be left on the terminal's own background: this theme paints
+	// its background, so such a cell is a hole in the pane.
+	rows := 0
+	for y := range b.H {
+		line := ""
+		for x := range b.W {
+			line += string(b.Cell(x, y).R)
+		}
+		if !strings.ContainsAny(line, "▟▙▛▜█") {
+			continue
+		}
+		rows++
+		for x := range b.W {
+			if b.Cell(x, y).Style.Bg.IsDefault() {
+				t.Fatalf("row %d column %d of the mark is on the terminal's own background:\n%s", y, x, got)
+			}
+		}
+	}
+	if rows < 6 {
+		t.Fatalf("found %d rows of the mark, want its six:\n%s", rows, got)
 	}
 
 	// Narrow enough that the tile cannot fit: the name survives, and the frame
@@ -1008,6 +1036,149 @@ func TestEmptyPaneDrawsTheMark(t *testing.T) {
 	a.Draw(narrow)
 	if !strings.Contains(bufferText(narrow), "manvi") {
 		t.Fatal("a narrow pane dropped the name as well as the tile")
+	}
+}
+
+// The mark on the empty screen draws itself in from the moment the screen
+// empties, then holds still, and answers a keypress with a glint. This is the
+// app's half of that: the start and nudge ticks it hands the mark. The mark's
+// own half, what each tick looks like, is pinned in the logo package.
+func TestEmptyPaneMarkUnfoldsAndAnswersInput(t *testing.T) {
+	a, _ := newTestApp()
+	th := a.Theme
+	th.Unicode = true
+	a.Theme = th
+	faces := th.Logo()
+
+	// frame draws the screen and counts the ribbon's cells, and how many of
+	// them are in a colour other than the two faces' own.
+	frame := func() (drawn, lit int, text string) {
+		b := render.NewBuffer(80, 24)
+		a.Draw(b)
+		for y := range b.H {
+			for x := range b.W {
+				c := b.Cell(x, y)
+				if !strings.ContainsRune("▘▝▀▖▌▞▛▗▚▐▜▄▙▟█", c.R) {
+					continue
+				}
+				drawn++
+				if c.Style.Fg != faces.Lit.Fg && c.Style.Fg != faces.Shade.Fg {
+					lit++
+				}
+			}
+		}
+		return drawn, lit, bufferText(b)
+	}
+	ticks := func(n int) {
+		for range n {
+			a.Dispatch(ActionTick{})
+		}
+	}
+
+	// A session is open for a while first, so the unfold has to start when the
+	// screen empties and not at launch, fifty ticks earlier.
+	ticks(50)
+	for _, v := range a.Views() {
+		a.RemoveSession(v.ID)
+	}
+	drawn, _, text := frame()
+	if drawn != 0 {
+		t.Fatalf("%d ribbon cells are drawn on the frame the screen emptied:\n%s", drawn, text)
+	}
+	if !strings.Contains(text, "manvi") {
+		t.Fatalf("the name is missing while the ribbon unfolds:\n%s", text)
+	}
+
+	ticks(6)
+	half, _, _ := frame()
+	ticks(40)
+	whole, lit, text := frame()
+	if half == 0 || half >= whole {
+		t.Fatalf("halfway through the unfold %d cells are drawn, %d once settled", half, whole)
+	}
+	if lit != 0 {
+		t.Fatalf("%d cells are lit on a settled frame with no glint due:\n%s", lit, text)
+	}
+
+	// A key the empty screen has no use for still reaches the mark.
+	a.Dispatch(ActionRune{Runes: []rune{'x'}})
+	ticks(3)
+	drawn, lit, text = frame()
+	if drawn != whole {
+		t.Fatalf("a keypress changed the ribbon from %d cells to %d:\n%s", whole, drawn, text)
+	}
+	if lit == 0 {
+		t.Fatal("a keypress on the empty screen sent no glint")
+	}
+	ticks(20)
+	if _, lit, _ = frame(); lit != 0 {
+		t.Fatalf("%d cells are still lit after the nudged glint should have left", lit)
+	}
+
+	// Someone typing steadily must still see the light travel. Each nudge
+	// restarts a glint at the foot of the ribbon, so answering every keypress
+	// held it there: one key a tick, and the right half of the mark never lit.
+	right := func() int {
+		b := render.NewBuffer(80, 24)
+		a.Draw(b)
+		lo, hi := b.W, 0
+		for y := range b.H {
+			for x := range b.W {
+				if strings.ContainsRune("▟▙▛▜█", b.Cell(x, y).R) {
+					lo, hi = min(lo, x), max(hi, x)
+				}
+			}
+		}
+		n := 0
+		for y := range b.H {
+			for x := (lo + hi + 1) / 2; x <= hi; x++ {
+				c := b.Cell(x, y)
+				if strings.ContainsRune("▘▝▀▖▌▞▛▗▚▐▜▄▙▟█", c.R) &&
+					c.Style.Fg != faces.Lit.Fg && c.Style.Fg != faces.Shade.Fg {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	reached := 0
+	for range 30 {
+		a.Dispatch(ActionRune{Runes: []rune{'x'}})
+		ticks(1)
+		reached += right()
+	}
+	if reached == 0 {
+		t.Fatal("thirty keys at one a tick never let a glint reach the right half of the ribbon")
+	}
+
+	// Typing into the palette is not a nudge: the palette is drawn over the
+	// mark. The key that opens it is, since nothing covered the mark then.
+	ticks(40)
+	key(a, "ctrl+p")
+	opened := a.nudgeAt
+	if opened != a.tick {
+		t.Fatalf("the key that opened the palette nudged at tick %d, not %d", opened, a.tick)
+	}
+	ticks(30)
+	typeText(a, "doctor")
+	if a.nudgeAt != opened {
+		t.Fatal("typing into the palette nudged the mark behind it")
+	}
+	key(a, "esc")
+	ticks(1)
+
+	// With animation off the mark is whole and still on the very frame the
+	// screen empties, however the ticks stand.
+	b, _ := newTestApp()
+	b.Theme = th
+	b.fx = false
+	for _, v := range b.Views() {
+		b.RemoveSession(v.ID)
+	}
+	a = b
+	if drawn, lit, text = frame(); drawn != whole || lit != 0 {
+		t.Fatalf("with animation off the first empty frame has %d ribbon cells (%d lit), want %d and none:\n%s",
+			drawn, lit, whole, text)
 	}
 }
 

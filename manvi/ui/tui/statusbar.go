@@ -6,6 +6,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
@@ -85,8 +86,10 @@ func (s Status) StrictSummary() (bool, string) {
 //
 // spark is the recent tokens-per-tick series, drawn as a sparkline while a
 // turn runs so "the model is working" has a shape rather than just a spinner.
-// fxOn gates the motion: the pulse on the busy label and the marquee on a
-// label too long for its strip.
+// fxOn gates the motion: the pulse on the busy label, the marquee on a label
+// too long for its strip, and the mark standing in for the spinner. The
+// spinner itself is not gated. It is how a running turn is told from a hung
+// one, so with motion off it is what is drawn.
 func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick int, spark []float64, fxOn bool) {
 	if r.Empty() {
 		return
@@ -98,6 +101,10 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 	b.Fill(r, ' ', base)
 
 	line := render.Line{}
+	// ribbon is the mark drawn as the busy indicator, when it can be, and
+	// busyAt the span of line it would replace.
+	var ribbon render.Line
+	busyAt := -1
 
 	// Posture is first and it is a chip, not a word, because it is the single
 	// fact that changes what everything else on this bar means.
@@ -135,9 +142,13 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 			busyFg = busyFg.Blend(th.Fg, fx.Pulse(tick, 16)*0.45)
 			label = fx.Marquee(label, 32, tick)
 		}
+		// The spinner is one span, so the mark can take its place below once
+		// the whole row has been measured.
+		busyAt = len(line)
 		line = line.Append(render.Spinner(g.Spinner, tick)+" ",
 			render.Style{Fg: busyFg, Bg: bg, Attrs: render.Bold}).
 			Append(label+" ", render.Style{Fg: busyFg, Bg: bg})
+		ribbon = busyRibbon(th, st, bg, tick, fxOn)
 	} else {
 		line = line.Append(g.Pass+" ready ", render.Style{Fg: th.FgSubtle, Bg: bg})
 	}
@@ -232,8 +243,53 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 		right = right.Append(itoa(st.Sessions)+" sessions ", base)
 	}
 
-	line.Truncate(r.W-right.Width()-1).Draw(b, r.X, r.Y)
+	// The mark is three cells wider than the spinner. It takes the spinner's
+	// place only where the row still fits whole with it: on a row that is
+	// already being cut short, three more cells would come off the branch or
+	// the task, and those are worth more than the decoration.
+	budget := r.W - right.Width() - 1
+	if ribbon != nil && line.Width()-line[busyAt:busyAt+1].Width()+ribbon.Width() <= budget {
+		swapped := make(render.Line, 0, len(line)+len(ribbon))
+		swapped = append(swapped, line[:busyAt]...)
+		swapped = append(swapped, ribbon...)
+		line = append(swapped, line[busyAt+1:]...)
+	}
+	line.Truncate(budget).Draw(b, r.X, r.Y)
 	right.Draw(b, r.Right()-right.Width(), r.Y)
+}
+
+// busyRibbon is the mark as the busy indicator: the one-line ribbon with light
+// running round it, and the cell after it. It returns nil when the mark cannot
+// do that job, and the caller keeps the spinner.
+//
+// A busy indicator has to move, and the ribbon's only motion is colour. So it
+// is used only when it has a colour to move toward: animation on, a terminal
+// that draws the blocks, and a theme that lends a glint, which the
+// sixteen-colour one does not. That choice is made from the theme's own
+// colours and not from the stalled ones below, so a stall cannot change it.
+// The caller's width rule still can: a row that stops fitting whole part way
+// through a turn, because the stall label appeared or a counter grew, goes
+// back to the spinner.
+//
+// bg is the background of the row the mark is set in.
+func busyRibbon(th Theme, st Status, bg render.Color, tick int, fxOn bool) render.Line {
+	faces := th.Logo()
+	if !fxOn || !th.LogoBlocks() || faces.Glint.IsDefault() {
+		return nil
+	}
+	// The ribbon's slanted blocks are half empty, so each face is drawn on the
+	// row's own background, which here is not the pane's.
+	faces.Lit.Bg, faces.Shade.Bg = bg, bg
+	if st.StallSecs >= 30 {
+		// A turn that has stopped making progress turns the spinner the
+		// warning colour, and the mark follows: brand red running happily
+		// beside "no progress" would be two answers to one question.
+		faces.Lit.Fg = th.Warning
+		faces.Shade.Fg = th.Warning.Blend(bg, 0.5)
+		faces.Glint = th.Fg
+	}
+	return logo.Ribbon(faces, logo.Motion{Live: true, Tick: tick, Working: true}).
+		Append(" ", render.Style{Bg: bg})
 }
 
 // DrawStrictBanner paints the persistent warning that this run's results are

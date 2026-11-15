@@ -85,13 +85,32 @@ const (
 	SelectionLight = Red100
 )
 
-// The logo's own colours. The mark is a filled tile, so it needs a fill and a
-// glyph colour rather than a single accent, and the tile is the same deep red
-// on both backgrounds — it is a solid shape, so it does not need to change with
-// the surface behind it.
+// The plate behind the published mark (ui/logo/svg.go). The mark there is a
+// ribbon in the ramp's own reds, so the plate has to be dark for both of its
+// tones to read, and it is a wine-tinted near-black rather than a neutral one
+// so the plate still belongs to the ramp. These two are the only colours in
+// this file that are not steps of it. They were picked by eye against the
+// ribbon when the mark was drawn; the ramp's own darkest step, Red950, was not
+// tried behind it.
 const (
-	TileFill      = Red700
-	TileGlyph     = Red050
+	PlateTop    = "#24131b"
+	PlateBottom = "#0c090c"
+)
+
+// The terminal logo's own colours. That mark is a folded ribbon, so it needs
+// two reds rather than a single accent: one for the legs that catch the light
+// and one for the legs in shade. They are the same two on both backgrounds —
+// the ribbon is a solid shape, so it does not need to change with the surface
+// behind it. The lit face is the accent a dark surface already uses, and the
+// shaded face is the deep red that surfaces use for filled shapes.
+//
+// The glint is the pale red the published mark's lit legs fade to at their
+// top. In the terminal it is never a fill: it is the colour a face moves
+// toward for a moment while light crosses the ribbon.
+const (
+	RibbonLit     = Red400
+	RibbonShade   = Red700
+	RibbonGlint   = Red200
 	WordmarkDark  = Red400
 	WordmarkLight = Red600
 )
