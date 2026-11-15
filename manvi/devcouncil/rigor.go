@@ -90,12 +90,14 @@ func (c rigorClient) effectiveTimeout() time.Duration {
 		step := 180 * time.Second
 		if raw := strings.TrimSpace(os.Getenv("DC_LEAN_KERNEL_TIMEOUT_MS")); raw != "" {
 			if ms, err := strconv.ParseUint(raw, 10, 64); err == nil {
-				if ms < 50 {
-					ms = 50
-				} else if ms > 600_000 {
-					ms = 600_000
+				switch {
+				case ms < 50:
+					step = 50 * time.Millisecond
+				case ms > 600_000:
+					step = 600 * time.Second
+				default:
+					step = time.Duration(ms) * time.Millisecond
 				}
-				step = time.Duration(ms) * time.Millisecond
 			}
 		}
 		expanded := step + 60*time.Second

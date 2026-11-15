@@ -60,3 +60,37 @@ func TestRigorDefaultTimeoutScalesWhenLeanKernelModeEnabled(t *testing.T) {
 		t.Fatalf("effectiveTimeout() under DC_VERIFY_LEAN_KERNEL=auto = %v, want >= 210s for lean4checker --fresh replay", got)
 	}
 }
+
+// The Lean step is DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s, 180s when
+// it is unset or not an unsigned decimal; the deadline is that plus 60s and
+// never under 240s.
+func TestRigorLeanTimeoutClampsTheKernelStep(t *testing.T) {
+	t.Setenv("DC_VERIFY_LEAN_KERNEL", "require")
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"", 240 * time.Second},
+		{"0", 240 * time.Second},
+		{"180000", 240 * time.Second},
+		{"180001", 240*time.Second + time.Millisecond},
+		{"300000", 360 * time.Second},
+		{"600000", 660 * time.Second},
+		{"600001", 660 * time.Second},
+		{"18446744073709551615", 660 * time.Second},
+		{"18446744073709551616", 240 * time.Second},
+		{"+300000", 240 * time.Second},
+		{"-300000", 240 * time.Second},
+		{"5m", 240 * time.Second},
+		{" 300000 ", 360 * time.Second},
+	} {
+		t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", tc.raw)
+		if got := (rigorClient{}).effectiveTimeout(); got != tc.want {
+			t.Errorf("DC_LEAN_KERNEL_TIMEOUT_MS=%q: effectiveTimeout() = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "600000")
+	if got := (rigorClient{Timeout: 5 * time.Second}).effectiveTimeout(); got != 5*time.Second {
+		t.Errorf("an explicit Timeout must win: got %v", got)
+	}
+}
