@@ -14,6 +14,18 @@
 # ratchet and the nilaway ceiling are counts, and a count taken with whichever
 # release `@latest` resolved to that day is a measurement of the release. A pin
 # moves in a change that also re-measures those two numbers.
+#
+# Caches are restored and saved by separate steps, and a save runs once the
+# step that fills the cache has succeeded, whatever the job's verdict.
+# `actions/cache` and setup-go's built-in cache both save in a post step that
+# only runs when the whole job succeeded, and this gate is the one job where a
+# red run is routine: while it was red nothing was ever saved, so every run
+# recompiled cargo-audit, the Rust workspace, the lint tools and the whole Go
+# tree from nothing (the "Analysis tools" step alone was 4-5 minutes). A build
+# cache is content-addressed, so what a finished run built is as valid as what
+# a green run built; it is only the verdict that is red. What is not saved is a
+# run that stopped before the cache was full, because the exact key is never
+# refreshed once someone has taken it.
 name: verify
 
 on:
@@ -42,15 +54,30 @@ permissions:
 # where an unnoticed substitution would have a credential-bearing token in
 # scope. The version each SHA corresponds to is in the comment beside it so a
 # reader can tell what is pinned without resolving the hash; dependabot keeps
-# both halves current.
+# both halves current. actions/cache/restore and actions/cache/save are
+# directories of the same repository, so they carry the same SHA as actions/cache.
 
 jobs:
+  # verify.sh is one script and one leg per job here: `--leg` selects a region of
+  # it, so the legs run in parallel and this gate takes as long as its slowest leg
+  # rather than the sum. (The windows job runs alongside it and is bounded
+  # separately; the workflow as a whole is as slow as the slower of the two.)
+  # Every step is in exactly one leg and every leg is listed
+  # below; scripts/verify-lib.test.mjs fails when a step is in none, when a leg
+  # has no step, or when this matrix and `verify.sh --list-legs` disagree. A leg
+  # that ran no step fails in verify.sh and again in check-verify-log.sh.
+  #
+  # What each leg needs is declared in the matrix, so a leg installs and caches
+  # only that: `go` legs compile Go and keep a Go cache, `cargo` is the Rust
+  # target directory the leg builds into, `tools` the installed analysis tools.
+  # Each cache is keyed by leg as well as OS, so two legs never race to save one
+  # key, and a leg's cache holds what that leg builds.
   gate:
-    name: verify.sh (${{ matrix.os }})
+    name: ${{ matrix.leg }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # An explicit bound, because the default is six hours and a wedged step
-    # would hold the runner for all of them. The run is measured in tens of
-    # minutes; this is above that by a wide margin and exists to bound a wedge.
+    # would hold the runner for all of them. A leg is measured in minutes; this
+    # is above that by a wide margin and exists to bound a wedge.
     timeout-minutes: 90
     env:
       # fetch-modules.sh checks the pins out first. This fails the job when
@@ -63,6 +90,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        leg: [go-test, rust, checks, bench]
+        include:
+          - leg: go-test
+            go: true
+            cargo: crates/target
+          - leg: rust
+            go: true
+            cargo: crates/target
+            tools: ~/.cargo/bin/cargo-audit
+          - leg: checks
+            go: true
+            cargo: native/target
+            tools: ~/go/bin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,11 +116,34 @@ jobs:
         run: bash scripts/fetch-modules.sh
 
       # The version comes from go.mod so this file cannot drift away from the
-      # toolchain the module declares.
+      # toolchain the module declares. Its own cache is off: it would save in a
+      # post step that never runs on a red job. The explicit pair below does.
+      # Every leg gets Go: the bench leg's suites do not compile it, but the
+      # toolchain is what `go env` below and the shared prelude assume.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: manvi/go.mod
-          cache-dependency-path: manvi/go.sum
+          cache: false
+
+      - name: Go cache locations
+        id: go
+        run: |
+          {
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+            echo "version=$(go env GOVERSION)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go caches
+        id: go-cache
+        if: matrix.go
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go.outputs.build }}
+            ${{ steps.go.outputs.mod }}
+          key: go-${{ matrix.os }}-${{ matrix.leg }}-${{ hashFiles('manvi/go.mod', 'manvi/go.sum') }}
+          restore-keys: go-${{ matrix.os }}-${{ matrix.leg }}-
 
       # No third-party action for Rust: both runner images ship rustup, and a
       # marketplace action here would be a supply-chain dependency bought for
@@ -105,24 +168,30 @@ jobs:
       # package.json's packageManager field.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
-      # cargo-audit is a compile, not a download, and it is the same compile on
-      # every run. Keyed on the toolchain so a rustup bump rebuilds it.
-      - name: Cache cargo-audit
-        id: cache-cargo-audit
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The analysis tools are compiled, and it is the same compile on every run.
+      # The checks leg runs the Go ones and the rust leg runs cargo-audit, so each
+      # leg restores only its own. Keyed on the Go release as well as the pins:
+      # golangci-lint and nilaway type-check against the standard library they
+      # were built with.
+      - name: Restore analysis tools
+        id: tools
+        if: matrix.tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-${{ matrix.os }}-${{ hashFiles('scripts/tool-versions.env') }}
+          path: ${{ matrix.tools }}
+          key: tools-${{ matrix.os }}-${{ matrix.leg }}-${{ steps.go.outputs.version }}-${{ hashFiles('scripts/tool-versions.env') }}
 
-      - name: Cache Rust build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore Rust build
+        id: cargo-cache
+        if: matrix.cargo
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            crates/target
-          key: cargo-${{ matrix.os }}-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: cargo-${{ matrix.os }}-
+            ${{ matrix.cargo }}
+          key: cargo-${{ matrix.os }}-${{ matrix.leg }}-${{ hashFiles('crates/Cargo.lock', 'native/Cargo.lock', 'scripts/tool-versions.env') }}
+          restore-keys: cargo-${{ matrix.os }}-${{ matrix.leg }}-
 
       # Every tool verify.sh will otherwise report as NOT COVERED, at the
       # versions in scripts/tool-versions.env. They used to float so the gate
@@ -130,20 +199,62 @@ jobs:
       # in review; what that caught instead was a red main on days nothing
       # changed, and a debt ratchet whose numbers belonged to the release.
       # Upgrading is a pull request that moves the pin and the counts together.
+      # Skipped on a cache hit; a tool the cache failed to supply is still caught
+      # afterwards by check-verify-log.sh, which fails on "is not installed".
       - name: Analysis tools
+        if: matrix.tools && steps.tools.outputs.cache-hit != 'true'
+        env:
+          LEG: ${{ matrix.leg }}
         run: |
           . scripts/tool-versions.env
-          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION"
-          go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
-          go install "go.uber.org/nilaway/cmd/nilaway@$NILAWAY_VERSION"
-          if [ ! -x "$HOME/.cargo/bin/cargo-audit" ] || ! cargo audit --version | grep -qF "$CARGO_AUDIT_VERSION"; then
-            cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION" --force
+          if [ "$LEG" = checks ]; then
+            go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION"
+            go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
+            go install "go.uber.org/nilaway/cmd/nilaway@$NILAWAY_VERSION"
           fi
+          if [ "$LEG" = rust ]; then
+            if [ ! -x "$HOME/.cargo/bin/cargo-audit" ] || ! cargo audit --version | grep -qF "$CARGO_AUDIT_VERSION"; then
+              cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION" --force
+            fi
+          fi
+
+      - name: Save analysis tools
+        if: matrix.tools && steps.tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ matrix.tools }}
+          key: tools-${{ matrix.os }}-${{ matrix.leg }}-${{ steps.go.outputs.version }}-${{ hashFiles('scripts/tool-versions.env') }}
+
+      # ruff is the one analysis tool this workflow never installed, so every run
+      # ended "ruff is not installed" and the log guard rejected it as a
+      # provisioning failure: no run of this job could be green. RUFF_VERSION has
+      # been pinned in tool-versions.env since the lint was added; this is the
+      # install it was waiting for. Only the bench leg runs ruff. pipx ships on
+      # both runner images. Its home and bin dir are set so the install lands
+      # somewhere the runner user owns and PATH names, whatever the image
+      # presets. A wheel, not a compile, so it is not cached.
+      - name: Python lint tool
+        if: matrix.leg == 'bench'
+        env:
+          PIPX_HOME: ${{ runner.temp }}/pipx
+          PIPX_BIN_DIR: ${{ runner.temp }}/pipx-bin
+        run: |
+          . scripts/tool-versions.env
+          pipx install "ruff==$RUFF_VERSION"
+          echo "$PIPX_BIN_DIR" >> "$GITHUB_PATH"
+          "$PIPX_BIN_DIR/ruff" --version | grep -F "$RUFF_VERSION"
+
+      # What the tools need around them, every run: the tools on PATH, and on
+      # Linux the sandbox the bench stress suite refuses to run without.
+      - name: Sandbox and PATH
+        run: |
           # bench/stress_test.py refuses an uncontained Linux shell; macOS
           # already has sandbox-exec on the runner image.
           if [ "$(uname -s)" = Linux ]; then
-            sudo apt-get update
-            sudo apt-get install -y bubblewrap
+            if ! command -v bwrap >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y bubblewrap
+            fi
             # Ubuntu's AppArmor refuses unprivileged user namespaces, so
             # bwrap cannot write its uid map and every sandboxed bench check
             # fails with "setting up uid map: Permission denied". The stress
@@ -156,22 +267,57 @@ jobs:
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       # Tee rather than pipe: the exit status being checked is verify.sh's own,
-      # and `set -o pipefail` is not on by default in an Actions step.
+      # and `set -o pipefail` is not on by default in an Actions step. The two
+      # MANVI_ variables ask verify.sh for a per-step time table and the Go
+      # event stream; both are side files, so verify.log is unchanged.
       - name: verify.sh
-        run: ./verify.sh 2>&1 | tee verify.log; exit "${PIPESTATUS[0]}"
+        id: verify
+        env:
+          MANVI_STEP_TIMES: ${{ runner.temp }}/step-times.tsv
+          MANVI_GO_TEST_JSON_OUT: ${{ runner.temp }}/go-test.json
+        run: ./verify.sh --leg ${{ matrix.leg }} 2>&1 | tee verify.log; exit "${PIPESTATUS[0]}"
+
+      # Saved only when verify.sh itself succeeded — which is not the same as the
+      # job being green: the log guard that follows can fail a run whose script
+      # passed, and that run's trees are complete. What must not be saved is the
+      # tree of a run that stopped early. The exact key is taken by whoever saves
+      # first and never refreshed, so a run that died in the Go tests would freeze
+      # a cache that has no lint objects in it, and every later run would see a
+      # hit and never fill it. A run that failed early therefore leaves that
+      # leg's cache cold for the next one, which is slower and not wrong — and
+      # because the keys are per leg, it leaves only that leg cold.
+      - name: Save Go caches
+        if: ${{ !cancelled() && matrix.go && steps.verify.outcome == 'success' && steps.go-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go.outputs.build }}
+            ${{ steps.go.outputs.mod }}
+          key: go-${{ matrix.os }}-${{ matrix.leg }}-${{ hashFiles('manvi/go.mod', 'manvi/go.sum') }}
+
+      - name: Save Rust build
+        if: ${{ !cancelled() && matrix.cargo && steps.verify.outcome == 'success' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ matrix.cargo }}
+          key: cargo-${{ matrix.os }}-${{ matrix.leg }}-${{ hashFiles('crates/Cargo.lock', 'native/Cargo.lock', 'scripts/tool-versions.env') }}
 
       # verify.sh always ends with gates it could not run — the hosted provider
       # adapters are checked against scripted servers, devmap is not built by
       # this repository, and no local model server is listening here. Those are
-      # expected and listed, with reasons, in scripts/verify-expected-gaps.json.
-      # A missing *analysis tool* is not: it means the step above failed to
-      # provision and the gate that did not run would have been read as a gate
-      # that passed. Any other NOT COVERED line, and any skipped test that is
-      # not listed for this runner, fails here instead of passing as green. The
-      # same script guards the deep jobs below.
+      # expected and listed, with reasons and the leg each belongs to, in
+      # scripts/verify-expected-gaps.json. A missing *analysis tool* is not: it
+      # means the step above failed to provision and the gate that did not run
+      # would have been read as a gate that passed. Any other NOT COVERED line,
+      # and any skipped test that is not listed for this runner and leg, fails
+      # here instead of passing as green; so does a log that is not this leg's,
+      # or a leg that ran no step. The same script guards the deep jobs below.
       - name: Every gate ran and every gap is named
         if: always()
-        run: scripts/check-verify-log.sh verify.log ${{ matrix.os }} default
+        run: scripts/check-verify-log.sh verify.log ${{ matrix.os }} default ${{ matrix.leg }}
 
       # The colour codes are stripped first, and the pattern deliberately does
       # not start at "PASS". verify.sh writes that verdict as
@@ -186,7 +332,7 @@ jobs:
         run: |
           sed $'s/\033\[[0-9;]*m//g' verify.log > verify.plain
           {
-            echo '### verify.sh — ${{ matrix.os }}'
+            echo '### verify.sh ${{ matrix.leg }} — ${{ matrix.os }}'
             echo
             echo '```'
             grep -A 100 'with gates that did not run' verify.plain \
@@ -194,11 +340,48 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Where the minutes went, so the next change to this pipeline starts from
+      # a measurement. A missing table says so; it does not read as "nothing slow".
+      - name: Where the time went
+        if: always()
+        run: |
+          {
+            echo '### step times — ${{ matrix.leg }} — ${{ matrix.os }}'
+            echo
+            if [ -s "$RUNNER_TEMP/step-times.tsv" ]; then
+              echo '| seconds | step |'
+              echo '| ---: | --- |'
+              sort -rn "$RUNNER_TEMP/step-times.tsv" | awk -F'\t' '{ printf "| %d | %s |\n", $1, $2 }'
+            else
+              echo 'verify.sh recorded no step times.'
+            fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$RUNNER_TEMP/go-test.json" ]; then
+            GO_TEST_REPORT_TITLE='go test — ${{ matrix.os }}' node scripts/go-test-report.mjs report "$RUNNER_TEMP/go-test.json" >> "$GITHUB_STEP_SUMMARY"
+          elif [ '${{ matrix.leg }}' = go-test ]; then
+            # Only this leg runs the Go suite; saying it of the others would be noise.
+            echo 'The Go test run left no event stream, so there is no slowest-test report.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: verify-log-${{ matrix.os }}
+          name: verify-log-${{ matrix.leg }}-${{ matrix.os }}
           path: verify.log
+          retention-days: 14
+
+      # A second artifact, so verify-log-* keeps the layout it always had: with
+      # several paths upload-artifact roots the zip at their common ancestor,
+      # which would move verify.log down a directory for anything that reads it.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: verify-timing-${{ matrix.leg }}-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/step-times.tsv
+            ${{ runner.temp }}/go-test.json
+          if-no-files-found: ignore
           retention-days: 14
 
   # Windows. verify.sh is bash and its gates drive Unix tools — a pty, bwrap —
@@ -215,13 +398,24 @@ jobs:
   # all pass here has not been established: this job's first result is that
   # evidence, and a failing test is a finding about the Windows port, not noise
   # to be excluded.
+  #
+  # What this job must not do is spend 45 minutes saying nothing. In run
+  # 43662567883 the test step took 46m45s against a 45 minute test timeout and
+  # its output ended at minute two: `go test ./...` prints a package only when
+  # it finishes, in package order, so a wedged package left no trace of where
+  # the time went. (One run's log was read; the other recent main runs show the
+  # same ~48 minute job duration, and none has been green.) The suite now runs as `go test -json`, which streams a `run`
+  # event per test, under a tighter bound, and scripts/go-test-report.mjs names
+  # every package and test that started and never finished. The bound is a
+  # bound, not an exclusion: a test that needs longer fails here, by name.
   windows:
     name: go test (windows-latest)
     runs-on: windows-latest
-    # Go tests that cross into dcverify, dcstore or dcgrep build those binaries
-    # during the run. The first cargo build of rusqlite is most of the time;
-    # 90 minutes bounds a wedge and still leaves room for that compile.
-    timeout-minutes: 90
+    # Cold, the first cargo build of rusqlite is most of the compile and is done
+    # by its own step below; each package's tests are bounded at 20 minutes.
+    # This bounds the job as a whole, and a wedge in any step with no bound of
+    # its own.
+    timeout-minutes: 45
     env:
       CGO_ENABLED: "0"
       MANVI_REQUIRE_MODULE_PINS: "1"
@@ -259,7 +453,30 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: manvi/go.mod
-          cache-dependency-path: manvi/go.sum
+          cache: false
+      # The go test pipe below ends in node. A missing node would kill the last
+      # stage, tee would take SIGPIPE, and go test would die with it — the one
+      # failure this job's diagnostics must not cause — so node is pinned here
+      # rather than assumed to be on the runner image's PATH.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Kept equal to NODE_VERSION in scripts/tool-versions.env by scripts/verify-lib.test.mjs.
+          node-version: 22.22.2
+      - name: Go cache locations
+        id: go
+        shell: bash
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - name: Restore Go caches
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go.outputs.build }}
+            ${{ steps.go.outputs.mod }}
+          key: go-windows-latest-${{ hashFiles('manvi/go.mod', 'manvi/go.sum') }}
+          restore-keys: go-windows-latest-
       # The headless tests build dcverify themselves. ubuntu and macOS already
       # have rustup from the gate job. windows-latest ships it too; if an image
       # ever lacks it this step fails with a message (nothing is piped from the
@@ -276,28 +493,99 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
           cargo --version
-      - name: Cache Rust build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore Rust build
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             crates/target
-          key: cargo-windows-latest-${{ hashFiles('crates/Cargo.lock') }}
+          key: cargo-windows-latest-${{ hashFiles('crates/Cargo.lock', 'scripts/tool-versions.env') }}
           restore-keys: cargo-windows-latest-
+      # The three binaries the Go tests exec, built here and not inside the first
+      # test that asks. testsupport builds on demand under a bound shared with
+      # the test that asked, so a cold compile of rusqlite was being charged to a
+      # test's budget on every run; here it is a step with its own time, and the
+      # result is cached for the next one. These are the only three pairs
+      # testsupport requests (DCStore, DCVerify, DCGrep), each as its own
+      # `cargo build -p <crate> --bin <bin>` from crates/, and they are built the
+      # same way here, one invocation each: a single `-p a -p b -p c` build can
+      # resolve features differently, and then the tests' own build would
+      # compile again instead of finding nothing to do.
+      - name: Rust binaries the Go tests exec
+        id: prebuild
+        shell: bash
+        working-directory: crates
+        run: |
+          cargo build -p dc-store --bin dcstore
+          cargo build -p dc-verify --bin dcverify
+          cargo build -p dc-grep --bin dcgrep
       - name: go build
+        id: gobuild
         working-directory: manvi
         run: go build ./...
+      # -json streams, so the log is the live run rather than a bundle printed
+      # package by package; the text pass puts it back into the form people read.
+      # `shell: bash` is what turns pipefail on: the exit status that matters is
+      # go test's, not the last stage of the pipe. -timeout bounds each package's
+      # test binary, not the suite: a wedged package is cut off at 20 minutes and
+      # named in the report, and the packages after it still run.
       - name: go test
+        shell: bash
         working-directory: manvi
-        run: go test -count=1 -timeout 45m ./...
+        run: go test -json -count=1 -timeout 20m ./... | tee ../go-test.json | node ../scripts/go-test-report.mjs text
+      # Both caches are complete by the time the tests start, so a failing suite
+      # does not make them partial. A failed prebuild or build does, and is not
+      # saved.
+      - name: Save Go caches
+        if: ${{ !cancelled() && steps.gobuild.outcome == 'success' && steps.go-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go.outputs.build }}
+            ${{ steps.go.outputs.mod }}
+          key: go-windows-latest-${{ hashFiles('manvi/go.mod', 'manvi/go.sum') }}
+      - name: Save Rust build
+        if: ${{ !cancelled() && steps.prebuild.outcome == 'success' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/target
+          key: cargo-windows-latest-${{ hashFiles('crates/Cargo.lock', 'scripts/tool-versions.env') }}
+      # Names what never finished and what was slow. A missing event stream says
+      # so rather than printing an empty table.
+      - name: Where the time went
+        if: always()
+        shell: bash
+        run: |
+          if [ -s go-test.json ]; then
+            GO_TEST_REPORT_TITLE='go test — windows-latest' node scripts/go-test-report.mjs report go-test.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'The Go test run left no event stream, so there is no report.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: go-test-windows
+          path: go-test.json
+          retention-days: 14
 
   # The two opt-in gates. They take a flag each and cost real time, which is
   # why verify.sh keeps them out of the default run and why they are not on
   # every pull request. Nightly is often enough to find what they find, and
   # workflow_dispatch is there for the change that warrants one on demand.
+  #
+  # Each runs one leg, not the whole script. They used to re-run the entire
+  # default gate first and then add their mode, which spent the gate's time again
+  # every night on a result the gate jobs above had just produced; --race is a
+  # step of the go-test leg and --fuzz a step of the checks leg, so each runs that
+  # leg and only that leg. verify.sh refuses either flag on any other leg, so the
+  # pairing below cannot silently stop running its mode.
   deep:
-    name: verify.sh --${{ matrix.mode }}
+    name: verify.sh ${{ matrix.leg }} --${{ matrix.mode }}
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     # The verify step below is bounded at 90 minutes. This is that plus the
@@ -309,7 +597,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [race, fuzz]
+        include:
+          - mode: race
+            leg: go-test
+            cargo: crates/target
+          - mode: fuzz
+            leg: checks
+            cargo: native/target
+            tools: ~/go/bin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -319,7 +614,27 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: manvi/go.mod
-          cache-dependency-path: manvi/go.sum
+          cache: false
+      - name: Go cache locations
+        id: go
+        run: |
+          {
+            echo "build=$(go env GOCACHE)"
+            echo "mod=$(go env GOMODCACHE)"
+            echo "version=$(go env GOVERSION)"
+          } >> "$GITHUB_OUTPUT"
+      # The same keys as the same leg in the gate job on ubuntu-latest, so the
+      # nightly reads what the last gate run of that leg saved: the same tree and
+      # the same compiler.
+      - name: Restore Go caches
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go.outputs.build }}
+            ${{ steps.go.outputs.mod }}
+          key: go-ubuntu-latest-${{ matrix.leg }}-${{ hashFiles('manvi/go.mod', 'manvi/go.sum') }}
+          restore-keys: go-ubuntu-latest-${{ matrix.leg }}-
       - name: Rust toolchain
         run: |
           . scripts/tool-versions.env
@@ -334,68 +649,103 @@ jobs:
       # Installs the docs tooling and audits bun.lock; the version comes from
       # package.json's packageManager field.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      # Same caches as the gate job. This job used to compile cargo-audit and
-      # the Rust workspace from scratch on every nightly run.
-      - name: Cache cargo-audit
-        id: cache-cargo-audit
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore analysis tools
+        id: tools
+        if: matrix.tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-ubuntu-latest-${{ hashFiles('scripts/tool-versions.env') }}
-      - name: Cache Rust build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          path: ${{ matrix.tools }}
+          key: tools-ubuntu-latest-${{ matrix.leg }}-${{ steps.go.outputs.version }}-${{ hashFiles('scripts/tool-versions.env') }}
+      - name: Restore Rust build
+        id: cargo-cache
+        if: matrix.cargo
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            crates/target
-          key: cargo-ubuntu-latest-${{ hashFiles('crates/Cargo.lock') }}
-          restore-keys: cargo-ubuntu-latest-
+            ${{ matrix.cargo }}
+          key: cargo-ubuntu-latest-${{ matrix.leg }}-${{ hashFiles('crates/Cargo.lock', 'native/Cargo.lock', 'scripts/tool-versions.env') }}
+          restore-keys: cargo-ubuntu-latest-${{ matrix.leg }}-
+      # Only the fuzz leg is the checks leg, and it runs the Go analysis tools
+      # as part of its steps; the race leg runs none of them.
       - name: Analysis tools
+        if: matrix.tools && steps.tools.outputs.cache-hit != 'true'
         run: |
           . scripts/tool-versions.env
           go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION"
           go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
           go install "go.uber.org/nilaway/cmd/nilaway@$NILAWAY_VERSION"
-          if [ ! -x "$HOME/.cargo/bin/cargo-audit" ] || ! cargo audit --version | grep -qF "$CARGO_AUDIT_VERSION"; then
-            cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION" --force
-          fi
-          # bench/stress_test.py refuses an uncontained Linux shell; macOS
-          # already has sandbox-exec on the runner image.
-          if [ "$(uname -s)" = Linux ]; then
+      - name: Save analysis tools
+        if: matrix.tools && steps.tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ matrix.tools }}
+          key: tools-ubuntu-latest-${{ matrix.leg }}-${{ steps.go.outputs.version }}-${{ hashFiles('scripts/tool-versions.env') }}
+      - name: Sandbox and PATH
+        run: |
+          # bench/stress_test.py refuses an uncontained Linux shell.
+          if ! command -v bwrap >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap
-            # Ubuntu's AppArmor refuses unprivileged user namespaces, so
-            # bwrap cannot write its uid map and every sandboxed bench check
-            # fails with "setting up uid map: Permission denied". The stress
-            # suite refuses to run the shell uncontained, so the kernel has
-            # to allow the namespace the suite already requires.
-            if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-            fi
+          fi
+          # Ubuntu's AppArmor refuses unprivileged user namespaces, so
+          # bwrap cannot write its uid map and every sandboxed bench check
+          # fails with "setting up uid map: Permission denied". The stress
+          # suite refuses to run the shell uncontained, so the kernel has
+          # to allow the namespace the suite already requires.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
-      # --race and --fuzz each re-run the default gate first, so this is the
-      # whole file plus the extra mode. --race turns cgo on. verify.sh takes
-      # DevCouncil's gusset-engine/cgo-env.sh exports before that link;
-      # without the umbrella archive the detector dies on -lgusset.
-      # 90 minutes is above the serialised race run's measured 4.4 minutes by
-      # a wide margin and exists to bound a wedge, not to accommodate one.
-      # Tee rather than pipe, for the reason the gate job gives. The log is what
-      # the guards below read: before this job kept one, a fuzz or race run in
-      # which a tool failed to provision, or a leg degraded to NOT COVERED, was
-      # green, because verify.sh exits 0 on those.
-      - name: verify.sh --${{ matrix.mode }}
+      # --race turns cgo on. verify.sh takes DevCouncil's gusset-engine/cgo-env.sh
+      # exports before that link; without the umbrella archive the detector dies
+      # on -lgusset. 90 minutes is above the serialised race run's measured 4.4
+      # minutes by a wide margin and exists to bound a wedge, not to accommodate
+      # one. Tee rather than pipe, for the reason the gate job gives. The log is
+      # what the guards below read: before this job kept one, a fuzz or race run
+      # in which a tool failed to provision, or a gate degraded to NOT COVERED,
+      # was green, because verify.sh exits 0 on those.
+      - name: verify.sh --leg ${{ matrix.leg }} --${{ matrix.mode }}
+        id: verify
         timeout-minutes: 90
-        run: ./verify.sh --${{ matrix.mode }} 2>&1 | tee verify.log; exit "${PIPESTATUS[0]}"
+        env:
+          MANVI_STEP_TIMES: ${{ runner.temp }}/step-times.tsv
+        run: ./verify.sh --leg ${{ matrix.leg }} --${{ matrix.mode }} 2>&1 | tee verify.log; exit "${PIPESTATUS[0]}"
+
+      # Only after a verify.sh that finished, for the reason the gate job gives.
+      - name: Save Go caches
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.go-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go.outputs.build }}
+            ${{ steps.go.outputs.mod }}
+          key: go-ubuntu-latest-${{ matrix.leg }}-${{ hashFiles('manvi/go.mod', 'manvi/go.sum') }}
+      - name: Save Rust build
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ matrix.cargo }}
+          key: cargo-ubuntu-latest-${{ matrix.leg }}-${{ hashFiles('crates/Cargo.lock', 'native/Cargo.lock', 'scripts/tool-versions.env') }}
 
       - name: Every gate ran and every gap is named
         if: always()
-        run: scripts/check-verify-log.sh verify.log ubuntu-latest ${{ matrix.mode }}
+        run: scripts/check-verify-log.sh verify.log ubuntu-latest ${{ matrix.mode }} ${{ matrix.leg }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: verify-log-${{ matrix.mode }}
           path: verify.log
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: verify-timing-${{ matrix.mode }}
+          path: ${{ runner.temp }}/step-times.tsv
+          if-no-files-found: ignore
           retention-days: 14

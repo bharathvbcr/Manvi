@@ -143,6 +143,15 @@ flowchart TD
 
 `--race` and `--fuzz` take one flag at a time; run the script twice for both.
 
+`--leg NAME` runs one slice of the gate: `go-test` (the Go suite with coverage,
+the skip report and the cross-boundary counts), `rust` (the Rust workspace and
+everything that drives its binaries), `checks` (format, vet, lint,
+vulnerabilities, nil analysis, the native broker, and the release, docs, wire
+and TUI contracts) or `bench` (the benchmark instrument and the Python lint).
+No `--leg` is every leg in one process. CI runs one leg per job; each step is in
+exactly one leg, and `--race` and `--fuzz` are accepted only by the leg they are
+steps of.
+
 Both are opt-in, for opposite reasons. `--race` is the whole Go suite again,
 serialised, under the race runtime; `--fuzz` spends a budget
 rather than answering a fixed question, so a green unattended run would mean
@@ -244,7 +253,11 @@ cross-boundary counts read that run's events rather than running it again.
 In CI, `scripts/check-verify-log.sh` runs after `verify.sh` in every job that
 runs it, including the nightly `--race` and `--fuzz` jobs, and fails the job on
 a missing analysis tool or on any NOT COVERED line or skipped test that
-`scripts/verify-expected-gaps.json` does not list for that runner and mode.
+`scripts/verify-expected-gaps.json` does not list for that runner, mode and leg.
+A leg run prints `leg: <name> (<n> step(s) ran)` before its verdict, and the
+guard refuses a log without that line, a log that names another leg, and a leg
+that ran no step, so a job handed the wrong leg, or a leg whose region wrappers
+stopped selecting anything, cannot pass as an empty run.
 
 ### Windows
 

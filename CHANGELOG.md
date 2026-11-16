@@ -156,6 +156,36 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **CI runs `verify.sh` as four parallel legs.** `./verify.sh --leg NAME` runs
+  one slice of the gate (`go-test`, `rust`, `checks`, `bench`; `--list-legs`
+  names them), and `.github/workflows/verify.yml` runs one leg per job on Linux
+  and macOS, so the gate takes as long as its slowest leg rather than the sum.
+  With no `--leg` the script runs every leg in one process, exactly as before.
+  Every step belongs to exactly one leg: the node tests fail on a step outside
+  every leg region, a leg with no step, or a leg list that differs between
+  `verify.sh`, `scripts/check-verify-gaps.mjs` and the workflow matrix; a leg
+  that enters no step fails; `--race` is accepted only by `go-test` and
+  `--fuzz` only by `checks`. `scripts/check-verify-log.sh` takes the leg, and
+  every entry in `scripts/verify-expected-gaps.json` now names the legs it
+  belongs to. The nightly `--race` and `--fuzz` jobs run their own leg, not the
+  whole gate again. Job names changed from `verify.sh (os)` to `leg (os)`.
+- **CI caches save even when the job is red, per leg.** `actions/cache` and
+  setup-go's cache save in a post step that runs only when the whole job
+  succeeded, so on a red branch nothing was ever saved and every run recompiled
+  the lint tools, the Rust workspace and the Go tree. Each cache is now a
+  restore and a save step, keyed by leg, and a leg saves only after its own
+  `verify.sh` succeeded. The analysis tools are cached too, and `native/target`
+  joins the Rust cache.
+- **The Windows CI job is bounded and says where its time went.** It prebuilds
+  `dcstore`, `dcverify` and `dcgrep` in their own step, runs `go test -json`
+  with a 20 minute limit per package, and its summary names every package and
+  test that started and never finished (`scripts/go-test-report.mjs`). Each
+  gate job's summary carries a per-step time table, and `go-test` adds the
+  slowest packages and tests.
+- **CI installs ruff.** The bench leg ended `ruff is not installed` on every run
+  and the log guard rejected that, so no run could be green. `RUFF_VERSION` was
+  already pinned in `scripts/tool-versions.env`; the bench leg now installs it
+  with `pipx`.
 - **The DevCouncil pin moves to the workbench schema 17 store** (`d9c7a512`,
   from `c6788883`). Schema 17 adds a cross-repository execution queue, two-way
   GitHub issue sync state, an opt-in confirmed durable outbox and the

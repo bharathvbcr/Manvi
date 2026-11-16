@@ -20,6 +20,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERIFY = readFileSync(path.join(HERE, "..", "verify.sh"), "utf8").split("\n");
 const SCRIPTS = HERE;
 
+// The leg region wrappers verify.sh puts around groups of steps. They select
+// which leg a step belongs to and carry no behaviour of their own, and a segment
+// that spans a region boundary would otherwise contain half a wrapper — an `fi`
+// for an `if` it never saw. Only these exact lines are dropped, so the step
+// bodies this test exists to run are executed as written; scripts/verify-lib.test.mjs
+// is what checks the wrappers themselves.
+const REGION_WRAPPER = /^(if leg_runs [a-z-]+; then|fi # end leg [a-z-]+)$/;
+
 /** Lines from the `step` titled `from` up to (not including) the one titled `to`. */
 function segment(from, to) {
   const find = (title) => {
@@ -27,7 +35,7 @@ function segment(from, to) {
     assert.ok(i >= 0, `verify.sh no longer has a step titled "${title}"; update this test's segments`);
     return i;
   };
-  return VERIFY.slice(find(from), find(to)).join("\n");
+  return VERIFY.slice(find(from), find(to)).filter((l) => !REGION_WRAPPER.test(l)).join("\n");
 }
 const PRELUDE_END = VERIFY.findIndex((l) => l.startsWith("in_manvi()"));
 assert.ok(PRELUDE_END > 0, "verify.sh no longer defines in_manvi()");
@@ -368,4 +376,34 @@ test("rust: cargo-audit missing is named", () => {
 test("bun audit: a failing audit fails and a missing bun is named", () => {
   assert.notEqual(runGate([SEGMENTS.bunaudit], ["bun"], { BUN: "fail" }).status, 0);
   assertNotAPass(runGate([SEGMENTS.bunaudit], []), "bun missing", { named: /bun is not installed/ });
+});
+
+// ---------------------------------------------------------------- legs
+
+// The zero-step guard sits between the last step and the verdict, so no segment
+// above runs it. It is cut out of verify.sh by its own `if` line and run here
+// with a leg selected: a leg that entered no step must fail, not print PASS.
+const ZERO_STEP_START = VERIFY.findIndex((l) => l.startsWith('if [[ -n "$LEG" ]] && (( STEPS_RUN == 0 ))'));
+assert.ok(ZERO_STEP_START > 0, "verify.sh no longer has the zero-step guard before its verdict");
+const ZERO_STEP_GUARD = VERIFY.slice(ZERO_STEP_START, ZERO_STEP_START + VERIFY.slice(ZERO_STEP_START).findIndex((l) => l === "fi") + 1).join("\n");
+
+test("legs: a selected leg that entered no step fails and never prints a pass", () => {
+  const run = runGate(["LEG=bench", ZERO_STEP_GUARD], []);
+  assert.notEqual(run.status, 0, run.out);
+  assert.match(run.out, /leg bench entered no step/);
+  assert.match(run.out, /INCOMPLETE/);
+  assert.doesNotMatch(run.out, /PASS/, "a leg that ran nothing must not print a verdict");
+});
+
+test("legs: control — the same leg with one step entered passes and says which leg and how many steps", () => {
+  const run = runGate(["LEG=bench", 'step "a step"', ZERO_STEP_GUARD], []);
+  assert.equal(run.status, 0, run.out);
+  assert.match(run.out, /leg: bench \(1 step\(s\) ran\)/);
+  assert.match(run.out, /PASS all gates/);
+});
+
+test("legs: the guard applies to a selected leg only, not to a whole-script run", () => {
+  const run = runGate([ZERO_STEP_GUARD], []);
+  assert.equal(run.status, 0, run.out);
+  assert.match(run.out, /leg: all \(0 step\(s\) ran\)/);
 });

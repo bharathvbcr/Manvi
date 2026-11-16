@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { compare, parseVerdict } from "./check-verify-gaps.mjs";
+import { LEGS, compare, parseVerdict } from "./check-verify-gaps.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
@@ -292,6 +292,96 @@ test("verify.sh and its helpers carry no masked count over a test or analysis co
   }
 });
 
+// ---------------------------------------------------------------- legs
+//
+// verify.sh runs as one script locally and as one leg per job in CI. The split is
+// only safe if no step can fall between legs, so these tests read verify.sh's
+// region wrappers (`if leg_runs <name>; then … fi # end leg <name>`) and hold
+// them to the list of legs the guard, the script and the workflow all name.
+
+const VERIFY_LINES = readFileSync(path.join(ROOT, "verify.sh"), "utf8").split("\n");
+
+/** Every leg region in verify.sh: its leg, and the steps inside it. Throws on a malformed region. */
+function legRegions() {
+  const regions = [];
+  let open = null;
+  VERIFY_LINES.forEach((line, i) => {
+    const opens = /^if leg_runs ([a-z-]+); then$/.exec(line);
+    const closes = /^fi # end leg ([a-z-]+)$/.exec(line);
+    if (opens) {
+      assert.equal(open, null, `verify.sh:${i + 1}: region ${opens[1]} opens inside ${open?.leg}`);
+      open = { leg: opens[1], line: i + 1, steps: [] };
+    } else if (closes) {
+      assert.ok(open, `verify.sh:${i + 1}: \`fi # end leg ${closes[1]}\` closes nothing`);
+      assert.equal(closes[1], open.leg, `verify.sh:${i + 1}: closes ${closes[1]} but ${open.leg} is open`);
+      regions.push(open);
+      open = null;
+    } else if (/^\s*step "/.test(line)) {
+      assert.ok(open, `verify.sh:${i + 1}: step outside every leg region: ${line.trim()}`);
+      open.steps.push(line.trim());
+    }
+  });
+  assert.equal(open, null, `verify.sh: region ${open?.leg} is never closed`);
+  return regions;
+}
+
+/** verify.sh's own answer to which legs exist. */
+function listLegs(shell = "bash") {
+  const run = spawnSync(shell, [path.join(ROOT, "verify.sh"), "--list-legs"], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  return run.stdout.split("\n").filter(Boolean);
+}
+
+test("every step is inside exactly one leg region, and every leg has steps", () => {
+  const regions = legRegions();
+  const stepLines = VERIFY_LINES.filter((l) => /^\s*step "/.test(l)).length;
+  assert.equal(regions.reduce((n, r) => n + r.steps.length, 0), stepLines, "a step is counted twice or not at all");
+  for (const leg of listLegs()) {
+    const steps = regions.filter((r) => r.leg === leg).flatMap((r) => r.steps);
+    assert.ok(steps.length > 0, `leg ${leg} has no step: a job running it would run nothing`);
+  }
+  for (const r of regions) assert.ok(listLegs().includes(r.leg), `verify.sh:${r.line}: region names an unknown leg ${r.leg}`);
+});
+
+test("step titles are unique, so a leg's log can be told from another's by what ran", () => {
+  const titles = VERIFY_LINES.filter((l) => /^\s*step "/.test(l)).map((l) => /step "([^"]*)"/.exec(l)[1]);
+  assert.equal(new Set(titles).size, titles.length);
+});
+
+test("the legs are one list: verify.sh, the guard, and the workflow matrix", () => {
+  assert.deepEqual(listLegs(), LEGS, "verify.sh --list-legs and LEGS in check-verify-gaps.mjs differ");
+  const matrix = /^\s+leg: \[([^\]]+)\]$/m.exec(readFileSync(path.join(ROOT, ".github/workflows/verify.yml"), "utf8"));
+  assert.ok(matrix, "the gate job's matrix names no legs");
+  assert.deepEqual(matrix[1].split(",").map((s) => s.trim()), LEGS, "the gate matrix and verify.sh --list-legs differ");
+});
+
+test("verify.sh refuses an unknown leg and an option its leg does not run, and --list-legs starts nothing", () => {
+  const run = (...args) => spawnSync("bash", [path.join(ROOT, "verify.sh"), ...args], { encoding: "utf8", timeout: 20000 });
+  const unknown = run("--leg", "nonsense");
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr, /unknown leg: nonsense/);
+  assert.doesNotMatch(unknown.stdout + unknown.stderr, /==>/, "an unknown leg must not start any step");
+  for (const [args, why] of [
+    [["--leg", "bench", "--race"], /--race is a step of the go-test leg/],
+    [["--leg", "go-test", "--fuzz"], /--fuzz is a step of the checks leg/],
+    [["--race", "--fuzz"], /usage:/],
+    [["--leg"], /usage:/],
+  ]) {
+    const r = run(...args);
+    assert.equal(r.status, 2, args.join(" "));
+    assert.match(r.stderr, why, args.join(" "));
+    assert.doesNotMatch(r.stdout + r.stderr, /==>/, `${args.join(" ")} must not start any step`);
+  }
+});
+
+test("verify.sh parses its arguments under the bash macOS ships", { skip: !existsSync("/bin/bash") }, () => {
+  // /bin/bash is 3.2 on macOS, where an empty array under `set -u` is an unbound
+  // variable; the parsing is plain words and must keep working there.
+  assert.deepEqual(listLegs("/bin/bash"), LEGS);
+  const r = spawnSync("/bin/bash", [path.join(ROOT, "verify.sh"), "--leg", "nonsense"], { encoding: "utf8" });
+  assert.equal(r.status, 2);
+});
+
 // ---------------------------------------------------------------- workflow
 
 const WORKFLOW_FILE = readFileSync(path.join(ROOT, ".github/workflows/verify.yml"), "utf8");
@@ -317,6 +407,18 @@ test("the workflow installs no tool from a floating reference", () => {
   }
 });
 
+test("the job that runs the bench leg installs ruff at the pinned version", () => {
+  // verify.sh's Python lint is a step of the bench leg and reports "ruff is not
+  // installed" without it; check-verify-log.sh rejects that as a provisioning
+  // failure, so a bench leg without ruff cannot pass. No other leg runs ruff, so
+  // the one install is gated to the leg that does, and the deep jobs, which run
+  // the go-test and checks legs, install none.
+  assert.equal([...WORKFLOW.matchAll(/pipx install "ruff==\$RUFF_VERSION"/g)].length, 1);
+  assert.match(WORKFLOW, /name: Python lint tool\n\s+if: matrix\.leg == 'bench'/);
+  assert.doesNotMatch(WORKFLOW, /ruff(==|@)(?!\$RUFF_VERSION)/, "ruff must be installed from the pin, not a literal or a float");
+  assert.match(VERSIONS.RUFF_VERSION, /^\d+\.\d+\.\d+$/);
+});
+
 test("the pinned values are real versions, and node matches the workflow", () => {
   assert.match(VERSIONS.GOLANGCI_LINT_VERSION, /^v\d+\.\d+\.\d+$/);
   assert.match(VERSIONS.GOVULNCHECK_VERSION, /^v\d+\.\d+\.\d+$/);
@@ -340,6 +442,22 @@ test("every job that runs verify.sh runs the log guards, and the long jobs are b
     }
     assert.match(job, /timeout-minutes: \d+/, `${name} has no timeout`);
   }
+});
+
+test("every job hands its leg to verify.sh and to the guard, and a deep job runs the leg that owns its mode", () => {
+  // The gate runs one leg per job. If the matrix leg reached verify.sh but not the
+  // guard, the guard would judge a leg's log against the whole script's entries.
+  assert.match(WORKFLOW, /\.\/verify\.sh --leg \$\{\{ matrix\.leg \}\} 2>&1/);
+  assert.match(WORKFLOW, /check-verify-log\.sh verify\.log \$\{\{ matrix\.os \}\} default \$\{\{ matrix\.leg \}\}/);
+  assert.match(WORKFLOW, /\.\/verify\.sh --leg \$\{\{ matrix\.leg \}\} --\$\{\{ matrix\.mode \}\}/);
+  assert.match(WORKFLOW, /check-verify-log\.sh verify\.log ubuntu-latest \$\{\{ matrix\.mode \}\} \$\{\{ matrix\.leg \}\}/);
+  // verify.sh refuses --race outside go-test and --fuzz outside checks, so a
+  // wrong pairing would fail at run time; this fails it here, in review.
+  const owner = { race: "go-test", fuzz: "checks" };
+  const deep = WORKFLOW.slice(WORKFLOW.indexOf("\n  deep:\n"));
+  const pairs = [...deep.matchAll(/- mode: (\w+)\n\s+leg: ([a-z-]+)/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(pairs.map(([mode]) => mode).sort(), ["fuzz", "race"], "a deep mode lost its job");
+  for (const [mode, leg] of pairs) assert.equal(leg, owner[mode], `--${mode} is a step of ${owner[mode]}, not ${leg}`);
 });
 
 test("the deep jobs are guarded with their own mode, and an unlisted gap there fails", () => {

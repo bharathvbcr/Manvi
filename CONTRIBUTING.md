@@ -78,6 +78,13 @@ Three opt-in modes, one flag at a time — run it again for the other:
 the race detector needs cgo, which the shipped configuration turns off, and the
 fuzz sweep spends a budget rather than answering a fixed question.
 
+`./verify.sh --leg NAME` runs one slice of the gate (`./verify.sh --list-legs`
+names them): `go-test`, `rust`, `checks` and `bench`. Without it you get every
+leg in one process, which is what to run before pushing. CI runs the legs as
+parallel jobs, so use `--leg` to reproduce one failing job locally. It
+combines with one mode flag, and refuses a mode its leg does not run:
+`--race` belongs to `go-test` and `--fuzz` to `checks`.
+
 ### Reading the verdict
 
 The last line is one of two, and the difference matters more than the colour:
@@ -232,10 +239,29 @@ the second.
 ## 7. Continuous integration
 
 [`.github/workflows/verify.yml`](.github/workflows/verify.yml) runs `./verify.sh`
-on every pull request and every push to `main`, on Linux and macOS. It installs
-all four optional analysis tools first and then fails the run if any of them
-turned out to be missing, because a CI job that quietly skipped the linter and
-the vulnerability scan prints the same green check as one that ran them.
+on every pull request and every push to `main`, on Linux and macOS, as one
+parallel job per leg (`go-test`, `rust`, `checks`, `bench`), so the gate takes as
+long as its slowest leg rather than the sum of them. (The Windows job below runs
+alongside and still sets how long the whole workflow takes.) Each job installs the
+analysis tools its leg uses and then fails if any of them turned out to be
+missing, because a CI job that quietly skipped the linter and the vulnerability
+scan prints the same green check as one that ran them.
+
+Splitting the script must not let a step fall between legs, and three checks
+hold that. `scripts/verify-lib.test.mjs` fails when a step sits outside every
+leg region of `verify.sh`, when a leg has no step, or when the legs listed in
+`verify.sh`, in `scripts/check-verify-gaps.mjs` and in the workflow matrix
+differ. `verify.sh` fails a leg that entered no step. And
+`scripts/check-verify-log.sh` takes the leg, refuses a log that names another
+one, and compares its gaps and skips only against the entries of
+`scripts/verify-expected-gaps.json` that name that leg.
+
+Caches are restored and saved by separate steps, per leg, and a leg saves only
+after its own `verify.sh` succeeded. `actions/cache` and setup-go's built-in
+cache save in a post step that runs only when the whole job succeeded, which on
+a branch that is often red meant nothing was ever saved. Each job's summary
+carries a per-step time table (and, for `go-test`, the slowest packages and
+tests), so the next change to this pipeline starts from a measurement.
 
 A third job builds the Go plane on `windows-latest` with cgo off and runs `go test
 ./...` there. `verify.sh` is bash and does not run on Windows, so the Rust planes
@@ -248,9 +274,10 @@ passes on a Windows runner is established by that job's results, not by this
 paragraph.
 
 The nightly `--race` and `--fuzz` jobs keep a `verify.log` and run the same log
-guards as the main job (`scripts/check-verify-log.sh`), so a gate that degraded
-to NOT COVERED there fails the run. Tool and toolchain versions are pinned in
-`scripts/tool-versions.env`.
+guards as the main jobs (`scripts/check-verify-log.sh`), so a gate that degraded
+to NOT COVERED there fails the run. Each runs only the leg its mode belongs to
+(`go-test` for `--race`, `checks` for `--fuzz`) and not the whole gate again.
+Tool and toolchain versions are pinned in `scripts/tool-versions.env`.
 
 `--race` and `--fuzz` run nightly, and on demand through **Run workflow**.
 
