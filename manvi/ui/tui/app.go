@@ -292,7 +292,7 @@ func (a *App) Dispatch(act Action) []Effect {
 		if a.notice != "" && time.Since(a.noticeAt) > 6*time.Second {
 			a.notice = ""
 		}
-		// Sample the throughput series the status bar sparklines. The delta
+		// Sample the throughput series the status row sparklines. The delta
 		// over all sessions is deliberate: the question the strip answers is
 		// "is anything producing", not which session is.
 		total := 0

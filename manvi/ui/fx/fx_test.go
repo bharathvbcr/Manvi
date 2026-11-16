@@ -166,30 +166,6 @@ func TestRainFallsBackToASCIIWithoutUnicode(t *testing.T) {
 	}
 }
 
-func TestSweepStyledKeepsColdCellsInTheColdStyle(t *testing.T) {
-	b := render.NewBuffer(20, 3)
-	cold := render.Style{Fg: render.RGB(40, 40, 40), Bg: render.RGB(10, 10, 10)}
-	hot := render.RGB(255, 200, 0)
-	r := render.Rect{X: 0, Y: 1, W: 20, H: 1}
-	SweepStyled(b, r, 5, "─", hot, cold)
-	for x := 0; x < 20; x++ {
-		c := b.Cell(x, 1)
-		if c.R != '─' {
-			t.Fatalf("cell %d is %q, want the border glyph", x, c.R)
-		}
-		if c.Style.Bg != cold.Bg {
-			t.Fatalf("cell %d changed background: the beam left a trail", x)
-		}
-	}
-	if b.Cell(5, 1).Style.Fg != hot {
-		t.Fatal("the head of the beam is not the hot colour")
-	}
-	// A cell far ahead of the head is the cold style exactly.
-	if got := b.Cell(15, 1).Style; !got.Equal(cold) {
-		t.Fatalf("a cell the wave has not reached changed: %+v", got)
-	}
-}
-
 func TestGradientSweepKeepsTheText(t *testing.T) {
 	got := GradientSweep("manvi", render.Hex("#ff0000"), render.Hex("#0000ff"), 9, render.Bold)
 	if got.Text() != "manvi" {

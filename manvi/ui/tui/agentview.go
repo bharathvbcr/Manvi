@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/ui"
-	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
@@ -44,6 +43,8 @@ type AgentView struct {
 	// firstActivity and lastActivity drive the dashboard's timing column.
 	firstActivity time.Time
 	lastActivity  time.Time
+	// busySince is when the running turn started, for the working row's clock.
+	busySince time.Time
 	// err is the last turn error, shown until the next turn starts.
 	err string
 }
@@ -118,7 +119,7 @@ func (v *AgentView) Apply(ev ui.Event) {
 	// "can this session's results be described as strict", and a turn that ran
 	// while a safety flag was off does not become strict retroactively because
 	// the flag was put back. Tightening a setting is visible in the transcript
-	// and on the posture chip; it does not erase what was produced before it.
+	// and on the posture; it does not erase what was produced before it.
 	for _, w := range ev.Weakened {
 		if !slices.Contains(v.Status.Weakened, w) {
 			v.Status.Weakened = append(v.Status.Weakened, w)
@@ -131,11 +132,39 @@ func (v *AgentView) SetBusy(busy bool, label string) {
 	if v == nil {
 		return
 	}
+	if busy && !v.Status.Busy {
+		v.busySince = time.Now()
+	}
 	v.Status.Busy = busy
 	v.Status.BusyLabel = label
 	if busy {
 		v.err = ""
 	}
+}
+
+// activity is what the running turn is doing, read off the transcript's newest
+// entry: the model is thinking, or writing, or a tool is out. The host says
+// only that a turn is running; a label it set to something else is its own and
+// is shown as it is.
+func (v *AgentView) activity() string {
+	if l := v.Status.BusyLabel; l != "" && l != "working" {
+		return l
+	}
+	entries := v.Scroll.Entries()
+	if len(entries) == 0 {
+		return "Working"
+	}
+	switch last := entries[len(entries)-1]; last.Event.Kind {
+	case ui.KindReasoning:
+		return "Thinking"
+	case ui.KindText:
+		return "Writing"
+	case ui.KindToolStart:
+		if last.Event.Tool != "" {
+			return doingPhrase(last.Event)
+		}
+	}
+	return "Working"
 }
 
 // Approval returns the card blocking this session, if any.
@@ -213,7 +242,8 @@ func (v *AgentView) Error() string { return v.err }
 // promptHeight is how tall the composer box should be.
 func (v *AgentView) promptHeight(width int) int {
 	const max = 10
-	inner := width - 4
+	// The frame, a column of padding each side, and the prompt mark.
+	inner := width - 4 - promptMark
 	if inner < 8 {
 		inner = 8
 	}
@@ -230,9 +260,8 @@ func (v *AgentView) SetTitle(title string) {
 
 // Draw paints the whole session view and returns the caret position.
 //
-// fxOn gates the ambient motion: the composer border's sweep while a turn
-// runs, the status bar's breathing busy label and throughput sparkline, and
-// the approval card's pulsing frame. It is one flag for all of them because
+// fxOn gates the ambient motion: the working row's breathing label, the status
+// bar's throughput sparkline, and the approval card's pulsing frame. It is one flag for all of them because
 // they are one courtesy — an operator who turned animation off turned it off.
 func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, spark []float64, fxOn bool) render.Rect {
 	if r.Empty() {
@@ -252,28 +281,47 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 	} else {
 		v.Status.StallSecs = 0
 	}
-
-	area := r
-	statusRow, area := area.SplitTop(1)
-	DrawStatusBar(b, statusRow, th, v.Status, tick, spark, fxOn)
-
-	if strict, _ := v.Status.StrictSummary(); !strict {
-		var banner render.Rect
-		banner, area = area.SplitTop(1)
-		DrawStrictBanner(b, banner, th, v.Status)
+	v.Status.BusySecs = 0
+	if v.Status.Busy && !v.busySince.IsZero() {
+		v.Status.BusySecs = int(time.Since(v.busySince).Seconds())
 	}
 
-	area, hintRow := area.SplitBottom(1)
+	// Nothing is pinned to the top: the transcript has the screen down to the
+	// composer, and what the session is — posture, model, branch, context — is
+	// one quiet row under it, shared with the keys of the moment.
+	area := r
+	area, footer := area.SplitBottom(1)
+
+	// A run that is not strict says so on a row of its own, directly above
+	// where the operator types: it is the one statement on screen that changes
+	// what every result above it means, and it is never folded into the row of
+	// status under the composer, which a narrow terminal abbreviates. Its row
+	// is set aside before the composer is sized, so on a terminal too short
+	// for both it is the composer that gives way.
+	strict, _ := v.Status.StrictSummary()
+	room := area.H
+	if !strict {
+		room--
+	}
 
 	// The composer, sized to its content, from the bottom up.
 	promptH := v.promptHeight(area.W) + 2 // frame
-	if promptH > area.H/2 {
-		promptH = area.H / 2
+	if promptH > room/2 {
+		promptH = room / 2
 	}
 	if promptH < 3 {
 		promptH = 3
 	}
+	if promptH > room {
+		promptH = max(room, 0)
+	}
 	area, promptRect := area.SplitBottom(promptH)
+
+	if !strict {
+		var banner render.Rect
+		area, banner = area.SplitBottom(1)
+		DrawStrictBanner(b, banner, th, v.Status)
+	}
 
 	// Queued follow-ups sit directly above the composer, where they explain why
 	// typing while busy did not send.
@@ -285,6 +333,24 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		}
 		area, queue = area.SplitBottom(h + 1)
 		v.drawQueue(b, queue, th)
+	}
+
+	// The working row, between the transcript and whatever is typed under it.
+	// An approval card takes its place: the turn is then waiting on the
+	// operator, and the card says so itself.
+	if v.Status.Busy && v.approval == nil && area.H > 4 {
+		var working render.Rect
+		area, working = area.SplitBottom(1)
+		st := v.Status
+		st.BusyLabel = v.activity()
+		DrawActivity(b, working, th, st, tick, fxOn)
+		if area.H > 8 {
+			// A blank row above it, where there is the height: the row is the
+			// state of the turn, not the last line of what the turn printed.
+			var spacer render.Rect
+			area, spacer = area.SplitBottom(1)
+			b.Fill(spacer, ' ', th.Base())
+		}
 	}
 
 	// A blocking approval takes the space above the composer. It is drawn last
@@ -328,7 +394,7 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 	if v.Scroll.SearchQuery() != "" {
 		extra = append(extra, v.Scroll.SearchStatus()+" (n/N)")
 	}
-	DrawShortcutBar(b, hintRow, th, ctx, extra...)
+	DrawFooter(b, footer, th, v.Status, ctx, tick, spark, fxOn, extra...)
 	return caret
 }
 
@@ -351,17 +417,29 @@ func (v *AgentView) drawQueue(b *render.Buffer, r render.Rect, th Theme) {
 }
 
 func (v *AgentView) drawPrompt(b *render.Buffer, r render.Rect, th Theme, tick int, fxOn bool) render.Rect {
+	// The frame is a neutral rule, a step brighter while the composer has the
+	// keys. In the brand colour it was the largest area of red on the screen,
+	// in a red a glance could not tell from a failure's; the prompt mark inside
+	// it carries the brand and the focus both.
 	focused := v.Focus == CtxPrompt && v.approval == nil
 	border := th.Border
 	if focused {
-		border = th.BorderFocus
+		border = th.FgSubtle
 	}
 
-	title := render.Styled(" compose ", render.Style{Fg: th.FgSubtle, Bg: th.Bg})
+	// The frame carries a word only when the word changes what Enter does: a
+	// turn is running, so a send is queued, or the composer is in multiline.
+	// Idle, it is an empty frame around the prompt. The label "compose" told
+	// nobody anything, and the hints that sat in the bottom edge are the
+	// shortcut bar's, one row down.
+	var title render.Line
 	if v.Status.Busy {
-		title = render.Styled(" queue follow-up ", render.Style{Fg: th.Warning, Bg: th.Bg})
+		title = render.Styled(" queue follow-up ", render.Style{Fg: th.FgMuted, Bg: th.Bg})
 	}
 	if v.Prompt.Multiline {
+		if len(title) == 0 {
+			title = render.Styled(" ", th.Base())
+		}
 		title = title.Append("multiline ", render.Style{Fg: th.Accent, Bg: th.Bg})
 	}
 
@@ -369,13 +447,9 @@ func (v *AgentView) drawPrompt(b *render.Buffer, r render.Rect, th Theme, tick i
 	if v.err != "" {
 		subtitle = render.Styled(" "+render.TruncateWidth(v.err, r.W-8, "…")+" ",
 			render.Style{Fg: th.Danger, Bg: th.Bg})
-	} else if !v.Prompt.Empty() {
-		chars := len(v.Prompt.Value())
-		tokens := chars/4 + 1
-		subtitle = render.Styled(fmt.Sprintf(" %d chars • ~%d tokens ", chars, tokens),
-			render.Style{Fg: th.FgSubtle, Bg: th.Bg})
-	} else if r.W > 50 {
-		subtitle = render.Styled(" / commands • @ context • Tab focus ",
+	} else if chars := len(v.Prompt.Value()); chars >= draftCountFrom {
+		// A count for a draft long enough to wonder about, not for every word.
+		subtitle = render.Styled(fmt.Sprintf(" %d chars %s ~%d tokens ", chars, th.Glyphs().Dot, chars/4+1),
 			render.Style{Fg: th.FgSubtle, Bg: th.Bg})
 	}
 
@@ -388,17 +462,25 @@ func (v *AgentView) drawPrompt(b *render.Buffer, r render.Rect, th Theme, tick i
 		Fill:     &fill,
 	}.Draw(b, r)
 
-	// While a turn runs, a beam sweeps the top edge: the transcript is
-	// streaming or the tool is out, and the frame should say so even when the
-	// visible rows are momentarily still. The cold cells repaint in the
-	// border's own style, so the sweep leaves nothing behind it.
-	if fxOn && v.Status.Busy && r.W > 4 {
-		edge := render.Rect{X: r.X + 1, Y: r.Y, W: r.W - 2, H: 1}
-		fx.SweepStyled(b, edge, tick, borderFor(th).Top, th.Accent,
-			render.Style{Fg: border, Bg: th.Bg})
-	}
-
 	inner = inner.Pad(0, 1, 0, 1)
+	if inner.W > promptMark {
+		// The same mark the transcript puts on what was asked, so the composer
+		// reads as the next of those.
+		mark := render.Style{Fg: th.FgSubtle, Bg: th.Bg}
+		if focused {
+			mark = th.AccentStyle()
+		}
+		b.SetString(inner.X, inner.Y, th.Glyphs().Prompt, mark)
+		inner.X += promptMark
+		inner.W -= promptMark
+	}
 	v.promptRect = inner
 	return v.Prompt.Draw(b, inner, th, focused)
 }
+
+const (
+	// promptMark is the columns the composer's prompt mark and its space take.
+	promptMark = 2
+	// draftCountFrom is the draft length at which the composer starts counting.
+	draftCountFrom = 200
+)

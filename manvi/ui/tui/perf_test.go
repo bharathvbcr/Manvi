@@ -109,7 +109,9 @@ func cloneUncached(s *Scrollback) *Scrollback {
 		searchQuery: s.searchQuery, matches: append([]int(nil), s.matches...), matchIdx: s.matchIdx,
 	}
 	for _, e := range s.entries {
-		ne := &Entry{Event: e.Event, Folded: e.Folded, Foldable: e.Foldable, whole: true}
+		ne := &Entry{Event: e.Event, Folded: e.Folded, Foldable: e.Foldable, whole: true,
+			live: e.live, until: e.until, foldSet: e.foldSet,
+			call: e.call, absorbed: e.absorbed, under: e.under, result: e.result}
 		ne.Body.WriteString(e.Body.String())
 		c.entries = append(c.entries, ne)
 	}
@@ -207,12 +209,22 @@ func TestAnIdleFrameRendersNothing(t *testing.T) {
 	}
 	before := make([]*render.Line, len(s.entries))
 	for i, e := range s.entries {
+		if e.absorbed {
+			// A call drawn on its result's row has no rows of its own.
+			continue
+		}
 		before[i] = &e.cacheLines[0]
 	}
 	for frame := 0; frame < 3; frame++ {
 		s.Draw(buf, buf.Bounds(), th, true)
 	}
 	for i, e := range s.entries {
+		if e.absorbed {
+			if e.cacheLines != nil {
+				t.Errorf("entry %d (%s) has no row and was rendered", i, e.Event.Kind)
+			}
+			continue
+		}
 		if len(e.cacheLines) == 0 || &e.cacheLines[0] != before[i] {
 			t.Errorf("entry %d (%s) was rendered again by an idle frame", i, e.Event.Kind)
 		}
@@ -721,6 +733,10 @@ func TestAHugeReasoningRendersOnlyItsHead(t *testing.T) {
 	text := bigResult()
 	s := NewScrollback()
 	s.Append(ui.Event{Kind: ui.KindReasoning, Text: text})
+	// A thought still arriving is drawn as its last few rows, which is a
+	// different bound; the cap is on one that has finished. The turn ending
+	// finishes it.
+	s.Append(ui.Event{Kind: ui.KindTurnEnd})
 	e := s.entries[0]
 	if !e.Foldable {
 		t.Fatal("a multi-line reasoning entry is foldable")

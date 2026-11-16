@@ -62,25 +62,24 @@ type Theme struct {
 	Accent    render.Color
 	AccentDim render.Color
 
-	// Status. These are the load-bearing ones: they encode the difference
-	// between a rule that passed, one that was cleared by a grant, one that the
-	// posture demoted, and one that could not run. Never collapsed into
-	// pass/fail.
+	// The palette, which is small on purpose: the brand's red for the
+	// interface itself, Danger for what failed or was refused, Info for what a
+	// turn worked on — a tool, a file, code — and the greys above for
+	// everything else. Success is the green of a line a diff adds and is used
+	// for nothing else; a green tick on every call that worked, a yellow for
+	// every caution and an orange and a purple for two more outcomes made a
+	// frame of six hues in which none of them meant anything at a glance.
 	//
-	// Distinct hexes do not make them distinct on a terminal. Sixteen colours
-	// are six hues and four greys, and the palette needs more distinctions than
-	// that: there is no orange, so Granted lands on the same slot as Warning on
-	// dark and Danger on light, and no purple, so Degraded lands on Info. The
-	// colours are therefore only half of the mechanism — Status pairs them with
-	// attributes whenever the resolved profile cannot keep them apart, and
-	// theme_test.go paints every outcome through the real reduction at every
-	// profile to prove the pairs stay separable.
-	Success  render.Color
-	Warning  render.Color
-	Danger   render.Color
-	Info     render.Color
-	Granted  render.Color
-	Degraded render.Color
+	// The outcomes those colours stood for are still load-bearing, and still
+	// never collapsed into pass/fail: a rule that passed, one a grant cleared,
+	// one the posture demoted, one that could not run. They are told apart by
+	// their mark and by weight, slant and underline, which is the vocabulary a
+	// terminal with no colour always had; see Status. theme_test.go paints
+	// every outcome through the real reduction at every profile to prove the
+	// pairs stay separable.
+	Success render.Color
+	Danger  render.Color
+	Info    render.Color
 
 	Border      render.Color
 	BorderFocus render.Color
@@ -118,12 +117,9 @@ func Dark() Theme {
 		Accent:    render.Hex(brand.AccentDark),
 		AccentDim: render.Hex(brand.AccentDimDark),
 
-		Success:  render.Hex("#3fb950"),
-		Warning:  render.Hex("#d29922"),
-		Danger:   render.Hex("#f85149"),
-		Info:     render.Hex("#58a6ff"),
-		Granted:  render.Hex("#db9d47"),
-		Degraded: render.Hex("#bc8cff"),
+		Success: render.Hex("#3fb950"),
+		Danger:  render.Hex("#f85149"),
+		Info:    render.Hex("#58a6ff"),
 
 		Border:      render.Hex("#30363d"),
 		BorderFocus: render.Hex(brand.AccentDark),
@@ -151,12 +147,9 @@ func Light() Theme {
 		Accent:    render.Hex(brand.AccentLight),
 		AccentDim: render.Hex(brand.AccentDimLight),
 
-		Success:  render.Hex("#1a7f37"),
-		Warning:  render.Hex("#9a6700"),
-		Danger:   render.Hex("#cf222e"),
-		Info:     render.Hex("#0969da"),
-		Granted:  render.Hex("#bc4c00"),
-		Degraded: render.Hex("#8250df"),
+		Success: render.Hex("#1a7f37"),
+		Danger:  render.Hex("#cf222e"),
+		Info:    render.Hex("#0969da"),
 
 		Border:      render.Hex("#d1d9e0"),
 		BorderFocus: render.Hex(brand.AccentLight),
@@ -178,7 +171,7 @@ func NoColorTheme() Theme {
 		&t.Bg, &t.BgRaised, &t.BgOverlay, &t.BgInset,
 		&t.Fg, &t.FgMuted, &t.FgSubtle, &t.FgOn,
 		&t.Accent, &t.AccentDim,
-		&t.Success, &t.Warning, &t.Danger, &t.Info, &t.Granted, &t.Degraded,
+		&t.Success, &t.Danger, &t.Info,
 		&t.Border, &t.BorderFocus, &t.Selection,
 	} {
 		*c = render.Default
@@ -221,11 +214,6 @@ func PickThemeByName(name string, profile render.Profile, unicode bool) (Theme, 
 func PickThemeByNameUnchecked(name string, profile render.Profile, unicode bool) Theme {
 	t, _ := PickThemeByName(name, profile, unicode)
 	return t
-}
-
-// Inset is the recessed surface style for code blocks, diffs, and input boxes.
-func (t Theme) Inset() render.Style {
-	return render.Style{Fg: t.Fg, Bg: t.BgInset}
 }
 
 // monochrome reports whether the terminal will be sent no colour at all, so
@@ -300,6 +288,18 @@ func (t Theme) Strong() render.Style {
 	return render.Style{Fg: t.Fg, Bg: t.Bg, Attrs: render.Bold}
 }
 
+// ruleColor is the colour of a rule that marks a block — down the edge of a
+// code block, beside a quote. The border colour where the terminal can show
+// it; at sixteen colours that reduces to the background and the rule would be
+// drawn in a colour nobody can see, taking the block's only boundary with it,
+// so there it is the tertiary text colour.
+func (t Theme) ruleColor() render.Color {
+	if t.reducedPalette() && !t.monochrome() {
+		return t.FgSubtle
+	}
+	return t.Border
+}
+
 // AccentStyle is brand-coloured text.
 func (t Theme) AccentStyle() render.Style {
 	return render.Style{Fg: t.Accent, Bg: t.Bg, Attrs: render.Bold}
@@ -310,44 +310,41 @@ func (t Theme) On(fill render.Color) render.Style {
 	return render.Style{Fg: t.FgOn, Bg: fill, Attrs: render.Bold}
 }
 
-// Status maps a severity token to its style, with an attribute fallback so the
-// distinction survives a terminal that cannot carry it in colour.
+// Status maps an outcome to its style.
 //
-// The fallback is keyed to the resolved colour depth, not to the plain theme.
-// Keying it to the theme was the natural-looking mistake and it left the states
-// told apart by glyph alone on any real 16-colour terminal: the theme was still
-// "dark", still full of distinct hexes, and three of its status colours were
-// arriving as the same escape sequence. What decides whether colour can carry a
-// distinction is the terminal, so that is what is asked.
+// Only a refusal has a colour of its own. The others are the text colour, told
+// apart by weight, slant and underline — the same at every colour depth, so an
+// outcome looks the same on a truecolor terminal as on one with no colour, and
+// nothing depends on a terminal keeping six hues apart. A demotion is bold; a
+// pass a grant cleared is underlined, and one reached without a check running
+// is slanted as well, because those are the two a reader must not take for a
+// plain pass.
+//
+// The one fallback left is keyed to the resolved colour depth, not to the plain
+// theme. Keying it to the theme was the natural-looking mistake: a dark theme
+// on a real 16-colour terminal is still "dark", and its two reds arrive as the
+// same escape sequence. What decides whether colour can carry a distinction is
+// the terminal, so that is what is asked.
 func (t Theme) Status(kind StatusKind) render.Style {
-	plain := t.reducedPalette()
 	switch kind {
 	case StatusPass:
-		return render.Style{Fg: t.Success, Bg: t.Bg}
+		// The quietest of them: a call that simply worked is the usual case,
+		// and its tick is not news.
+		return render.Style{Fg: t.FgMuted, Bg: t.Bg}
 	case StatusWarn:
-		s := render.Style{Fg: t.Warning, Bg: t.Bg}
-		if plain {
-			s.Attrs |= render.Bold
-		}
-		return s
+		return render.Style{Fg: t.Fg, Bg: t.Bg, Attrs: render.Bold}
 	case StatusBlock:
 		s := render.Style{Fg: t.Danger, Bg: t.Bg, Attrs: render.Bold}
-		if plain {
+		if t.reducedPalette() {
+			// Where the brand's red and this one reduce to one slot, or there
+			// is no colour at all, a refusal is still unmistakable.
 			s.Attrs |= render.Reverse
 		}
 		return s
 	case StatusGranted:
-		s := render.Style{Fg: t.Granted, Bg: t.Bg}
-		if plain {
-			s.Attrs |= render.Underline
-		}
-		return s
+		return render.Style{Fg: t.Fg, Bg: t.Bg, Attrs: render.Underline}
 	case StatusDegraded:
-		s := render.Style{Fg: t.Degraded, Bg: t.Bg}
-		if plain {
-			s.Attrs |= render.Italic | render.Underline
-		}
-		return s
+		return render.Style{Fg: t.Fg, Bg: t.Bg, Attrs: render.Italic | render.Underline}
 	case StatusInfo:
 		return render.Style{Fg: t.Info, Bg: t.Bg}
 	}
@@ -381,6 +378,10 @@ type Glyphs struct {
 	Collapsed, Expanded                  string
 	Spinner                              []string
 	VBar, Caret                          string
+	// Prompt marks what the operator typed, in the transcript and in the
+	// composer. Thought marks the model's thinking. Dot separates the items of
+	// a status row.
+	Prompt, Thought, Dot string
 }
 
 // Glyphs returns the symbol set for this theme.
@@ -391,12 +392,14 @@ func (t Theme) Glyphs() Glyphs {
 			Tool: ">>", Lease: "#", Bullet: "*", Arrow: "->",
 			Collapsed: "+", Expanded: "-",
 			Spinner: render.SpinnerASCII, VBar: "|", Caret: "_",
+			Prompt: ">", Thought: "~", Dot: "-",
 		}
 	}
 	return Glyphs{
-		Pass: "✓", Block: "⛔", Warn: "⚠", Granted: "◈", Degraded: "◐",
+		Pass: "✓", Block: "✕", Warn: "⚠", Granted: "◈", Degraded: "◐",
 		Tool: "⚙", Lease: "⌁", Bullet: "•", Arrow: "→",
 		Collapsed: "▸", Expanded: "▾",
 		Spinner: render.SpinnerDots, VBar: "│", Caret: "▏",
+		Prompt: "›", Thought: "✻", Dot: "·",
 	}
 }

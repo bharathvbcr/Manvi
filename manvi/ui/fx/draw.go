@@ -4,36 +4,6 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
-// SweepStyled paints a travelling highlight across a single row — the top
-// edge of a bordered box, in practice — so a frame whose contents are
-// momentarily idle still says that work is running underneath it.
-//
-// The head is the hot colour; behind it a short tail fades back to the cold
-// style, and every other cell is the cold style unchanged, so the sweep can
-// run over a border without leaving a trail of mismatched backgrounds behind
-// it. The painter's diff for one tick of this is the tail plus the cell the
-// head vacated: a beam is the cheapest motion there is, which is why it is
-// the right ambient cue.
-func SweepStyled(b *render.Buffer, r render.Rect, tick int, glyph string, hot render.Color, cold render.Style) {
-	if r.Empty() || glyph == "" {
-		return
-	}
-	w := r.W
-	head := tick % w
-	if head < 0 {
-		head += w
-	}
-	const tail = 8
-	for x := 0; x < w; x++ {
-		d := (head - x + w) % w
-		c := cold
-		if d < tail {
-			c.Fg = hot.Blend(cold.Fg, float64(d)/float64(tail))
-		}
-		b.SetString(r.X+x, r.Y, glyph, c)
-	}
-}
-
 // Rain is the digital-rain backdrop for a screen with nothing on it yet.
 //
 // One stream per Gap columns; a column's speed and phase are hashed from its
