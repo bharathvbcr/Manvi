@@ -339,7 +339,7 @@ func setUserConfigValues(path string, pairs []configPair) error {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
-	old, err := os.ReadFile(path)
+	old, err := os.ReadFile(path) // #nosec G304 -- the operator's own user-config path from userConfigPath, symlink-resolved above; not external input
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}

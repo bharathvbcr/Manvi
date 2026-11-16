@@ -295,7 +295,7 @@ func blockedAssists(t *testing.T, env *assistEnv, n int) chan error {
 		}()
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for env.streams.Load() < int32(n) {
+	for int(env.streams.Load()) < n {
 		if time.Now().After(deadline) {
 			t.Fatalf("only %d of %d assist calls reached the provider", env.streams.Load(), n)
 		}
@@ -401,7 +401,7 @@ func TestAssistRedactsNothingAndSaysSo(t *testing.T) {
 	// "Assist completion"), so the count is a statement, not a measurement: it
 	// is zero, and the prompt reaches the provider exactly as the host sent it.
 	env := newAssistEnv(t, nil)
-	secret := "token sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	secret := "token sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" // #nosec G101 -- a made-up key in the real one's shape; the test needs the prompt to carry something key-shaped
 	got, err := env.runner.Assist(t.Context(), assistParams(secret, secret, 100), assistConfig)
 	if err != nil || got.Redactions != 0 {
 		t.Fatalf("%+v %v", got, err)
