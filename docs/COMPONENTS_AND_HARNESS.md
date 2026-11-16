@@ -284,7 +284,7 @@ AST stub detection landed in `dc-verify`.
 
 `dc-glob` is deliberately absent: it is a *library* linked into `dcverify`, has
 no binary, and never appears on the boundary. Its Go counterpart is
-`manvi/internal/fnmatch`, and the two are pinned to each other by a shared
+`DevCouncil/backend/go_orchestrator/fnmatch` (imported by `manvi/go.mod`), and the two are pinned to each other by a shared
 775-case CPython `fnmatch` parity fixture — the one rule both sides must agree
 on, so it is implemented twice on purpose and checked against a third party.
 
@@ -353,7 +353,7 @@ store to Rust, on dependency grounds rather than speed.
 | `dcgrep` | **Rust** | **Effectively forced** by rule 3. The value *is* ripgrep's `grep-regex` / `grep-searcher` / `ignore` crates. A Go rewrite would be a second search engine to keep in step. |
 | `dcverify` | **Rust** | **Right, by rule 1** — it parses diffs and coverage profiles, both untrusted, both adversarial. Note the subsystem it comes from does not port wholly; see the split below. |
 | `dcstore` | **Rust** | **Right, for the dependency reason rather than the speed one.** It is IO-bound, so rules 1–3 do not fire on their own. What decides it is `CGO_ENABLED=0`: `rusqlite` bundled compiles SQLite into the binary and keeps the store independent of the host's `libsqlite3`. Being honest about *why* matters — quoting speed here would set a bad precedent for the next component. |
-| `dc-glob` | **Both, deliberately** | Rust `rust/dc-glob` **and** Go `manvi/internal/fnmatch`, held together by a shared 775-case CPython parity fixture. The right answer for a small, pure, hot-path function both planes need: duplication is cheaper than a process call, and the fixture is what makes it safe. |
+| `dc-glob` | **Both, deliberately** | Rust `rust/dc-glob` **and** Go `DevCouncil/backend/go_orchestrator/fnmatch`, held together by a shared 775-case CPython parity fixture. The right answer for a small, pure, hot-path function both planes need: duplication is cheaper than a process call, and the fixture is what makes it safe. |
 
 ### Not yet ported — the recommendation
 
@@ -406,7 +406,7 @@ Three parts, three answers, and the middle one is the interesting call.
 silent divergence. Two patterns in this system already solve that and should be
 the standard for every shared schema:
 
-- **A generated fixture both sides read.** `dc-glob` and `manvi/internal/fnmatch`
+- **A generated fixture both sides read.** `dc-glob` and `DevCouncil/backend/go_orchestrator/fnmatch`
   share a 775-case CPython-generated `fnmatch` table; if they drift, one fails.
 - **A test that interrogates the other implementation directly.** Historically
   `dc/requirement_interop_test.go` read `Literal` members out of DevCouncil's

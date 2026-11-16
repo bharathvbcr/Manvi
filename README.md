@@ -117,12 +117,12 @@ flowchart TB
 |---|---|---|---|
 | Agent loop, turn driving | Go | `manvi/agent` | Goroutine concurrency, stream cancellation |
 | LLM provider seam | Go | `manvi/llm` | HTTP SSE client, multi-provider normalization |
-| Policy gates & overrides | Go | `manvi/gate`, `manvi/policy`, `manvi/grants` | Fast in-memory evaluation, origin tracking |
+| Policy gates & overrides | Go (`DevCouncil` module) | `DevCouncil/backend/go_orchestrator/{gate,policy,grants}` | Fast in-memory evaluation, origin tracking |
 | Terminal UI & telemetry | Go | `manvi/ui` | Event multiplexing, raw termios, damage-diffed rendering |
 | Unified diff parsing | Rust | `crates/dc-verify` | CPU-bound text processing |
 | Coverage intersection | Rust | `crates/dc-verify` | Line-level coverage bitsets (`-coverprofile`, LCOV) |
 | Task & lease persistence | Rust | `crates/dc-store` | `rusqlite`, ACID transactions, exclusion index |
-| Glob pattern matching | Both | `crates/dc-glob` ↔ `manvi/internal/fnmatch` | Shared 775-case CPython parity fixture |
+| Glob pattern matching | Both | `crates/dc-glob` ↔ `DevCouncil/backend/go_orchestrator/fnmatch` | Shared 775-case CPython parity fixture |
 | Repository search | Rust | `crates/dc-grep` | ripgrep's engine (`grep-regex`, `grep-searcher`, `ignore`); ignore-rule resolution and line-oriented matching |
 
 ---

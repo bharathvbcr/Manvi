@@ -15,7 +15,7 @@ flowchart LR
     CPython["CPython 3.12 Standard Library"] --> GenGlob["scripts/gen-fnmatch-parity.py"]
     GenGlob --> GlobTSV["testdata/fnmatch-parity.tsv<br/>(775 cases)"]
     
-    GlobTSV --> GoFnmatch["manvi/internal/fnmatch (Go)"]
+    GlobTSV --> GoFnmatch["DevCouncil go_orchestrator/fnmatch (Go)"]
     GlobTSV --> RustGlob["crates/dc-glob (Rust)"]
 
     Frozen["Frozen Go command-policy snapshot"] --> CmdTSV["testdata/command-parity.tsv<br/>256 cases"]
@@ -292,16 +292,15 @@ of whichever release a run fetched. Move a pin in a change that also re-measures
 
 `manvi/.golangci.yml` holds the linters that are clean on the whole tree, so its
 verdict is a number and the number is zero. `manvi/.golangci-debt.yml` holds the
-checks worth having that this tree does not pass yet: 1059 findings, too many to
+checks worth having that this tree does not pass yet: 533 findings (down from 1059 at introduction; see `manvi/.golangci-debt.counts` for the current per-linter breakdown), too many to
 gate on and too many to leave unnamed. Their counts are recorded per linter in
 `manvi/.golangci-debt.counts` and may only go down. Per linter rather than as a
 sum, because one total lets a fix pay for a new defect.
 
-Those counts are larger than any default `golangci-lint` run reports. Its own
-summary said **197** for this same tree. `max-issues-per-linter` stops at 50,
-`max-same-issues` at 3, and `uniq-by-line` keeps one finding per line — three
-caps, all silent, withholding 850 findings behind a line that reads like a
-total. Both config files turn all three off.
+Note that `golangci-lint`'s default summary caps `max-issues-per-linter` (50),
+`max-same-issues` (3), and `uniq-by-line`, which is why the debt ratchet disables
+all three caps (at introduction those caps hid 862 of 1059 findings behind a summary
+count of **197**). Both config files keep all three off.
 
 `manvi/gorules/rules.go` carries this repository's own invariants as ruleguard
 patterns, loaded by the enforced set: the credential that must not reach `fmt`,

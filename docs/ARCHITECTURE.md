@@ -70,8 +70,10 @@ verifies its effective settings and sends one model turn. Known pre-spawn failur
 release their claim; uncertain starts retain it. Failed initialization preserves
 the process receipt and records provider failure without fabricating thread data.
 Provider completion, process reaping and task acceptance remain separate. The real
-read-only native/provider path is verified; real-account approval variants,
-managed Claude and process-tree/crash recovery remain open.
+read-only native/provider path, managed Claude and Antigravity ACP adapters
+(`manvi/codingagent`), detached socket-served `manvi serve --listen`, and process-group
+reaping are landed on `main`; real-account approval variants, installed notification
+qualification, and code-review/sync workflows remain open.
 Schema eleven separates the archive from Done: `archived` is a task flag
 independent of status, with a store-maintained `completed_at`, checklists,
 typed task links and `items.restore` for deleted tasks. Its upgrade archives
@@ -152,14 +154,14 @@ flowchart TB
 |---|---|---|---|
 | **Agent Loop & Turn Driving** | Go | `manvi/agent` | Goroutine concurrency, IO multiplexing, stream cancellation |
 | **LLM Provider Seam** | Go | `manvi/llm` | HTTP SSE client, streaming parser, multi-provider normalization |
-| **Policy & Overrides** | Go | `manvi/gate`, `manvi/policy` | Fast in-memory evaluation, origin tracking, grant ledger |
+| **Policy & Overrides** | Go (`DevCouncil` module) | `DevCouncil/backend/go_orchestrator/{gate,policy}` | Fast in-memory evaluation, origin tracking, grant ledger (imported via `manvi/go.mod`) |
 | **Terminal UI & Telemetry** | Go | `manvi/ui` | Event multiplexing, raw terminal IO, damage-diffed rendering |
 | **Diff & Scope Parsing** | DevCouncil component | `dcverify` (DevCouncil `rust/dc-verify`) | CPU-bound text processing, unified diff parsing, regex matching |
 | **Test Coverage Intersection** | DevCouncil component | `dcverify` (DevCouncil `rust/dc-verify`) | Fast line-level coverage bitsets (Go `-coverprofile`, LCOV) |
 | **Task & Lease Persistence** | DevCouncil component | `dcstore` (DevCouncil `rust/dc-store`) | `rusqlite` SQLite binding, ACID transactions, exclusion index |
 | **Code Graph & Adjacency** | DevCouncil component | `devmap` (DevCouncil `rust/`) | Tree-sitter extraction, resolution, dead-code and impact analysis |
 | **Repository Search** | DevCouncil component | `dcgrep` (DevCouncil `rust/dc-grep`) | ripgrep's own `grep-regex`, `grep-searcher` and `ignore` crates; ignore-rule resolution and line-oriented matching |
-| **Glob Pattern Matching** | Both sides | `dc-glob` (linked into `dcverify`), `manvi/internal/fnmatch` | The one rule both planes must agree on, so it is implemented twice and pinned by a shared 775-case CPython `fnmatch` parity fixture. `dc-glob` is a *library*, never a process — it has no binary and is not on the boundary diagram. |
+| **Glob Pattern Matching** | Both sides | `dc-glob` (linked into `dcverify`), `DevCouncil/backend/go_orchestrator/fnmatch` | The one rule both planes must agree on, so it is implemented twice and pinned by a shared 775-case CPython `fnmatch` parity fixture. `dc-glob` is a *library*, never a process — it has no binary and is not on the boundary diagram. |
 
 ---
 
@@ -212,10 +214,10 @@ classDiagram
 
 - **`manvi/core/plugin`**: Minimalist service container implementing topological dependency resolution and LIFO shutdown for modular harness extensions.
 - **`manvi/core/bus`**: Typed asynchronous and synchronous publish-subscribe event bus.
-- **`manvi/flags`**: Typed, origin-tracked configuration catalog (`Default`, `Config`, `Env`, `Override`, `Runtime`) with safety flags and posture resolution.
-- **`manvi/gate`**: Unified evaluation point combining policy ladders, active grants, posture demotions, and TUI approval callbacks.
-- **`manvi/policy`**: Pure rule definitions for file write and command execution gates.
-- **`manvi/grants`**: In-memory and persisted override ledger with expiration and authority scoping.
+- **`DevCouncil/backend/go_orchestrator/flags`** *(imported via `manvi/go.mod`)*: Typed, origin-tracked configuration catalog (`Default`, `Config`, `Env`, `Override`, `Runtime`) with safety flags and posture resolution.
+- **`DevCouncil/backend/go_orchestrator/gate`** *(imported via `manvi/go.mod`)*: Unified evaluation point combining policy ladders, active grants, posture demotions, and TUI approval callbacks.
+- **`DevCouncil/backend/go_orchestrator/policy`** *(imported via `manvi/go.mod`)*: Pure rule definitions for file write and command execution gates.
+- **`DevCouncil/backend/go_orchestrator/grants`** *(imported via `manvi/go.mod`)*: In-memory and persisted override ledger with expiration and authority scoping.
 - **`manvi/llm`**: Normalized interface for Anthropic, Gemini, xAI Grok, and local models with `AssistantProvenance.ReplayState` tracking.
 - **`manvi/tools`**: Guarded tool execution pipeline with pre-execution validation and post-execution qualification.
 - **`manvi/session`**: Append-only session event store with verification that all model-visible context is persisted. Records who authored each model-visible message, so a verdict the harness handed back is never rendered as the operator's words.
@@ -354,32 +356,31 @@ ledger for the numbers and the benchmark that was measuring the wrong condition.
 ## 8. Directory & Package Map
 
 ```
-Dev_Harness/
+Manvi/
 ├── manvi/                     # Go Execution Plane
 │   ├── agent/                 # Turn loop and step state machine
 │   ├── agents/                # Predefined agent roles & subagent fan-out pool
+│   ├── artifacts/             # Artifact CAS store, containment, and limits
+│   ├── bootstrap/             # Repo bootstrap & configuration scaffolding
+│   ├── childenv/              # Withheld-credential child environment filter
 │   ├── cmd/manvi/             # Main executable CLI subcommands
+│   ├── codingagent/           # Managed agent adapters (Codex, Claude, Antigravity ACP) & procgroup reaping
 │   ├── computer/              # Desktop broker client & runner
 │   ├── core/
 │   │   ├── bus/               # Event bus
 │   │   └── plugin/            # Topological plugin container
 │   ├── credentials/           # Credential detection & terminal scrubber
-│   ├── dc/                    # DevCouncil domain types & IPC client
-│   │   ├── dcgrep/            # Search & enumeration IPC client
-│   │   ├── devmap/            # Code graph IPC client
-│   │   └── store/             # Task lease IPC client
 │   ├── devcouncil/            # Native tool implementations & TUI escalation
 │   ├── fetch/                 # Bounded https documentation lookup & egress policy
-│   ├── flags/                 # Settings catalog, origin tracking & postures
-│   ├── gate/                  # Composite policy & override gate
-│   ├── grants/                # Human & agent grant ledger
+│   ├── gorules/               # Ruleguard custom static invariants
+│   ├── gussetcheck/           # Gusset engine availability & cgo verification
 │   ├── harness/               # Harness spec validation & role limits
 │   ├── internal/
+│   │   ├── contract/          # Documentation, pin, env & CLI parity contract tests
 │   │   ├── filelock/          # In-process & cross-process file locks
-│   │   ├── fnmatch/           # Go fnmatch glob engine
 │   │   ├── ptytest/           # Shared PTY test fixtures
-│   │   ├── syncdir/           # Single owner of platform directory flushes
-│   │   └── testsupport/       # Test helper fixtures
+│   │   ├── storeguard/        # Single-owner SQLite profile/workbench process guard
+│   │   └── syncdir/           # Single owner of platform directory flushes
 │   ├── lessons/               # Lessons store & structure protection
 │   ├── llm/                   # Multi-provider LLM seam & streaming codecs
 │   │   ├── anthropic/         # Anthropic Claude adapter
@@ -388,26 +389,37 @@ Dev_Harness/
 │   │   ├── openaicompat/      # OpenAI-compatible streaming & parser recovery
 │   │   ├── xai/               # xAI Grok adapter
 │   │   └── transport/         # SSE streaming client
-│   ├── policy/                # Pure write gate & command gate ladders
+│   ├── mcp/                   # MCP client & server integration
 │   ├── prompt/                # System prompts & template renderer
-│   ├── repomap/               # Code graph adjacency engine
-│   ├── serve/                 # Embedded stdio host plane (NDJSON over stdin/stdout)
+│   ├── serve/                 # Embedded stdio & Unix-socket host plane (NDJSON)
 │   ├── session/               # Append-only log & invariant checks
 │   ├── tools/                 # Tool registry & execution pipeline
-│   └── ui/                    # Terminal renderers & full Elm-loop TUI
-│       ├── brand/             # Dark-red palette ramp
-│       ├── input/             # Raw termios & escape sequence decoder
-│       ├── logo/              # Fold M mark: SVG generator & block-character renderer
-│       ├── render/            # Damage-diffed cell painter
-│       ├── term/              # Terminal control & raw mode
-│       └── tui/               # Elm-style full-screen interactive UI
+│   ├── ui/                    # Terminal renderers & full Elm-loop TUI
+│   │   ├── brand/             # Dark-red palette ramp
+│   │   ├── input/             # Raw termios & escape sequence decoder
+│   │   ├── logo/              # Fold M mark: SVG generator & block-character renderer
+│   │   ├── render/            # Damage-diffed cell painter
+│   │   ├── term/              # Terminal control & raw mode
+│   │   └── tui/               # Elm-style full-screen interactive UI
 │   └── workflow/              # Workflow definitions & catalog store
 │
+├── DevCouncil/backend/go_orchestrator/  # Imported Go packages via manvi/go.mod
+│   ├── dc/                    # Domain types & IPC clients (dcgrep, dcverify, devmap, store)
+│   ├── flags/                 # Settings catalog, origin tracking & postures
+│   ├── fnmatch/               # Go fnmatch glob engine
+│   ├── gate/                  # Composite policy & override gate
+│   ├── grants/                # Human & agent grant ledger
+│   ├── policy/                # Pure write gate & command gate ladders
+│   └── repomap/               # Code graph adjacency engine
+│
 ├── native/                    # Native desktop broker workspace (Rust)
-├── crates/                    # Mirror of DevCouncil's components (upstream: DevCouncil)
+├── crates/                    # Symlinks to DevCouncil's Rust components (../DevCouncil/rust/)
+│   ├── dc-evidence/           # Structured verification & check evidence schema
 │   ├── dc-glob/               # Zero-dependency glob engine (library, linked into dc-verify)
 │   ├── dc-grep/               # Ignore-aware repository search (ripgrep engine)
-│   ├── dc-store/              # SQLite lease mutex & task persistence
+│   ├── dc-proc/               # Process group supervision & bounded child runner
+│   ├── dc-redact/             # Secret & token redaction engine
+│   ├── dc-store/              # SQLite lease mutex, workbench schema 17 & task persistence
 │   └── dc-verify/             # Diff parser, rigor gates & coverage mapper
 │
 ├── testdata/                  # Shared cross-language test fixtures

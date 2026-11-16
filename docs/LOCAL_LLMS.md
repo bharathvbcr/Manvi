@@ -112,7 +112,7 @@ Local server inference throughput relies heavily on prompt-prefix KV cache reuse
 MANVI records one-way compactions in the session log and projects them deterministically so that the token prefix **only ever grows**, reducing step latency to **1.5s warm**.
 
 ### 5. Self-Calibrating Token Budget
-Token estimators can diverge from model tokenizers (e.g. ~25% high on Qwen, up to 58% on structured JSON tool outputs). MANVI reads the exact `prompt_tokens` returned by the server on each response and self-calibrates its estimation over successive steps. Tool schemas are explicitly budgeted (~1,755 tokens on the shipped surface).
+Token estimators can diverge from model tokenizers (e.g. ~25% high on Qwen, up to 58% on structured JSON tool outputs). MANVI reads the exact `prompt_tokens` returned by the server on each response and self-calibrates its estimation over successive steps. Tool schemas are explicitly budgeted (measured ~1,755 tokens on the earlier 44-tool surface; scales with the current 51-tool surface).
 
 ### 6. Server Telemetry Ingestion
 MANVI parses `prompt_tokens_details.cached_tokens` and server `timings` blocks from SSE streams, tracking prefix cache hit ratios and generation tokens/second directly on `llm.Usage`.

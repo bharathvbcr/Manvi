@@ -591,8 +591,8 @@
         <ul class="component-list">
           <li><span class="pkg">manvi/agent</span> <span class="role">Turn/step state machine</span></li>
           <li><span class="pkg">manvi/llm</span> <span class="role">Anthropic, Gemini, xAI, local models</span></li>
-          <li><span class="pkg">manvi/gate</span> <span class="role">Write &amp; command policy ladders</span></li>
-          <li><span class="pkg">manvi/grants</span> <span class="role">Human &amp; agent override ledger</span></li>
+          <li><span class="pkg">DevCouncil go_orchestrator/gate + policy</span> <span class="role">Write &amp; command policy ladders</span></li>
+          <li><span class="pkg">DevCouncil go_orchestrator/grants</span> <span class="role">Human &amp; agent override ledger</span></li>
           <li><span class="pkg">manvi/tools</span> <span class="role">Guarded native tool pipeline</span></li>
           <li><span class="pkg">manvi/session</span> <span class="role">Append-only session log</span></li>
           <li><span class="pkg">manvi/ui</span> <span class="role">Elm-loop fullscreen TUI</span></li>
@@ -667,9 +667,8 @@
           <div class="step-title">Hard Security Rules (ungrantable)</div>
           <p class="step-desc">Credentials, <code>.git</code> internals, agent configuration and unsafe git or shell operations. No grant clears them. Attempting to issue one fails immediately with <code>ErrUngrantableRule</code>. They are switched off only by <code>yolo</code> or by explicitly setting <code>policy.hard_rules.enabled=false</code>, and that is recorded as <em>degraded</em>.</p>
           <div class="step-rules">
-            <span class="rule-pill hard">path.credential (.env*, *.pem, *.key, id_rsa)</span>
-            <span class="rule-pill hard">path.git_internal (.git/*)</span>
-            <span class="rule-pill hard">path.agent_config</span>
+            <span class="rule-pill hard">path.secret (.env*, *.pem, *.key, id_rsa)</span>
+            <span class="rule-pill hard">path.restricted (.git/*, agent config)</span>
             <span class="rule-pill hard">cmd.git.force_push</span>
             <span class="rule-pill hard">cmd.git.bypass (--no-gpg-sign)</span>
             <span class="rule-pill hard">command.too_long (128 KiB)</span>
@@ -767,7 +766,7 @@
 
   <section id="simulator">
     <h2>5. Interactive Policy &amp; Posture Simulator</h2>
-    <p class="lead">Try a file write against the ladder. The trace shows which rung decided and which were never reached. This is an illustrative model of the documented ladder, not the real gate; the real one lives in <code>manvi/gate</code> and <code>manvi/policy</code>.</p>
+    <p class="lead">Try a file write against the ladder. The trace shows which rung decided and which were never reached. This is an illustrative model of the documented ladder, not the real gate; the real one lives in <code>DevCouncil/backend/go_orchestrator/gate</code> and <code>policy</code> (imported by <code>manvi/go.mod</code>).</p>
 
     <div class="presets" aria-label="Presets">
       <button type="button" onclick="preset('src/main.go','dev','src/main.go,src/util.go','unrelated','none','tui')">In-plan write</button>
@@ -870,7 +869,7 @@
 
   <section id="build-deps">
     <h2>8. Build, Dependencies &amp; Failure Modes</h2>
-    <p class="lead">A full source build needs Go 1.27.4, Rust 1.85+ and a C compiler (<code>dc-store</code> compiles SQLite from source rather than trusting the host's <code>libsqlite3</code>). The dependency set is a gate: <code>verify.sh</code> fails on any Go package outside the allowlist.</p>
+    <p class="lead">A full source build needs Go 1.27.4, Rust 1.100.0 and a C compiler (<code>dc-store</code> compiles SQLite from source rather than trusting the host's <code>libsqlite3</code>). The dependency set is a gate: <code>verify.sh</code> fails on any Go package outside the allowlist.</p>
 
     <div class="cards">
       <div class="card"><span class="tag">Go module</span><h4>Small, audited surface</h4><p><code>memguard</code> seals credentials at rest, and the ruleguard DSL is lint-only and excluded from every build. Everything else is the standard library, plus the pinned DevCouncil and Gusset modules.</p></div>
@@ -926,11 +925,11 @@ const COMPONENTS = [
     owns: 'One normalized interface over Anthropic, Gemini, xAI Grok and local models, including replay state so a turn can resume deterministically and KV prefix caches survive on local servers.',
     reach: 'In-process HTTP/SSE clients on the standard library.',
     fail: 'Local-model wire quirks (Hermes and Qwen3 XML tool calls, think tags, truncation) are recovered at the wire level.' },
-  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/gate + policy',
+  { group: GO, kind: 'go', lang: 'Go (DevCouncil module)', name: 'gate + policy',
     owns: 'The write and command ladders, posture, grant consultation and TUI approval. Rule definitions are pure in policy; gate combines them with grants and posture.',
     reach: 'In-process; asked about every write and every command. Pattern questions go to the Gusset engine in a cgo build and to fnmatch otherwise.',
     fail: 'An engine that cannot answer mid-decision is a hard denial (engine_unavailable), never a guessed boolean.' },
-  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/grants',
+  { group: GO, kind: 'go', lang: 'Go (DevCouncil module)', name: 'grants',
     owns: 'The override ledger. Human and agent grants with mandatory justification, scoped patterns and a bounded TTL (15 minutes by default).',
     reach: 'In-process, in memory and persisted.',
     fail: 'Issuing a grant for a hard rule fails immediately with ErrUngrantableRule.' },
@@ -939,7 +938,7 @@ const COMPONENTS = [
     reach: 'In-process; every step projects history from it.',
     fail: 'A corrupt generation is refused, not half-read. A model-visible message with no log record aborts the turn.' },
   { group: GO, kind: 'go', lang: 'Go', name: 'manvi/tools',
-    owns: 'The guarded pipeline for the 44 native tools: pre-execute waterfall, gate, body, post-execute, with qualification metadata attached to every result.',
+    owns: 'The guarded pipeline for the 51 native tools (50 without repo skills): pre-execute waterfall, gate, body, post-execute, with qualification metadata attached to every result.',
     reach: 'In-process. Component-backed tools exec a binary across the process boundary.',
     fail: 'A blocked call returns a policy error with rule and reason to the model rather than failing silently.' },
   { group: GO, kind: 'go', lang: 'Go', name: 'manvi/fetch',
@@ -1069,9 +1068,9 @@ function runSim() {
 
   // Rung 2: hard rules
   let hard = null;
-  if (/(^|\/)\.env/.test(p) || /\.(pem|key)$/.test(p) || /(^|\/)id_(rsa|ed25519)/.test(p) || /(^|\/)credentials\.json$/.test(p)) hard = 'path.credential';
-  else if (/(^|\/)\.git(\/|$)/.test(p)) hard = 'path.git_internal';
-  else if (/(^|\/)(\.claude\/settings(\.local)?\.json|\.cursorrules)$/.test(p)) hard = 'path.agent_config';
+  if (/(^|\/)\.env/.test(p) || /\.(pem|key)$/.test(p) || /(^|\/)id_(rsa|ed25519)/.test(p) || /(^|\/)credentials\.json$/.test(p)) hard = 'path.secret';
+  else if (/(^|\/)\.git(\/|$)/.test(p)) hard = 'path.restricted';
+  else if (/(^|\/)(\.claude\/settings(\.local)?\.json|\.cursorrules)$/.test(p)) hard = 'path.restricted';
   if (hard) {
     if (posture === 'yolo') {
       set(1, 'fire', hard + ' would fire, but hard rules are off under yolo.');

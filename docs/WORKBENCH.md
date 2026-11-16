@@ -10,11 +10,13 @@ but workbench operations only access `work_*` tables.
 This implementation provides storage, the local host API, asynchronous enhancement
 generation and a durable proposal lifecycle. GitPulse has basic boards, editors,
 enhancement review, terminal handoffs, a structured request inspector and a macOS
-notification adapter. Managed Codex now uses its stdio App Server protocol, with
-native activation and durable request delivery. The real read-only path is verified;
-real-account approval modes, managed Claude, code review, sync and installed
-notification qualification remain open. Passing storage tests does not
-qualify those workflows or establish whole-application performance.
+notification adapter. Managed Codex, managed Claude, and Antigravity ACP (`manvi/codingagent`) now run
+through the Go host plane (`manvi serve`, including detached Unix-socket mode
+`--listen`), with native activation, follow/continue/wake controls, and durable
+request delivery. The real read-only path is verified; real-account approval
+modes, code review, sync and installed notification qualification remain open.
+Passing storage tests does not qualify those workflows or establish whole-application
+performance.
 
 ## Enable the local host API
 
@@ -32,8 +34,8 @@ operations in `hello.ops`. The operation set describes the host handlers;
 successful storage requests additionally require a compatible `dcstore` binary.
 An old or unavailable binary produces an error, never an empty successful board.
 A `dcstore` build that reports its profile schema answers `dcstore --version`
-with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":14}`;
-earlier builds print the same object without `workbench_schema`.
+with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":17}`;
+earlier builds report earlier schema versions or omit `workbench_schema`.
 
 The API is for the owning local host. Possession of that stdio connection permits
 profile CRUD. These operations are not registered as agent tools, do not grant
@@ -54,11 +56,16 @@ All names below receive a `work.` prefix over `manvi serve`.
 | Repositories | `repositories.list`, `repositories.get`, `repositories.put`, `repositories.relink` |
 | Items | `items.list`, `items.get`, `items.brief.get`, `items.put`, `items.delete`, `items.restore`, `items.history` |
 | Changes | `events.list` |
-| Enhancements | `enhancements.create`, `enhancements.claim`, `enhancements.complete`, `enhancements.recover`, `enhancements.get`, `enhancements.list`, `enhancements.accept`, `enhancements.revise`, `enhancements.dismiss`, `enhancements.undo` |
+| Decisions | `decisions.create`, `decisions.claim`, `decisions.decide`, `decisions.resolve`, `decisions.get`, `decisions.list` |
+| Attention | `attention.get`, `attention.list`, `attention.update` |
+| Tasks & Suggestions | `tasks.organize`, `tasks.suggest` |
+| Verification & Scans | `verify.task`, `verify.get`, `scan.gaps`, `scan.get`, `scan.cancel` |
+| Enhancements & Generation | `enhancements.create`, `enhancements.claim`, `enhancements.complete`, `enhancements.recover`, `enhancements.get`, `enhancements.list`, `enhancements.accept`, `enhancements.refine`, `enhancements.revise`, `enhancements.dismiss`, `enhancements.undo`, `enhancements.generate`, `enhancements.wake`, `enhancements.worker`, `enhancements.configuration` |
+| Notifications | `notifications.claim`, `notifications.activate`, `notifications.activations.list`, `notifications.finish`, `notifications.ack`, `notifications.delivery.get`, `notifications.pending.list`, `notifications.settings.get`, `notifications.settings.put` |
 | Automatic scheduling | `automation.get`, `automation.put`, `automation.list`, `automation.prepare` |
 | Run records | `runs.prepare`, `runs.claim`, `runs.started`, `runs.protocol`, `runs.finish`, `runs.cancel`, `runs.get`, `runs.list` |
-| Managed Codex (Go host) | `runs.managed.prepare`, `runs.managed.activate`, `runs.managed.stop` |
-| Generation (Go host runner) | `enhancements.generate`, `enhancements.configuration` |
+| Managed agents (Go host) | `runs.managed.prepare`, `runs.managed.activate`, `runs.managed.continue`, `runs.managed.follow`, `runs.managed.stop`, `runs.managed.wake` |
+| Store maintenance | `store.compact`, `store.upgrade` |
 
 `.put` creates or replaces a record. Supply every editable field that should
 survive replacement; omitted optional fields return to their defaults. It is not
@@ -1635,14 +1642,13 @@ checkout and an agent loop.
   accumulate" argues the other way. Until the owner answers, the implementation
   card must not delete the direct path.
 
-**Sequencing.** The managed-agent surface is in flux. At this commit another
-live session holds uncommitted changes in `manvi/codingagent/*` (`agy.go`,
-`claude_seat.go`, `claude.go`, `codex.go`, `connection.go`, `continue.go`,
-`executable.go` and tests) and `manvi/serve/managed.go`, plus `serve.go`,
-`toolbinary.go` and `harness_materialise.go` (GitPulse collision scan,
-2026-11-07: those 19 files, in the main checkout's worktree, no overlap with this
-branch). The implementation must wait for that work to land, then start from the
-resulting adapter surface. No code ships for Decision 2.
+**Landed adapter surface.** Managed Claude (`manvi/codingagent/claude.go`,
+`claude_seat.go`), Managed Antigravity ACP (`manvi/codingagent/agy.go`),
+`continue.go`, process-group reaping (`connection_group_*.go`), and the
+corresponding host operations in `manvi/serve/managed.go` are now landed on
+`main` alongside `runs.managed.continue`, `runs.managed.follow`, and
+`runs.managed.wake`. Future Decision 2 work builds directly on that landed
+adapter surface.
 
 ## Board queries
 

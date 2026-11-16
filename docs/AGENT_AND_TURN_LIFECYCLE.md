@@ -17,7 +17,7 @@ sequenceDiagram
     participant Waterfall as Event Bus Waterfalls
     participant Provider as LLM Provider (Anthropic/Gemini/xAI)
     participant ToolReg as Tool Registry (manvi/tools)
-    participant Gate as Policy Gate (manvi/gate)
+    participant Gate as Policy Gate (DevCouncil go_orchestrator/gate)
 
     User->>AL: Run(prompt)
     activate AL

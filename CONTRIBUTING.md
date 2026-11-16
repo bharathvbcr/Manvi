@@ -15,30 +15,30 @@ in [TRADE_OFFS.md](docs/TRADE_OFFS.md#2-two-toolchains-because-two-invariants-ha
 | Requirement | Why |
 |---|---|
 | **Go 1.27.4** (`manvi/go.mod`) | The execution plane. Built and tested with `CGO_ENABLED=0`, which the gate exports for you. |
-| **Rust, stable** | The analysis plane. `crates/Cargo.toml` declares edition 2024 with resolver 3, so 1.85 or newer. |
+| **Rust, stable (`1.100.0`)** | The analysis plane. `scripts/tool-versions.env` pins `1.100.0` (with `clippy` and `rustfmt`); `crates/Cargo.toml` uses edition 2024 with resolver 3. |
 | **A C compiler (`cc`)** | `dc-store` takes `rusqlite` with the `bundled` feature and compiles SQLite from source, rather than linking whatever `libsqlite3` the host ships. |
-| **`python3`** | Runs the benchmark rig's eight suites and parses the test run's skip report inside `verify.sh`. |
+| **`python3`** | Runs the benchmark rig's 10 suites and parses the test run's skip report inside `verify.sh`. |
 | **`git`** | Several tests build a repository to run against. |
 
 **Optional, and the gate says so when they are absent.** Each of these is a
 check that will report *NOT COVERED* rather than pass:
 
 ```bash
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-go install golang.org/x/vuln/cmd/govulncheck@latest
-go install go.uber.org/nilaway/cmd/nilaway@latest
-cargo install cargo-audit
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260918162853-acb8859b9031
+cargo install cargo-audit --version 0.22.2
 ```
 
-`node` and `bun` (the mermaid grammar gate and its `bun audit`), `sqlite3` (schema readability), and
+`node` (`22.22.2`) and `bun` (the mermaid grammar gate and its `bun audit`), `ruff` (`0.15.20`, for `bench/` and `scripts/*.py`), `sqlite3` (schema readability), and
 `script(1)` (TUI terminal restoration) are picked up if present.
 
-**DevCouncil's components.** MANVI links none of them and builds only one —
-`devmap` comes from DevCouncil and is not built here. On a fresh clone, without
-`devmap` on `PATH`, the repo-navigation gate reports as *not covered*, which is
-expected. `crates/` mirrors DevCouncil's other three component sources so the
-gate can run without a DevCouncil checkout; at runtime the harness prefers an
-installed component over that mirror. `manvi doctor` prints which binary each
+**DevCouncil's components.** MANVI links none of them and builds none of the
+seven workspace crates here by default — `devmap` comes from DevCouncil and is not in
+`crates/`. On a fresh clone, without `devmap` on `PATH`, the repo-navigation gate reports as *not covered*, which is
+expected. `crates/` links into DevCouncil's seven component crates (`dc-evidence`, `dc-glob`, `dc-grep`, `dc-proc`, `dc-redact`, `dc-store`, `dc-verify`) so the
+gate can run against the pinned sibling checkout; at runtime the harness prefers an
+installed component (`MANVI_<NAME>_BINARY` -> `PATH` -> local build). `manvi doctor` prints which binary each
 component resolved to and whether it answered — read it before assuming which
 one you are testing, because an installed component can be older than the
 contract the harness expects, and `doctor` is where that shows up.
@@ -189,10 +189,9 @@ importing a module. Every component is resolved as a binary
 stdio. That rule is what keeps the harness a single static binary that another
 application can embed, so it does not bend for convenience.
 
-`crates/` holds a **mirror** of DevCouncil's component sources so MANVI can be
-built and tested without a DevCouncil checkout. Edit the component in DevCouncil
-and mirror it here; a change made only here forks silently, because nothing in
-either build will notice. See
+**`crates/` holds symlinks into `../DevCouncil/rust/`** (seven crates: `dc-evidence`, `dc-glob`, `dc-grep`, `dc-proc`, `dc-redact`, `dc-store`, `dc-verify`) so MANVI can
+build and test the Rust components alongside the pinned DevCouncil checkout. Edit components in DevCouncil
+and keep `scripts/module-pins.txt` updated. See
 [`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md) §7.
 
 **Changing a component's contract** — a field name, a new key, a changed default

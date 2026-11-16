@@ -202,7 +202,7 @@ Paste both outputs. Worked examples from this port:
 Two patterns, both already in use. Use one; do not invent a third.
 
 - **A generated fixture both sides read.** `rust/testdata/fnmatch-parity.tsv` is
-  775 CPython-generated cases that `dc-glob` and `manvi/internal/fnmatch` both
+  775 CPython-generated cases that `dc-glob` and `DevCouncil/backend/go_orchestrator/fnmatch` both
   check against. If they drift, one fails.
 - **A test that interrogates the other implementation directly.**
   `dc/requirement_interop_test.go` used to read the `verification_method`,
@@ -291,7 +291,7 @@ rows taken from a DevCouncil ledger without checking are marked *ledger*.
 | ID | Status | Evidence |
 |---|---|---|
 | **P0.1** drift between source copies | **Done**, by D1 option 3 (consume by path) rather than the digest proposed here | `crates/dc-*` symlinks; `manvi/go.mod` replace; `scripts/module-pins.txt`; `check-release.mjs` `crateMirrorProblems`; `manvi/devcouncil/crate_pins_test.go` (*read*) |
-| **P0.2** CI for both workspaces, on Linux | **Done** for Linux and macOS; **open** for Windows (`ft-7fb7af56`). The interop switch is retired, not "demanded by CI". | `.github/workflows/verify.yml` matrix `[ubuntu-latest, macos-latest]` (*read*); `DevCouncil/rust/README.md:245` |
+| **P0.2** CI for both workspaces, on Linux | **Done** for Linux and macOS (`verify.sh`), plus a `windows-latest` job running the `CGO_ENABLED=0` Go build and `go test ./...` (`verify.sh` bash/Rust gates do not run on Windows). | `.github/workflows/verify.yml` (`ubuntu-latest`, `macos-latest`, `windows-latest`); `docs/VERIFICATION_AND_PARITY.md` |
 | **P0.3** Go component home | **Done**, by D3 | `DevCouncil/backend/go_orchestrator/`; `DevCouncil/go/` does not exist (*read*) |
 | **P1.1** domain schemas | **Partial.** Only `Gap` has a Go type (`devcouncil/verify/types.go:17`); no `Evidence`, `Assumption`, `CritiqueFinding` or `CheckpointRefs`. The pydantic-parity part is **dropped** with the Python. | search over both repositories (*read*); `dc/requirement_interop_test.go` retirement marker |
 | **P1.2** `backfill_acceptance_criteria` | **Open, and has no input.** No production code writes `tasks` or `requirements` rows. Linked to DevCouncil `TASK-P7-11` / `GAP-P7-NO-TASK-CREATE` (`docs/TODO.md:26`), board card `ft-aeb4a53f`, not filed alone. | `rg -uu 'INTO tasks'` and `'INTO requirements'`: every hit a test (*read*, per the audit that opened this task, not re-run here); `dcstore` has `task`/`ready`/`list`, no create |

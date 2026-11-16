@@ -42,7 +42,7 @@ MANVI enforces a strict engineering philosophy:
 | **Interrupted Lease Cleanup Context** | `Ctrl+C` cancelled the context used to release SQLite task leases, leaving tasks locked for 15m. | Dedicated uncancelled background context used for teardown and lease release. | `manvi/agent` |
 | **Cold-Start WAL Conversion Contention** | High-concurrency tests hit SQLite `database is locked` during initial WAL journal mode creation. | Retry loop with exponential backoff on SQLite connection initialization. | `crates/dc-store/src/lib.rs` |
 | **Stdio Server Session Isolation** | Re-instantiating stdio server between requests lost prompt token calibration history. | Long-lived unified session driver preserving calibration and compaction ledgers. | `manvi/serve/chat_test.go` |
-| **Quoted Path Trailing Slash Non-Aliasing** | Paths like `"\"0\"/"` settled across two normalization passes, violating non-aliasing invariants. | Single-pass idempotent path cleaner resolving quotes and trailing slashes atomically. | `manvi/policy/file.go` |
+| **Quoted Path Trailing Slash Non-Aliasing** | Paths like `"\"0\"/"` settled across two normalization passes, violating non-aliasing invariants. | Single-pass idempotent path cleaner resolving quotes and trailing slashes atomically. | `DevCouncil/backend/go_orchestrator/policy/file.go` |
 
 ---
 
