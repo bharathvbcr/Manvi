@@ -227,6 +227,14 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 				return session, nil
 			case "agy":
 				options.Program = managedAgentBinary("MANVI_AGY_BINARY", "agy")
+				if mcpBin := toolBinary("MANVI_GITPULSE_MCP_BINARY", "gitpulse-mcp"); filepath.IsAbs(mcpBin) && mcpBin != unresolvedTool("gitpulse-mcp") && isExecutableFile(mcpBin) {
+					options.McpServers = []codingagent.McpServer{{
+						Name:    "gitpulse",
+						Command: mcpBin,
+						Args:    []string{},
+						Env:     []codingagent.McpEnvVar{},
+					}}
+				}
 				session, err := codingagent.StartAgy(ctx, options)
 				if err != nil {
 					return nil, err

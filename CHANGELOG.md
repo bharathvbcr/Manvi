@@ -142,6 +142,17 @@ under **Unreleased** in the same commit as the code.
   `work.verify.task` and `work.scan.gaps` refuse while a block is in the
   worktree. A host that does not see `harness.resolve` in `hello.ops` runs with
   no harness.
+- **Managed `agy` sessions get a `gitpulse` MCP server by default.** In
+  `manvi serve`, when `MANVI_GITPULSE_MCP_BINARY` (default `gitpulse-mcp`)
+  resolves to an absolute path of an executable file, every managed `agy`
+  session is given it as an MCP server named `gitpulse`, with no arguments, in
+  every mode, `inspect` included; the ACP adapter also gains a stdio flag,
+  `mcpServers` forwarding and a graceful cancel/close. **Security impact: this
+  widens what a managed `agy` session can reach.** Manvi does not filter the
+  server's tools, which in GitPulse's MCP surface include task-board and
+  worktree write tools; whether `agy` asks before an MCP tool call is not
+  verified. The default is intended (owner, 2026-11-15). To opt out, point
+  `MANVI_GITPULSE_MCP_BINARY` at a path that is not an executable file.
 
 ### Changed
 
