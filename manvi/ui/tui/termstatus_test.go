@@ -222,7 +222,7 @@ func TestTabDoesNotChangeWhileTheStateDoesNot(t *testing.T) {
 // others that are not idle.
 func TestOneTabSpeaksForTheMostUrgentSession(t *testing.T) {
 	a := newTabApp()
-	a.AddSession("S2", "session two") // now on screen
+	_ = a.AddSession("S2", "session two") // now on screen
 	if a.Current().ID != "S2" {
 		t.Fatalf("the session on screen is %s, want S2", a.Current().ID)
 	}
@@ -264,6 +264,6 @@ func TestTabWithNoSessionAndWithAnUntitledOne(t *testing.T) {
 	}
 	wantTab(t, a, "manvi", term.ProgressNone)
 
-	a.AddSession("S9", "")
+	_ = a.AddSession("S9", "")
 	wantTab(t, a, "S9", term.ProgressNone)
 }

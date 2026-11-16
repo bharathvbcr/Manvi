@@ -2,6 +2,7 @@ package logo
 
 import (
 	"encoding/xml"
+	"errors"
 	"io"
 	"regexp"
 	"strings"
@@ -452,7 +453,7 @@ func TestSVGIsWellFormedAndPortable(t *testing.T) {
 	}
 	dec := xml.NewDecoder(strings.NewReader(svg))
 	for {
-		if _, err := dec.Token(); err == io.EOF {
+		if _, err := dec.Token(); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			t.Fatalf("the SVG does not parse: %v", err)

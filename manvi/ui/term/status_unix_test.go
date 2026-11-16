@@ -247,11 +247,15 @@ func TestSuspendSettlesTheTabAndResumeWritesItAgain(t *testing.T) {
 	term.SetProgress(ProgressBusy)
 
 	// Only an outside process can continue this one once it has stopped.
-	resume := exec.Command("/bin/sh", "-c", fmt.Sprintf("sleep 1; kill -CONT %d", syscall.Getpid()))
+	resume := exec.CommandContext(t.Context(), "/bin/sh", "-c", fmt.Sprintf("sleep 1; kill -CONT %d", syscall.Getpid())) // #nosec G204 -- the command line is built here from this test's own pid, not from input
 	if err := resume.Start(); err != nil {
 		t.Fatalf("starting the resume helper: %v", err)
 	}
-	defer resume.Wait()
+	defer func() {
+		if err := resume.Wait(); err != nil {
+			t.Errorf("the resume helper failed: %v", err)
+		}
+	}()
 	if err := term.Suspend(); err != nil {
 		t.Fatalf("Suspend: %v", err)
 	}

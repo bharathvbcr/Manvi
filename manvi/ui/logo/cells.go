@@ -60,6 +60,12 @@ const (
 	mediumCols, mediumRows = 10, 3
 )
 
+// A cell's step is leg*rows + along, with leg at most foldLegs, along below rows
+// and rows at most fullRows, so its largest value is foldLegs*fullRows+fullRows-1.
+// It is stored in a uint8, and this constant stops the build if that ever stops
+// being true.
+const _ = uint8(foldLegs*fullRows + fullRows - 1)
+
 var (
 	fullCells   = sync.OnceValue(func() [][]cell { return rasterise(fullCols, fullRows) })
 	mediumCells = sync.OnceValue(func() [][]cell { return rasterise(mediumCols, mediumRows) })
@@ -212,7 +218,7 @@ func rasterise(cols, rows int) [][]cell {
 				if legs[leg].lit {
 					along = rows - 1 - r
 				}
-				cl.at = uint8(leg*rows + along)
+				cl.at = uint8(leg*rows + along) // #nosec G115 -- at most foldLegs*fullRows+fullRows-1 (29), held by the constant above
 			}
 			out[r][c] = cl
 		}

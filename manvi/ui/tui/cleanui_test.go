@@ -646,8 +646,8 @@ func TestTheTranscriptIsSpacedInBlocks(t *testing.T) {
 	rows := frameOf(s, th, 60, 20)
 	var got []string
 	for _, r := range rows[len(rows)-len(s.layout):] {
-		switch {
-		case r == "":
+		switch r {
+		case "":
 			got = append(got, "")
 		default:
 			got = append(got, strings.Fields(r)[len(strings.Fields(r))-1])
@@ -1075,7 +1075,7 @@ func hueFamily(c render.Color) string {
 func paletteSession(th Theme) *App {
 	a := NewApp(th, &stubHost{})
 	a.Dispatch(ActionResize{W: 120, H: 60})
-	a.AddSession("S1", "first")
+	_ = a.AddSession("S1", "first")
 	v := a.Current()
 	for _, ev := range []ui.Event{
 		{Kind: ui.KindSessionStart, Posture: "dev", Model: "some-model"},
@@ -1172,7 +1172,7 @@ func TestTheFrameKeepsToItsPalette(t *testing.T) {
 		a.Current().SetBusy(true, "working")
 		a.Current().Scroll.SetSearch("the", th)
 		check("stalled, searching")
-		a.AddSession("S2", "second")
+		_ = a.AddSession("S2", "second")
 		a.Dispatch(ActionApprovalRequest{SessionID: "S2", Request: blockedRequest(true), Reply: make(chan ui.Decision, 1)})
 		check("approval card")
 		key(a, "ctrl+g")

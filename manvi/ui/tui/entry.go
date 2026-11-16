@@ -1238,11 +1238,11 @@ func sizeLabel(n int) string {
 func (e *Entry) gutterLine(th Theme, l render.Line, g Glyphs) render.Line {
 	marker := e.marker(g)
 	st, fill := th.Status(e.Status()), th.Base()
-	switch {
-	case e.Event.Kind == ui.KindTurnStart:
+	switch e.Event.Kind {
+	case ui.KindTurnStart:
 		// The prompt mark, in the brand colour.
 		st = render.Style{Fg: th.Accent, Bg: th.Bg, Attrs: render.Bold}
-	case e.Event.Kind == ui.KindReasoning:
+	case ui.KindReasoning:
 		st = th.Subtle()
 	}
 	if th.Unicode && e.routine() {

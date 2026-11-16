@@ -79,7 +79,7 @@ func TestRunnerKeepsTheTabInStepWithTheFrame(t *testing.T) {
 	w, h := r.term.Size()
 	r.painter = render.NewPainter(w, h, r.term.Profile())
 	r.app.Dispatch(ActionResize{W: w, H: h})
-	r.app.AddSession("S1", "session one")
+	_ = r.app.AddSession("S1", "session one")
 	frame := func() {
 		t.Helper()
 		if err := r.draw(); err != nil {
