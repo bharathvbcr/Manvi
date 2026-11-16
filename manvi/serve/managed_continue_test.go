@@ -801,3 +801,162 @@ func TestManagedContinueClaimThatCannotBeRecordedSendsNothing(t *testing.T) {
 		t.Fatalf("offered %q", got)
 	}
 }
+
+func (m *managedLifecycle) sendQueued(requestID, message string) (ManagedContinueResult, error) {
+	m.t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"id":                 "run",
+		"request_id":         requestID,
+		"message":            message,
+		"queue_if_in_flight": true,
+	})
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	ctx, stop := context.WithTimeout(m.t.Context(), 10*time.Second)
+	defer stop()
+	return m.runner.Continue(ctx, raw)
+}
+
+func TestManagedContinueQueueIfInFlightDeliversFIFOAndRespectsBounds(t *testing.T) {
+	t.Run("default_false_preserves_turn_in_flight_refusal", func(t *testing.T) {
+		m := continuable(t, func(s *managedTestSession) { s.leaveOpen = true })
+		m.startContinuable(1)
+		for deadline := time.Now().Add(10 * time.Second); m.state().Turn != 1; {
+			if time.Now().After(deadline) {
+				t.Fatalf("first turn never began: %+v", m.state())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		_, err := m.send("no-queue", "Must refuse")
+		wantContinueCode(t, err, ErrTurnInFlight)
+	})
+
+	t.Run("max_continuations_1_queues_drains_and_updates_idempotent_receipt", func(t *testing.T) {
+		m := continuable(t, func(s *managedTestSession) {
+			s.leaveOpen = true
+			s.continueOpen = true
+		})
+		m.startContinuable(1)
+		for deadline := time.Now().Add(10 * time.Second); m.state().Turn != 1; {
+			if time.Now().After(deadline) {
+				t.Fatalf("first turn never began: %+v", m.state())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		res, err := m.sendQueued("q1", "Follow-up queued mid-turn")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.State != "queued" || res.RequestID != "q1" || res.Turn != 1 || res.MaxTurns != 2 {
+			t.Fatalf("unexpected queued result: %+v", res)
+		}
+
+		// Idempotent retry while still queued returns queued immediately; mismatching body fails.
+		retry, err := m.sendQueued("q1", "Follow-up queued mid-turn")
+		if err != nil || retry.State != "queued" {
+			t.Fatalf("unexpected queued retry: %+v %v", retry, err)
+		}
+		_, err = m.sendQueued("q1", "Different body")
+		wantContinueCode(t, err, ErrBadRequest)
+
+		// Budget already committed (1 active + 1 queued == 2 MaxTurns): a second queued item is refused.
+		_, err = m.sendQueued("q2", "Exceeds max_continuations")
+		wantContinueCode(t, err, ErrContinueLimit)
+
+		// Finish turn 1: the runner must automatically deliver q1 without parking or needing another Continue call.
+		m.session.events <- codingagent.Event{Text: "turn 1 done", Status: "completed"}
+		deadline := time.Now().Add(10 * time.Second)
+		for len(m.session.offered()) < 1 {
+			if time.Now().After(deadline) {
+				t.Fatalf("queued follow-up was never offered; state=%+v", m.state())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if got := m.session.offered(); len(got) != 1 || got[0] != "Follow-up queued mid-turn" {
+			t.Fatalf("unexpected offered follow-ups: %q", got)
+		}
+		// Idempotent retry now observes delivered with Turn 2.
+		afterDeliver, err := m.sendQueued("q1", "Follow-up queued mid-turn")
+		if err != nil || afterDeliver.State != "delivered" || afterDeliver.Turn != 2 {
+			t.Fatalf("unexpected post-delivery retry: %+v %v", afterDeliver, err)
+		}
+
+		m.session.events <- codingagent.Event{Text: "turn 2 done", Status: "completed"}
+		run, _ := m.finished()
+		if run.State != "exited" || run.ProviderState != "completed" {
+			t.Fatalf("run ended as %s/%s", run.State, run.ProviderState)
+		}
+	})
+
+	t.Run("multiple_queued_drain_fifo_without_rate_false_positives", func(t *testing.T) {
+		m := continuable(t, func(s *managedTestSession) {
+			s.leaveOpen = true
+			s.continueOpen = true
+		})
+		m.startContinuable(3)
+		continueMinInterval = time.Hour
+		for deadline := time.Now().Add(10 * time.Second); m.state().Turn != 1; {
+			if time.Now().After(deadline) {
+				t.Fatalf("first turn never began: %+v", m.state())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		for _, item := range []struct{ id, msg string }{
+			{"q1", "First queued"},
+			{"q2", "Second queued"},
+			{"q3", "Third queued"},
+		} {
+			res, err := m.sendQueued(item.id, item.msg)
+			if err != nil || res.State != "queued" {
+				t.Fatalf("sendQueued(%s): %+v %v", item.id, res, err)
+			}
+		}
+		_, err := m.sendQueued("q4", "Over turn bound")
+		wantContinueCode(t, err, ErrContinueLimit)
+
+		for i := 1; i <= 3; i++ {
+			m.session.events <- codingagent.Event{Text: fmt.Sprintf("turn %d done", i), Status: "completed"}
+			deadline := time.Now().Add(10 * time.Second)
+			for len(m.session.offered()) < i {
+				if time.Now().After(deadline) {
+					t.Fatalf("timed out waiting for queued delivery #%d", i)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		m.session.events <- codingagent.Event{Text: "final done", Status: "completed"}
+		run, _ := m.finished()
+		if run.State != "exited" || run.ProviderState != "completed" {
+			t.Fatalf("unexpected run end: %s/%s", run.State, run.ProviderState)
+		}
+		if got := m.session.offered(); len(got) != 3 || got[0] != "First queued" || got[1] != "Second queued" || got[2] != "Third queued" {
+			t.Fatalf("unexpected FIFO order: %q", got)
+		}
+	})
+
+	t.Run("enforces_maxQueuedContinuations_and_clears_on_stop", func(t *testing.T) {
+		m := continuable(t, func(s *managedTestSession) { s.leaveOpen = true })
+		m.startContinuable(codingagent.MaxContinuations)
+		for deadline := time.Now().Add(10 * time.Second); m.state().Turn != 1; {
+			if time.Now().After(deadline) {
+				t.Fatalf("first turn never began: %+v", m.state())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		for i := 0; i < codingagent.MaxContinuations; i++ {
+			res, err := m.sendQueued(fmt.Sprintf("cap-%d", i), fmt.Sprintf("msg %d", i))
+			if err != nil || res.State != "queued" {
+				t.Fatalf("cap-%d: %+v %v", i, res, err)
+			}
+		}
+		_, err := m.sendQueued("cap-overflow", "too many queued")
+		wantContinueCode(t, err, ErrContinueLimit)
+
+		m.stop()
+		m.finished()
+		_, err = m.sendQueued("cap-0", "msg 0")
+		wantContinueCode(t, err, ErrRunEnded)
+	})
+}

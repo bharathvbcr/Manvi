@@ -99,6 +99,9 @@ var (
 // to at most six bytes a byte in JSON, plus the other members.
 const maxContinueBody = 6*codingagent.MaxContinueMessageBytes + 2048
 
+// maxQueuedContinuations caps follow-ups waiting while a turn is in flight.
+const maxQueuedContinuations = 8
+
 // ManagedContinueParams is work.runs.managed.continue's request.
 type ManagedContinueParams struct {
 	// ID is the managed run.
@@ -109,6 +112,9 @@ type ManagedContinueParams struct {
 	// Message is the follow-up: nonblank, at most
 	// codingagent.MaxContinueMessageBytes. Absent makes the call a status read.
 	Message *string `json:"message,omitempty"`
+	// QueueIfInFlight queues the follow-up for FIFO delivery when the active turn
+	// completes instead of refusing with E_TURN_IN_FLIGHT. Default false.
+	QueueIfInFlight bool `json:"queue_if_in_flight,omitempty"`
 }
 
 // ManagedContinueResult is work.runs.managed.continue's answer.
@@ -116,6 +122,8 @@ type ManagedContinueResult struct {
 	// State is one of:
 	//   delivered   the message was written to the provider; this does not say
 	//               the new turn has begun, which the state read shows
+	//   queued      accepted while a turn was in flight; delivered FIFO when the
+	//               active turn completes
 	//   parked      between turns, ready for a message
 	//   running     a turn is in flight; also reported before the first turn
 	//               begins (turn 0) and while a finished turn is being settled,
@@ -172,6 +180,8 @@ type continuation struct {
 	// requests carries the one request the parked drive loop is handed. Its
 	// capacity is one because a claim leaves parked false until the loop is done.
 	requests chan *continueRequest
+	// queued holds opt-in queue_if_in_flight requests waiting FIFO for turn end.
+	queued []*continueRequest
 }
 
 func newContinuation(max int) *continuation {
@@ -184,8 +194,18 @@ func newContinuation(max int) *continuation {
 type continueReceipt struct {
 	digest string
 	turn   int
+	queued bool // guarded by the job's mu until dequeued or failed
 	done   chan struct{}
 	err    *Error
+}
+
+// drainQueuedContinuations finishes every still-queued follow-up under job.mu.
+func drainQueuedContinuations(c *continuation, makeErr func(requestID string) *Error) {
+	for _, req := range c.queued {
+		req.receipt.queued = false
+		req.receipt.finish(makeErr(req.id))
+	}
+	c.queued = nil
 }
 
 // finish records the outcome once. A nil error is a delivery.
@@ -238,10 +258,14 @@ func (j *managedJob) endContinuation() {
 		req.receipt.finish(runEnded("the managed run ended before the follow-up was sent; nothing was sent"))
 	default:
 	}
+	drainQueuedContinuations(c, func(string) *Error {
+		return runEnded("the managed run ended before the queued follow-up was sent; nothing was sent")
+	})
 }
 
 // Continue is work.runs.managed.continue. With a message it delivers one
-// follow-up to a parked run; without one it reports the run's state.
+// follow-up to a parked run (or queues it if queue_if_in_flight is true);
+// without one it reports the run's state.
 func (r *ManagedRunner) Continue(ctx context.Context, raw json.RawMessage) (ManagedContinueResult, error) {
 	if len(raw) > maxContinueBody || !utf8.Valid(raw) {
 		return ManagedContinueResult{}, badRequest("managed continue params exceed their byte limit or contain invalid Unicode")
@@ -274,7 +298,7 @@ func (r *ManagedRunner) Continue(ctx context.Context, raw json.RawMessage) (Mana
 		return ManagedContinueResult{}, badRequest("a follow-up is one nonblank message of at most %d bytes", codingagent.MaxContinueMessageBytes)
 	}
 	digest := sha256.Sum256([]byte(message))
-	return r.claimContinuation(ctx, job, in.RequestID, message, hex.EncodeToString(digest[:]))
+	return r.claimContinuation(ctx, job, in.RequestID, message, hex.EncodeToString(digest[:]), in.QueueIfInFlight)
 }
 
 func (j *managedJob) continueStatus() (ManagedContinueResult, error) {
@@ -304,10 +328,11 @@ func (j *managedJob) continueStatus() (ManagedContinueResult, error) {
 	return res, nil
 }
 
-// claimContinuation admits one request and hands it to the parked drive loop.
+// claimContinuation admits one request and hands it to the parked drive loop,
+// or queues it FIFO behind the active turn when queueIfInFlight is true.
 // Everything that can refuse a follow-up without sending anything is decided
 // here, under the job's lock, in one step with taking the slot.
-func (r *ManagedRunner) claimContinuation(ctx context.Context, job *managedJob, requestID, message, digest string) (ManagedContinueResult, error) {
+func (r *ManagedRunner) claimContinuation(ctx context.Context, job *managedJob, requestID, message, digest string, queueIfInFlight bool) (ManagedContinueResult, error) {
 	job.mu.Lock()
 	c := job.cont
 	if c == nil {
@@ -315,9 +340,15 @@ func (r *ManagedRunner) claimContinuation(ctx context.Context, job *managedJob, 
 		return ManagedContinueResult{}, continueUnsupported("this run was prepared without max_continuations")
 	}
 	if rc := c.receipts[requestID]; rc != nil {
+		queued := rc.queued
+		turns := c.turns
+		maxTurns := 1 + c.max
 		job.mu.Unlock()
 		if rc.digest != digest {
 			return ManagedContinueResult{}, badRequest("request_id %q already carried a different follow-up", requestID)
+		}
+		if queued {
+			return ManagedContinueResult{State: "queued", RequestID: requestID, Turn: turns, MaxTurns: maxTurns}, nil
 		}
 		return job.awaitReceipt(ctx, requestID, rc)
 	}
@@ -327,6 +358,10 @@ func (r *ManagedRunner) claimContinuation(ctx context.Context, job *managedJob, 
 	default:
 	}
 	now := time.Now()
+	activeTurns := c.turns
+	if activeTurns < 1 {
+		activeTurns = 1
+	}
 	var refusal *Error
 	switch {
 	case c.unresolved:
@@ -337,14 +372,26 @@ func (r *ManagedRunner) claimContinuation(ctx context.Context, job *managedJob, 
 		// Before the in-flight check: a run on its last turn never parks again, so
 		// waiting for it would be waiting for the end of the run.
 		refusal = &Error{Code: ErrContinueLimit, Message: fmt.Sprintf("the run took all %d turns it was prepared for and ends when the last one completes", 1+c.max)}
-	case !c.parked:
+	case !c.parked && !queueIfInFlight:
 		refusal = &Error{Code: ErrTurnInFlight, Message: "a turn is still in flight; read the run's state and send the follow-up when it is parked", Retryable: true}
-	case !c.last.IsZero() && now.Sub(c.last) < continueMinInterval:
+	case !c.parked && queueIfInFlight && activeTurns+len(c.queued) >= 1+c.max:
+		refusal = &Error{Code: ErrContinueLimit, Message: fmt.Sprintf("the run has already committed all %d turns it was prepared for", 1+c.max)}
+	case !c.parked && queueIfInFlight && len(c.queued) >= maxQueuedContinuations:
+		refusal = &Error{Code: ErrContinueLimit, Message: fmt.Sprintf("at most %d follow-ups may wait while a turn is in flight", maxQueuedContinuations)}
+	case c.parked && !c.last.IsZero() && now.Sub(c.last) < continueMinInterval:
 		refusal = &Error{Code: ErrContinueRate, Message: fmt.Sprintf("follow-ups of one run are at least %s apart", continueMinInterval), Retryable: true}
 	}
 	if refusal != nil {
 		job.mu.Unlock()
 		return ManagedContinueResult{}, refusal
+	}
+	if !c.parked {
+		rc := &continueReceipt{digest: digest, queued: true, done: make(chan struct{})}
+		c.receipts[requestID] = rc
+		c.queued = append(c.queued, &continueRequest{id: requestID, message: message, receipt: rc})
+		res := ManagedContinueResult{State: "queued", RequestID: requestID, Turn: c.turns, MaxTurns: 1 + c.max}
+		job.mu.Unlock()
+		return res, nil
 	}
 	rc := &continueReceipt{digest: digest, turn: c.turns + 1, done: make(chan struct{})}
 	prevLast := c.last
@@ -418,41 +465,69 @@ func (r *ManagedRunner) awaitContinuation(job *managedJob, thread string, turn *
 		}
 		return false, false, err
 	}
+	idleDeadline := time.Now().Add(managedIdleBudget)
 	idle := time.NewTimer(managedIdleBudget)
 	defer idle.Stop()
-	job.mu.Lock()
-	c.parked, c.idleUntil = true, time.Now().Add(managedIdleBudget)
-	job.mu.Unlock()
 	// Nothing reads the provider while the run waits for a message, so its exit is
 	// seen here and nowhere else. A nil channel (a session with no process of its
 	// own) never fires.
 	exited := job.provider.Done()
 	for {
 		var req *continueRequest
+		job.mu.Lock()
+		if job.ctx.Err() != nil || c.unresolved || c.ended || c.turns >= 1+c.max {
+			job.mu.Unlock()
+			return false, false, nil
+		}
 		select {
 		case req = <-c.requests:
-		case <-idle.C:
-		case <-exited:
-			if job.ctx.Err() == nil {
-				return false, false, r.providerExitedWhileParked(job, c)
-			}
-		case <-job.ctx.Done():
+			c.parked = false
+		default:
 		}
+		if req == nil && len(c.queued) > 0 {
+			req = c.queued[0]
+			c.queued = c.queued[1:]
+			req.receipt.queued = false
+			req.prevLast = c.last
+			c.parked = false
+			c.last = time.Now()
+			c.turns++
+			req.receipt.turn = c.turns
+		} else if req == nil {
+			c.parked, c.idleUntil = true, idleDeadline
+		}
+		job.mu.Unlock()
+
 		if req == nil {
-			job.mu.Lock()
-			if c.parked {
-				c.parked, c.ended = false, true
-				job.mu.Unlock()
-				return false, false, nil
-			}
-			// A claim landed beside the deadline; it was queued under this lock.
 			select {
 			case req = <-c.requests:
-			default:
+			case <-idle.C:
+			case <-exited:
+				if job.ctx.Err() == nil {
+					return false, false, r.providerExitedWhileParked(job, c)
+				}
+			case <-job.ctx.Done():
 			}
-			job.mu.Unlock()
 			if req == nil {
-				return false, false, nil
+				job.mu.Lock()
+				if c.parked && len(c.queued) == 0 {
+					c.parked, c.ended = false, true
+					job.mu.Unlock()
+					return false, false, nil
+				}
+				// A claim landed beside the deadline; it was queued under this lock.
+				select {
+				case req = <-c.requests:
+				default:
+				}
+				queuedPending := req == nil && len(c.queued) > 0 && job.ctx.Err() == nil && !c.unresolved && !c.ended && c.turns < 1+c.max
+				job.mu.Unlock()
+				if queuedPending {
+					continue
+				}
+				if req == nil {
+					return false, false, nil
+				}
 			}
 		}
 		outcome, deliverErr := r.deliver(job, c, req, thread, turn)
@@ -482,6 +557,9 @@ func (r *ManagedRunner) providerExitedWhileParked(job *managedJob, c *continuati
 		req.receipt.finish(runEnded("the provider process exited before the follow-up was sent; nothing was sent"))
 	default:
 	}
+	drainQueuedContinuations(c, func(string) *Error {
+		return runEnded("the provider process exited before the queued follow-up was sent; nothing was sent")
+	})
 	job.mu.Unlock()
 	return errors.New("the provider process exited while the run was parked between turns")
 }
@@ -519,6 +597,9 @@ func (r *ManagedRunner) deliver(job *managedJob, c *continuation, req *continueR
 	appendNote(job, fmt.Sprintf("\n[follow-up %d delivery unresolved: it may or may not have reached the provider and is not sent again]\n", n))
 	job.mu.Lock()
 	c.unresolved, c.parked = true, false
+	drainQueuedContinuations(c, func(id string) *Error {
+		return &Error{Code: ErrContinueUnresolved, Message: fmt.Sprintf("follow-up %q was not sent because an earlier delivery is unresolved; the run ends unresolved", id)}
+	})
 	job.mu.Unlock()
 	req.receipt.finish(&Error{Code: ErrContinueUnresolved, Message: fmt.Sprintf("follow-up %q may or may not have been delivered and will not be sent again; the run ends unresolved", req.id)})
 	return continueUnresolved, fmt.Errorf("follow-up %d delivery is unresolved: %w", n, err)
@@ -544,8 +625,11 @@ func (r *ManagedRunner) refuseFollowUp(job *managedJob, c *continuation, req *co
 	delete(c.receipts, req.id)
 	if ends {
 		c.parked, c.ended = false, true
+		drainQueuedContinuations(c, func(string) *Error {
+			return runEnded("the managed run ended before the queued follow-up was sent; nothing was sent")
+		})
 	} else {
-		c.parked = true
+		c.parked = len(c.queued) == 0
 	}
 	job.mu.Unlock()
 	req.receipt.finish(&e)

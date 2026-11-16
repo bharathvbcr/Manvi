@@ -218,6 +218,9 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 				return session, nil
 			case "claude":
 				options.Program = managedAgentBinary("MANVI_CLAUDE_BINARY", "claude")
+				if len(options.McpServers) == 0 {
+					options.McpServers = managedMcpServers()
+				}
 				// Started without this process's provider keys, budget or no
 				// budget: it runs on the CLI's own login. See childenv.
 				session, err := codingagent.StartClaude(ctx, options)
@@ -227,13 +230,8 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 				return session, nil
 			case "agy":
 				options.Program = managedAgentBinary("MANVI_AGY_BINARY", "agy")
-				if mcpBin := toolBinary("MANVI_GITPULSE_MCP_BINARY", "gitpulse-mcp"); filepath.IsAbs(mcpBin) && mcpBin != unresolvedTool("gitpulse-mcp") && isExecutableFile(mcpBin) {
-					options.McpServers = []codingagent.McpServer{{
-						Name:    "gitpulse",
-						Command: mcpBin,
-						Args:    []string{},
-						Env:     []codingagent.McpEnvVar{},
-					}}
+				if len(options.McpServers) == 0 {
+					options.McpServers = managedMcpServers()
 				}
 				session, err := codingagent.StartAgy(ctx, options)
 				if err != nil {
@@ -470,3 +468,26 @@ func scanGapSource(root string) serve.ScanGaps {
 type closingGaps struct{ *store.Client }
 
 func (g closingGaps) Close() error { g.Client.Close(); return nil }
+
+func managedMcpServers() []codingagent.McpServer {
+	var servers []codingagent.McpServer
+	for _, spec := range []struct {
+		name     string
+		resolved string
+		bin      string
+		args     []string
+	}{
+		{name: "gitpulse", resolved: toolBinary("MANVI_GITPULSE_MCP_BINARY", "gitpulse-mcp"), bin: "gitpulse-mcp", args: []string{}},
+		{name: "devmap", resolved: toolBinary("MANVI_MAP_BINARY", "devmap"), bin: "devmap", args: []string{"mcp"}},
+	} {
+		if filepath.IsAbs(spec.resolved) && spec.resolved != unresolvedTool(spec.bin) && isExecutableFile(spec.resolved) {
+			servers = append(servers, codingagent.McpServer{
+				Name:    spec.name,
+				Command: spec.resolved,
+				Args:    spec.args,
+				Env:     []codingagent.McpEnvVar{},
+			})
+		}
+	}
+	return servers
+}

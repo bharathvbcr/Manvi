@@ -36,6 +36,7 @@ func TestAgyProtocolChild(t *testing.T) {
 	sessionID := "agy-sess-1111"
 	currentMode := "default"
 	promptTurns := 0
+	var activePromptID string
 
 	scan := bufio.NewScanner(os.Stdin)
 	scan.Buffer(make([]byte, 4096), MaxFrameBytes+1)
@@ -46,13 +47,23 @@ func TestAgyProtocolChild(t *testing.T) {
 			Method  string          `json:"method"`
 			Params  json.RawMessage `json:"params"`
 			Result  json.RawMessage `json:"result"`
+			Error   json.RawMessage `json:"error"`
 		}
 		if json.Unmarshal(scan.Bytes(), &in) != nil || in.JSONRPC != "2.0" {
 			os.Exit(3)
 		}
 
-		// Client response to a server-initiated permission request.
+		// Client response to a server-initiated request.
 		if in.Method == "" {
+			if len(in.Error) > 0 {
+				var rpcErr struct {
+					Code int `json:"code"`
+				}
+				_ = json.Unmarshal(in.Error, &rpcErr)
+				emit(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"rpc-err:%d"}}}}`, sessionID, rpcErr.Code)
+				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, activePromptID)
+				continue
+			}
 			var decision struct {
 				Outcome struct {
 					Outcome  string `json:"outcome"`
@@ -145,6 +156,7 @@ func TestAgyProtocolChild(t *testing.T) {
 
 		case "session/prompt":
 			promptTurns++
+			activePromptID = string(in.ID)
 			switch scenario {
 			case "permission", "permission-allow-only":
 				// Rewrite the stored prompt ID expectation by responding to this exact ID on completion;

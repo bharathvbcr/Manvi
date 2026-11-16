@@ -357,6 +357,7 @@ func TestServeContractDeclaresManagedContinueAdditively(t *testing.T) {
 		{"ManagedContinueParams", "id", true},
 		{"ManagedContinueParams", "request_id", false},
 		{"ManagedContinueParams", "message", false},
+		{"ManagedContinueParams", "queue_if_in_flight", false},
 		{"ManagedContinueResult", "state", true},
 		{"ManagedContinueResult", "turn", true},
 		{"ManagedContinueResult", "max_turns", true},

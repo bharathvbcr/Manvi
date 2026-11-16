@@ -656,6 +656,10 @@
           "required": false,
           "nullable": true
         },
+        "queue_if_in_flight": {
+          "type": "boolean",
+          "required": false
+        },
         "request_id": {
           "type": "string",
           "required": false
