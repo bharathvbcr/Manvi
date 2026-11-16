@@ -345,18 +345,18 @@ func TestSessionStartLineCarriesTheMark(t *testing.T) {
 	th.Unicode = true
 	e := &Entry{Event: ui.Event{Kind: ui.KindSessionStart, Posture: "strict", Model: "some-model"}}
 	got := lineText(e.Lines(th, 80)[:1])
-	for _, want := range []string{"█", "manvi", "strict", "some-model"} {
+	for _, want := range []string{"▞▚▞▚ manvi", "strict", "some-model"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("the session line is missing %q: %q", want, got)
 		}
 	}
 
-	// A pane too narrow for the tile keeps the name: the branding degrades, the
-	// report does not.
+	// A theme with no palette for the ribbon keeps the name: the branding
+	// degrades, the report does not.
 	plain := NoColorTheme()
 	got = lineText(e.Lines(plain, 40)[:1])
-	if strings.Contains(got, "█") {
-		t.Fatalf("the plain theme drew a tile: %q", got)
+	if strings.ContainsAny(got, "▞▚█") {
+		t.Fatalf("the plain theme drew the ribbon: %q", got)
 	}
 	if !strings.Contains(got, "manvi") || !strings.Contains(got, "some-model") {
 		t.Fatalf("the plain session line lost content: %q", got)

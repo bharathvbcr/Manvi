@@ -6,6 +6,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
@@ -288,8 +289,10 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 // It sits directly above the composer. A turn in progress was a spinner on the
 // status bar at the far edge of the screen from where the operator is typing
 // and from where the reply is arriving, and the first thing a narrow bar
-// dropped. fxOn gates the motion: the pulse on the label and the marquee on a
-// label too long for the row.
+// dropped. fxOn gates the motion: the pulse on the label, the marquee on a
+// label too long for the row, and the Fold M ribbon standing in for the
+// spinner. The spinner itself is not gated. It is how a running turn is told
+// from a hung one, so with motion off it is what is drawn.
 func DrawActivity(b *render.Buffer, r render.Rect, th Theme, st Status, tick int, fxOn bool) {
 	if r.Empty() || !st.Busy {
 		return
@@ -309,7 +312,7 @@ func DrawActivity(b *render.Buffer, r render.Rect, th Theme, st Status, tick int
 	fg := th.Accent
 	labelFg := th.Fg
 	var labelAttrs render.Attr
-	if st.StallSecs >= 30 {
+	if st.StallSecs >= stallWarnSecs {
 		labelAttrs = render.Bold
 	}
 	meta := "ctrl+c to interrupt"
@@ -317,19 +320,28 @@ func DrawActivity(b *render.Buffer, r render.Rect, th Theme, st Status, tick int
 		meta = elapsed(st.BusySecs) + " " + g.Dot + " " + meta
 	}
 	meta = "  (" + meta + ")"
+	// The lead is the spinner, or the Fold M ribbon where the ribbon can do the
+	// spinner's job. The ribbon is wider than the gutter, so it takes the
+	// spinner's place only where the row still fits whole with it, label and note
+	// both: on a row already too short for those, the decoration is not worth the
+	// room. This is decided on the label as it reads, before it is scrolled.
+	lead := render.Styled(render.Spinner(g.Spinner, tick), render.Style{Fg: fg, Bg: th.Bg, Attrs: render.Bold})
+	if pad := gutter - lead.Width(); pad > 0 {
+		lead = lead.Append(strings.Repeat(" ", pad), th.Base())
+	}
+	if ribbon := busyRibbon(th, st, th.Bg, tick, fxOn); ribbon != nil &&
+		ribbon.Width()+render.StringWidth(label)+render.StringWidth(meta) <= r.W {
+		lead = ribbon
+	}
 	if fxOn {
 		// The label breathes, and one that outgrows the row scrolls rather
 		// than truncating — a phase like "waiting on the gate, retrying" is
 		// the difference between a stall and a slow step. It has the row less
-		// the note after it, and is not scrolled while it fits in that.
+		// the lead and the note after it, and is not scrolled while it fits in that.
 		labelFg = th.FgMuted.Blend(labelFg, 0.55+fx.Pulse(tick, 16)*0.45)
-		label = fx.Marquee(label, max(r.W-gutter-render.StringWidth(meta), 8), tick)
+		label = fx.Marquee(label, max(r.W-lead.Width()-render.StringWidth(meta), 8), tick)
 	}
-	line := render.Styled(render.Spinner(g.Spinner, tick), render.Style{Fg: fg, Bg: th.Bg, Attrs: render.Bold})
-	if pad := gutter - line.Width(); pad > 0 {
-		line = line.Append(strings.Repeat(" ", pad), th.Base())
-	}
-	line = line.Append(label, render.Style{Fg: labelFg, Bg: th.Bg, Attrs: labelAttrs})
+	line := lead.Append(label, render.Style{Fg: labelFg, Bg: th.Bg, Attrs: labelAttrs})
 	line = line.Append(meta, th.Subtle())
 	line.Truncate(r.W).Draw(b, r.X, r.Y)
 }
@@ -353,6 +365,41 @@ func elapsed(secs int) string {
 		m = "0" + m
 	}
 	return itoa(secs/3600) + "h " + m + "m"
+}
+
+// busyRibbon is the mark as the busy indicator: the one-line ribbon with light
+// running round it, and the cell after it. It returns nil when the mark cannot
+// do that job, and the caller keeps the spinner.
+//
+// A busy indicator has to move, and the ribbon's only motion is colour. So it
+// is used only when it has a colour to move toward: animation on, a terminal
+// that draws the blocks, and a theme that lends a glint, which the
+// sixteen-colour one does not. That choice is made from the theme's own
+// colours and not from a stall, so a stall cannot change it. The caller's width
+// rule still can: a row that stops fitting whole part way through a turn,
+// because the stall label appeared or a counter grew, goes back to the spinner.
+//
+// A turn that has gone quiet for half a minute is said in bold, not in a colour
+// (see DrawActivity: the label goes bold), and the mark says the same thing the
+// same way: it keeps its place and its colours and its cells go bold. The
+// terminal UI has no warning colour left to turn it.
+//
+// bg is the background of the row the mark is set in.
+func busyRibbon(th Theme, st Status, bg render.Color, tick int, fxOn bool) render.Line {
+	faces := th.Logo()
+	if !fxOn || !th.LogoBlocks() || faces.Glint.IsDefault() {
+		return nil
+	}
+	// The ribbon's slanted blocks are half empty, so each face is drawn on the
+	// background of the row it is set in, whatever the theme's own logo faces say.
+	faces.Lit.Bg, faces.Shade.Bg = bg, bg
+	mark := logo.Ribbon(faces, logo.Motion{Live: true, Tick: tick, Working: true})
+	if st.StallSecs >= stallWarnSecs {
+		for i := range mark {
+			mark[i].Style.Attrs |= render.Bold
+		}
+	}
+	return mark.Append(" ", render.Style{Bg: bg})
 }
 
 // DrawStrictBanner paints the persistent warning that this run's results are

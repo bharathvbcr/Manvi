@@ -153,6 +153,30 @@ under **Unreleased** in the same commit as the code.
   worktree write tools; whether `agy` asks before an MCP tool call is not
   verified. The default is intended (owner, 2026-11-15). To opt out, point
   `MANVI_GITPULSE_MCP_BINARY` at a path that is not an executable file.
+- The terminal's tab says what the agent is doing. While `manvi tui` runs, the
+  tab title is the one-line mark, a state and the session: `▞▚▞▚ thinking ·
+  session one`, with `working`, `writing`, `running <tool>`, `needs approval`,
+  `no progress`, `done` and `failed` as the other states, and `(+N)` when more
+  sessions are open. Without block characters the mark is `M`. The title is
+  written only when it changes and is put back when the TUI stops or is
+  suspended. `MANVI_TERM_TITLE=off` keeps the one static title, `manvi`; the
+  live title is held back by default in GNU screen and where `TERM` is `linux`,
+  `dumb` or unset.
+- A progress indicator for terminals that draw one (OSC 9;4): busy while a turn
+  runs, paused while an approval waits, error when a turn failed, cleared on
+  exit. Left alone it is sent only to Windows Terminal, ConEmu and Ghostty 1.2.0
+  or later, and not inside tmux or GNU screen, because other terminals read
+  OSC 9 as a notification. `MANVI_TERM_PROGRESS=on` sends it everywhere, tmux
+  included, and `off` nowhere.
+- The mark moves in the TUI. On the empty screen it unfolds along the ribbon
+  when the screen opens, a light crosses it every nine seconds, and a keypress
+  sends one. While a turn runs, the working row above the composer shows the
+  one-line mark with a light lapping it where the spinner was, and the mark
+  goes bold once a turn has gone thirty seconds without progress, as the
+  row's label does; it keeps its colours, since the terminal UI has no warning
+  colour. The spinner still draws when `MANVI_FX` is off, at 16 colours,
+  without block characters, or when the row would not fit the mark.
+  `manvi logo` and the session line stay still.
 
 ### Changed
 
@@ -293,6 +317,12 @@ under **Unreleased** in the same commit as the code.
     their marker, and numbered lists, quotes and rules are drawn as such.
     Inline code and code keywords take the informational colour, not the
     brand's red. The scrollbar is its thumb alone.
+- **The mark is the Fold M.** A ribbon folded four times into an M replaces the
+  tile with an M knocked out of a 7×7 grid, in `assets/manvi-mark.svg`, in
+  `manvi logo` and on the TUI's empty screen. The terminal draws it from
+  quadrant block characters at three sizes (19×6, 10×3 and the one-line
+  `▞▚▞▚ manvi`), sampled from the same measurements the SVG is generated from.
+  `manvi logo --svg` still prints the published asset byte for byte.
 
 - **The DevCouncil pin moves to the workbench schema 17 store** (`d9c7a512`,
   from `c6788883`). Schema 17 adds a cross-repository execution queue, two-way

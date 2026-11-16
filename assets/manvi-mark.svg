@@ -1,15 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 84 84" width="84" height="84" role="img" aria-labelledby="t">
-  <title id="t">MANVI</title>
-  <rect width="84" height="84" rx="12" fill="#7a1626"/>
-  <rect x="12" y="12" width="12" height="12" fill="#fdf2f3"/>
-  <rect x="60" y="12" width="12" height="12" fill="#fdf2f3"/>
-  <rect x="12" y="24" width="24" height="12" fill="#fdf2f3"/>
-  <rect x="48" y="24" width="24" height="12" fill="#fdf2f3"/>
-  <rect x="12" y="36" width="12" height="12" fill="#fdf2f3"/>
-  <rect x="36" y="36" width="12" height="12" fill="#fdf2f3"/>
-  <rect x="60" y="36" width="12" height="12" fill="#fdf2f3"/>
-  <rect x="12" y="48" width="12" height="12" fill="#fdf2f3"/>
-  <rect x="60" y="48" width="12" height="12" fill="#fdf2f3"/>
-  <rect x="12" y="60" width="12" height="12" fill="#fdf2f3"/>
-  <rect x="60" y="60" width="12" height="12" fill="#fdf2f3"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" width="320" height="320" role="img" aria-labelledby="manvi-title">
+  <title id="manvi-title">MANVI</title>
+  <defs>
+    <linearGradient id="manvi-plate" x1="0" y1="0" x2="320" y2="320" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#24131b"/><stop offset="1" stop-color="#0c090c"/></linearGradient>
+    <radialGradient id="manvi-glow" cx="160" cy="160" r="150" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#d92d3f" stop-opacity="0.3"/><stop offset="1" stop-color="#d92d3f" stop-opacity="0"/></radialGradient>
+    <linearGradient id="manvi-lit" x1="160" y1="90" x2="160" y2="230" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f0959e"/><stop offset="0.45" stop-color="#e0616f"/><stop offset="1" stop-color="#d92d3f"/></linearGradient>
+    <linearGradient id="manvi-shade" x1="160" y1="90" x2="160" y2="230" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#b02636"/><stop offset="1" stop-color="#7a1626"/></linearGradient>
+  </defs>
+  <rect width="320" height="320" rx="100" fill="url(#manvi-plate)"/>
+  <rect width="320" height="320" rx="100" fill="url(#manvi-glow)"/>
+  <rect x="3" y="3" width="314" height="314" rx="97" fill="none" stroke="#ffffff" stroke-opacity="0.1" stroke-width="6"/>
+  <path d="M58 223L100 97L136 97L160 169L184 97L220 97L262 223L226 223L202 151L178 223L142 223L118 151L94 223Z" fill="url(#manvi-shade)"/>
+  <path d="M58 223L94 223L136 97L100 97ZM142 223L178 223L220 97L184 97Z" fill="url(#manvi-lit)"/>
 </svg>

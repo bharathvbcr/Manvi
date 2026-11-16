@@ -237,20 +237,31 @@ func (t Theme) reducedPalette() bool {
 
 // Logo lends the mark this theme's colours.
 //
-// The tile keeps the brand's deep red and its near-white knockout on both
-// themes rather than following the surface: it is a solid shape, and a mark
-// that changed colour with the terminal's background would no longer be the
-// same mark as the published asset. Only the name and the tagline take the
-// theme's own text colours.
+// The ribbon keeps the brand's two reds on both themes rather than following
+// the surface: it is a solid shape, and a mark that changed colour with the
+// terminal's background would no longer be the same mark as the published
+// asset. Only the name and the tagline take the theme's own text colours.
 //
-// Under the plain theme every colour is Default, which would paint the tile as
-// a solid rectangle of the terminal's own foreground. Callers pass
+// Under the plain theme every colour is Default, which would paint the ribbon
+// in the terminal's own foreground with its fold gone. Callers pass
 // Theme.LogoBlocks to the renderer for exactly that reason, and it answers no
 // there, which drops the mark to its text rung.
+//
+// At sixteen colours both brand reds reduce to the one red slot, and a cell
+// holding both faces becomes red on red. The silhouette survives that but the
+// fold does not, so there the faces are named by slot instead: bright red over
+// red, the only two reds such a terminal has. It also gets no glint, because
+// a colour blended toward the glint reduces back to one of those two slots and
+// would draw the shaded face as the lit one for as long as the light was on it.
 func (t Theme) Logo() logo.Colors {
+	lit, shade, glint := render.Hex(brand.RibbonLit), render.Hex(brand.RibbonShade), render.Hex(brand.RibbonGlint)
+	if t.Profile == render.ANSI16 {
+		lit, shade, glint = render.ANSI(9), render.ANSI(1), render.Default
+	}
 	return logo.Colors{
-		Tile:  render.Style{Fg: render.Hex(brand.TileFill), Bg: t.Bg},
-		Glyph: render.Style{Fg: render.Hex(brand.TileGlyph), Bg: t.Bg},
+		Glint: glint,
+		Lit:   render.Style{Fg: lit, Bg: t.Bg},
+		Shade: render.Style{Fg: shade, Bg: t.Bg},
 		Word:  t.AccentStyle(),
 		Tag:   t.Subtle(),
 	}

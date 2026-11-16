@@ -457,6 +457,8 @@ rather than searched past.
 | `Ctrl+C` | Cancel running turn (releases leases cleanly) |
 | `Tab` / `Shift+Tab` | Pane focus / autocomplete |
 
+While a turn runs, the terminal's tab title says what the agent is doing (`▞▚▞▚ thinking · session one`), and terminals that draw a progress indicator show one. `MANVI_TERM_TITLE` and `MANVI_TERM_PROGRESS` switch them; see [CLI & Configuration](docs/CLI_AND_CONFIGURATION.md).
+
 ---
 
 ## Documentation

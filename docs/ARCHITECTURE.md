@@ -397,7 +397,7 @@ Dev_Harness/
 │   └── ui/                    # Terminal renderers & full Elm-loop TUI
 │       ├── brand/             # Dark-red palette ramp
 │       ├── input/             # Raw termios & escape sequence decoder
-│       ├── logo/              # 7x7 module mark renderer
+│       ├── logo/              # Fold M mark: SVG generator & block-character renderer
 │       ├── render/            # Damage-diffed cell painter
 │       ├── term/              # Terminal control & raw mode
 │       └── tui/               # Elm-style full-screen interactive UI

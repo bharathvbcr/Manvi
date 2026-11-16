@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/ui"
@@ -523,32 +525,79 @@ func TestAHugeOneLineResultPreviewsWithoutLayingItAllOut(t *testing.T) {
 	}
 }
 
+// paintedWorking draws the app and returns how the working row's indicator is
+// painted: the first five cells of the row (the ribbon and the space after it,
+// or the spinner, its padding and the start of the label), each as its text and,
+// for a cell that is not a letter or a digit, its foreground. A change that is
+// only in colour therefore counts as the indicator moving, and the label's own
+// pulse, which changes every tick, does not. It is "" when no row says how to
+// interrupt.
+func paintedWorking(a *App) string {
+	const w, h, lead = 100, 30, 5
+	b := render.NewBuffer(w, h)
+	a.Draw(b)
+	for y := 0; y < h; y++ {
+		var text strings.Builder
+		var cells []render.Cell
+		for x := 0; x < w; x++ {
+			c := b.Cell(x, y)
+			if c.R == 0 {
+				continue
+			}
+			text.WriteRune(c.R)
+			cells = append(cells, c)
+		}
+		if !strings.Contains(text.String(), "to interrupt") {
+			continue
+		}
+		var paint strings.Builder
+		for _, c := range cells[:min(lead, len(cells))] {
+			if unicode.IsLetter(c.R) || unicode.IsDigit(c.R) {
+				fmt.Fprintf(&paint, "%c|", c.R)
+				continue
+			}
+			fmt.Fprintf(&paint, "%c%v|", c.R, c.Style.Fg)
+		}
+		return paint.String()
+	}
+	return ""
+}
+
 // A running turn keeps the frame moving: with the spinner gone from the status
 // bar, the working row is what a tick has to repaint.
+//
+// CHANGED ASSERTION (owner-approved, 2026-11-16): this used to require two
+// consecutive ticks to draw different row TEXT, which is true of a spinner that
+// changes frame on every tick. The Fold M ribbon that stands in for the spinner
+// moves in colour only and steps every other tick, so consecutive ticks can paint
+// the same row. What a running turn owes the operator is unchanged, that the
+// indicator keeps changing, so the indicator's cells (see paintedWorking) are now
+// held to painting more than once, text and colours, over a short window of ticks.
+// The label's own pulse is left out of the comparison so it cannot stand in for a
+// frozen indicator.
 func TestATickMovesTheWorkingRow(t *testing.T) {
 	a, _ := newTestApp()
 	a.Theme.Unicode = true
-	working := func() string {
-		for _, r := range screen(a, 100, 30) {
-			if strings.Contains(r, "to interrupt") {
-				return r
-			}
-		}
-		return ""
-	}
 	a.Dispatch(ActionTick{})
 	if a.TickMoved() {
 		t.Fatal("an idle session repaints on a tick")
 	}
 	a.Current().SetBusy(true, "working")
 	a.Dispatch(ActionTick{})
-	first := working()
-	a.Dispatch(ActionTick{})
-	if !a.TickMoved() {
-		t.Fatal("a tick during a turn does not ask for a repaint")
+	first := paintedWorking(a)
+	if first == "" {
+		t.Fatal("no working row while a turn runs")
 	}
-	if second := working(); first == "" || second == first {
-		t.Fatalf("two ticks drew the same working row: %q", second)
+	seen := map[string]bool{first: true}
+	for range 4 {
+		a.Dispatch(ActionTick{})
+		if !a.TickMoved() {
+			t.Fatal("a tick during a turn does not ask for a repaint")
+		}
+		seen[paintedWorking(a)] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("four ticks drew the same working row: %q", first)
 	}
 }
 

@@ -3,8 +3,11 @@ package tui
 import (
 	"bytes"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
@@ -179,6 +182,67 @@ func TestAccentIsLegibleOnItsSurface(t *testing.T) {
 				t.Fatalf("foreground on the selection fill is %.2f:1, below the 4.5:1 floor", got)
 			}
 		})
+	}
+}
+
+// The mark's fold is two colours, so the two must still be two after a
+// terminal's depth has been applied to them. At sixteen colours both brand reds
+// used to land on the same slot, which drew every fold as red on red. The
+// comparison is on the escapes actually written, because that is the only
+// place the reduction happens.
+func TestRibbonFacesStayApartAtEveryDepth(t *testing.T) {
+	for _, name := range []string{"dark", "light"} {
+		for _, profile := range []render.Profile{render.ANSI16, render.ANSI256, render.TrueColor} {
+			c := PickThemeByNameUnchecked(name, profile, true).Logo()
+			lit, shade := sequenceFor(t, c.Lit.Fg, profile), sequenceFor(t, c.Shade.Fg, profile)
+			if lit == sequenceFor(t, render.Default, profile) {
+				t.Fatalf("%s at %v: the lit face was written with no colour: %q", name, profile, lit)
+			}
+			if lit == shade {
+				t.Fatalf("%s at %v: both faces are written as %q", name, profile, lit)
+			}
+
+			// The same has to hold while the mark moves. A glint blends each
+			// face toward a third colour, and two blends that were apart as
+			// colours can reduce to one slot. Every cell holding both faces is
+			// checked at every tick of an unfold, a scheduled glint and a
+			// nudged one.
+			folds := 0
+			for tick := range 150 {
+				m := logo.Motion{Live: true, Tick: tick, Nudge: 60}
+				for _, l := range logo.LinesAt(logo.SizeFull, c, true, "", 200, m) {
+					for _, span := range l {
+						if span.Style.Bg == c.Lit.Bg || strings.TrimSpace(span.Text) == "" {
+							continue
+						}
+						folds++
+						fg, bg := sequenceFor(t, span.Style.Fg, profile), sequenceFor(t, span.Style.Bg, profile)
+						if fg == bg {
+							t.Fatalf("%s at %v tick %d: a fold is written %q on the same colour", name, profile, tick, fg)
+						}
+					}
+				}
+			}
+			if folds == 0 {
+				t.Fatalf("%s at %v: no fold was drawn in 150 ticks, so nothing was checked", name, profile)
+			}
+		}
+	}
+}
+
+// At sixteen colours the theme lends the mark no glint, so once it has
+// unfolded it is the still mark at every tick.
+func TestSixteenColourMarkHasNoGlint(t *testing.T) {
+	c := PickThemeByNameUnchecked("dark", render.ANSI16, true).Logo()
+	still := logo.Lines(logo.SizeFull, c, true, "", 200)
+	for tick := 12; tick < 150; tick++ {
+		got := logo.LinesAt(logo.SizeFull, c, true, "", 200, logo.Motion{Live: true, Tick: tick, Nudge: 60})
+		if !reflect.DeepEqual(got, still) {
+			t.Fatalf("tick %d: the sixteen-colour mark was recoloured", tick)
+		}
+	}
+	if full := PickThemeByNameUnchecked("dark", render.TrueColor, true).Logo(); full.Glint.IsDefault() {
+		t.Fatal("the truecolor theme lends the mark no glint either")
 	}
 }
 

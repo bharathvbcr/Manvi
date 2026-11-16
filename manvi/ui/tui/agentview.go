@@ -33,6 +33,13 @@ type AgentView struct {
 	// queued holds follow-up prompts typed while a turn was running.
 	queued []string
 
+	// phase is what the running turn was last seen doing, and outcome how the
+	// last turn ended, until the operator has seen it. Both are for the
+	// terminal's tab (termstatus.go), which is read by someone looking
+	// elsewhere.
+	phase   string
+	outcome turnOutcome
+
 	// promptRect is the composer's editable area as last drawn, so a click
 	// lands on the caret position the operator aimed at rather than on a
 	// recomputed guess at the layout.
@@ -102,6 +109,19 @@ func (v *AgentView) Apply(ev ui.Event) {
 		}
 	case ui.KindError:
 		v.err = ev.Text
+	case ui.KindReasoning:
+		v.phase = phaseThinking
+	case ui.KindText:
+		v.phase = phaseWriting
+	case ui.KindToolStart:
+		// The tool's name and nothing else. Its arguments are where a path or
+		// a command line would be, and this ends up on a tab.
+		v.phase = phaseWorking
+		if ev.Tool != "" {
+			v.phase = "running " + ev.Tool
+		}
+	case ui.KindToolResult:
+		v.phase = phaseWorking
 	}
 
 	// Qualifications accumulate on the status regardless of which event carried
@@ -137,7 +157,13 @@ func (v *AgentView) SetBusy(busy bool, label string) {
 	}
 	v.Status.Busy = busy
 	v.Status.BusyLabel = label
+	v.phase = phaseWorking
 	if busy {
+		// A turn starting is activity. Without this a stall is measured from
+		// the last event of the turn before, and a turn begun on a session that
+		// had sat idle for a minute would open already "stalled", on the status
+		// bar and on the tab, until its first event arrived.
+		v.lastActivity = time.Now()
 		v.err = ""
 	}
 }
