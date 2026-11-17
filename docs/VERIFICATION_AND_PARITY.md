@@ -299,7 +299,7 @@ sum, because one total lets a fix pay for a new defect.
 
 Note that `golangci-lint`'s default summary caps `max-issues-per-linter` (50),
 `max-same-issues` (3), and `uniq-by-line`, which is why the debt ratchet disables
-all three caps (at introduction those caps hid 862 of 1059 findings behind a summary
+all three caps (at introduction those caps withheld 850 findings behind a summary
 count of **197**). Both config files keep all three off.
 
 `manvi/gorules/rules.go` carries this repository's own invariants as ruleguard

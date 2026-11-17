@@ -386,8 +386,8 @@ under **Unreleased** in the same commit as the code.
   Under `sudo -E` or an NFS uid mismatch, fix HOME's ownership; there is no
   bypass.
 - **The DevCouncil rigor check waits longer when the Lean kernel check is on,
-  and names two more findings.** With `DC_VERIFY_LEAN_KERNEL` set to `auto`,
-  `require`, `1` or `true`, the default `dcverify` deadline rises from 30s to
+  and names two more findings.** With `DC_VERIFY_LEAN_KERNEL` set to `auto` or
+  `require`, the default `dcverify` deadline rises from 30s to
   the Lean step (`DC_LEAN_KERNEL_TIMEOUT_MS`, clamped to 50ms..600s, 180s when
   unset or unparseable) plus 60s, and at least 240s. An explicit timeout still
   wins, and with the variable unset nothing changes. A `runner_hijack` finding

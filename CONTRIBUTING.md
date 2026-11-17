@@ -33,9 +33,9 @@ cargo install cargo-audit --version 0.22.2
 `node` (`22.22.2`) and `bun` (the mermaid grammar gate and its `bun audit`), `ruff` (`0.15.20`, for `bench/` and `scripts/*.py`), `sqlite3` (schema readability), and
 `script(1)` (TUI terminal restoration) are picked up if present.
 
-**DevCouncil's components.** MANVI links none of them and builds none of the
-seven workspace crates here by default — `devmap` comes from DevCouncil and is not in
-`crates/`. On a fresh clone, without `devmap` on `PATH`, the repo-navigation gate reports as *not covered*, which is
+**DevCouncil's components.** MANVI links none of them into the Go binary, and `./verify.sh`
+builds and tests the seven workspace crates only for its Rust, store-schema and verifier
+steps — `devmap` comes from DevCouncil and is not in `crates/`. On a fresh clone, without `devmap` on `PATH`, the repo-navigation gate reports as *not covered*, which is
 expected. `crates/` links into DevCouncil's seven component crates (`dc-evidence`, `dc-glob`, `dc-grep`, `dc-proc`, `dc-redact`, `dc-store`, `dc-verify`) so the
 gate can run against the pinned sibling checkout; at runtime the harness prefers an
 installed component (`MANVI_<NAME>_BINARY` -> `PATH` -> local build). `manvi doctor` prints which binary each

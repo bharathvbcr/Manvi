@@ -60,7 +60,7 @@ All names below receive a `work.` prefix over `manvi serve`.
 | Attention | `attention.get`, `attention.list`, `attention.update` |
 | Tasks & Suggestions | `tasks.organize`, `tasks.suggest` |
 | Verification & Scans | `verify.task`, `verify.get`, `scan.gaps`, `scan.get`, `scan.cancel` |
-| Enhancements & Generation | `enhancements.create`, `enhancements.claim`, `enhancements.complete`, `enhancements.recover`, `enhancements.get`, `enhancements.list`, `enhancements.accept`, `enhancements.refine`, `enhancements.revise`, `enhancements.dismiss`, `enhancements.undo`, `enhancements.generate`, `enhancements.wake`, `enhancements.worker`, `enhancements.configuration` |
+| Enhancements & Generation | `enhancements.create`, `enhancements.claim`, `enhancements.complete`, `enhancements.recover`, `enhancements.get`, `enhancements.list`, `enhancements.accept`, `enhancements.refine`, `enhancements.revise`, `enhancements.dismiss`, `enhancements.undo`, `enhancements.generate`, `enhancements.wake`, `enhancements.worker`, `enhancements.configuration`, `assist.complete` |
 | Notifications | `notifications.claim`, `notifications.activate`, `notifications.activations.list`, `notifications.finish`, `notifications.ack`, `notifications.delivery.get`, `notifications.pending.list`, `notifications.settings.get`, `notifications.settings.put` |
 | Automatic scheduling | `automation.get`, `automation.put`, `automation.list`, `automation.prepare` |
 | Run records | `runs.prepare`, `runs.claim`, `runs.started`, `runs.protocol`, `runs.finish`, `runs.cancel`, `runs.get`, `runs.list` |
