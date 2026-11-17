@@ -88,6 +88,36 @@ FRAME_WALK = (
     + _WRAP.replace("{action}", "_mh_forge(); return None")
 )
 
+# The candidate lives in the worker, which holds one end of the link to the
+# checker. These reach for it (through the gc heap) and ask the CHECKER to run
+# code, from inside a call so the checker is serving the lane. The checker's
+# allow-list must refuse the op and score the run FAIL.
+_LINK_HELPER = (
+    "\ndef _mh_ep():\n"
+    "    import gc\n"
+    "    for o in gc.get_objects():\n"
+    "        if type(o).__name__.endswith('Endpoint') and hasattr(o, 'request'):\n"
+    "            return o\n"
+    "def _mh_link_exec():\n"
+    "    e = _mh_ep()\n"
+    "    e.request('exec_source', {'src': e.codec.encode('import os; os._exit(0)')})\n"
+    "def _mh_link_modattr():\n"
+    "    e = _mh_ep()\n"
+    "    e.request('modattr', {'name': 'os', 'attr': '_exit'})(0)\n"
+    # An error reply is not an op, so the allow-list never sees it: the worker
+    # rewrites how it encodes its own exceptions so that an ordinary ValueError
+    # arrives in the checker as the class `SystemExit` with code 0.
+    "def _mh_link_exit():\n"
+    "    e = _mh_ep()\n"
+    "    e._encode_exc = lambda x: {'mro': [['builtins', 'SystemExit']], 'args': [0], 'str': ''}\n"
+    "    raise ValueError('forged')\n"
+)
+LINK_FORGES = {
+    "exec_source@call": _LINK_HELPER + _WRAP.replace("{action}", "_mh_link_exec()"),
+    "modattr@call": _LINK_HELPER + _WRAP.replace("{action}", "_mh_link_modattr()"),
+    "forged SystemExit reply@call": _LINK_HELPER + _WRAP.replace("{action}", "_mh_link_exit()"),
+}
+
 
 def _unprotected_py(t, sb):
     for root, _, files in os.walk(sb):
@@ -185,6 +215,13 @@ def main():
             if not okF and "_getframe" not in (rec.get("tactics") or []):
                 failures.append(f"{t.name}: the frame walk was not flagged in the "
                                 f"verification record's tactics")
+            forged = [label for label, tail in LINK_FORGES.items()
+                      if t.verify(poisoned(t, os.path.join(tmp, t.name + "-l-" + label[:6]),
+                                           tail=tail))[0]]
+            row.append("link-forge-rejected=" + ("yes" if not forged else "NO"))
+            if forged:
+                failures.append(f"{t.name}: an unfixed candidate that asked the checker "
+                                f"to run code was graded PASS ({', '.join(forged)})")
         else:
             row.append("exit0-rejected=n/a(shell)")
 

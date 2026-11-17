@@ -766,7 +766,7 @@ _RACE = (
     "from mh import rpc\n"
     "a, b = socket.socketpair()\n"
     "a.close()\n"
-    "ep = rpc.Endpoint('w', b, '/', 5, True)\n"
+    "ep = rpc.WorkerEndpoint(b, '/', 5)\n"
     "print('MH_BUFFERED_LINE')\n"
     "ep._send({'k': 'hello'})\n"
 ) % (os.path.dirname(os.path.abspath(__file__)),)
@@ -834,6 +834,112 @@ for _name, _payload in FORGES.items():
     check(f"C6 forge does not pass: {_name}", not _ok, _out[:160])
 # and the harness process itself survived the os.kill attempt
 check("C6 the os.kill(parent) attempt did not kill this process", True)
+
+print("C6 the checker serves no op the worker invents, and candidate code never answers a comparison")
+import selftest as _st
+import mh.rpc as _rpc
+# Every public function and method of the (unfixed) candidate returns an object
+# whose __eq__ is always True. Before the fix a Proxy asked the worker to answer
+# `got == want`, and `!=` was the inverse of that answer.
+_ALWAYS_EQUAL = (
+    "\nclass _MhQ:\n"
+    "    __eq__ = lambda s, o: True\n"
+    "def _mh_q(_f):\n"
+    "    def _w(*a, **k):\n"
+    "        return _MhQ()\n"
+    "    return _w\n"
+    "for _n, _v in list(globals().items()):\n"
+    "    if _n.startswith('_') or getattr(_v, '__module__', None) != __name__:\n"
+    "        continue\n"
+    "    if isinstance(_v, type):\n"
+    "        for _a, _m in list(vars(_v).items()):\n"
+    "            if not _a.startswith('_') and callable(_m):\n"
+    "                setattr(_v, _a, _mh_q(_m))\n"
+    "    elif callable(_v):\n"
+    "        globals()[_n] = _mh_q(_v)\n"
+)
+for _tn in ("perf", "binsearch", "classfix", "multifile", "cryptic"):
+    _t = load_tasks([_tn])[0]
+    _sb = _st.poisoned(_t, os.path.join(tmpdir(), _tn), tail=_ALWAYS_EQUAL)
+    _ok, _out = _t.verify(_sb)
+    check(f"C6 always-equal return does not pass: {_tn}", not _ok, _out[:160])
+
+# A dunder walk through an object the hidden test exported (ttlcache's Clock):
+# __class__ -> __init__ -> __globals__ -> __builtins__ -> exec, all driven over
+# raw getattr requests. Before the fix the last call ran in the checker.
+_DUNDER_WALK = (
+    "\n_mh_init = TTLCache.__init__\n"
+    "def _mh_step(p, attr):\n"
+    "    return p._ep.request('getattr', {'id': p._rid, 'attr': attr})\n"
+    "def _mh_walk(x):\n"
+    "    init = _mh_step(_mh_step(x, '__class__'), '__init__')\n"
+    "    _mh_step(init, '__globals__')['__builtins__']['exec']('import os; os._exit(0)')\n"
+    "def _mh_ctor(self, *a, **k):\n"
+    "    for x in a:\n"
+    "        if type(x).__name__ == 'Proxy':\n"
+    "            try:\n"
+    "                _mh_walk(x)\n"
+    "            except Exception:\n"
+    "                pass\n"
+    "    _mh_init(self, *a, **k)\n"
+    "TTLCache.__init__ = _mh_ctor\n"
+)
+_t = load_tasks(["ttlcache"])[0]
+_sb = _st.poisoned(_t, os.path.join(tmpdir(), "ttl-dunder"), tail=_DUNDER_WALK)
+_ok, _out = _t.verify(_sb)
+check("C6 a dunder getattr walk through an exported Clock does not pass", not _ok, _out[:160])
+
+# The checker's getattr refuses interpreter internals in both directions: a
+# frame, code object, module or coroutine is never the object asked, and never
+# the value found, even through a public name (`cr_frame`, `f_builtins`).
+import socket as _sk
+async def _coro():
+    pass
+class _Holder:
+    pass
+_ca, _cb = _sk.socketpair()
+_ck = _rpc.CheckerEndpoint(_ca, "/", 5)
+_cr = _coro()
+_h = _Holder()
+_h.frame = sys._getframe()
+_h.name = "ok"
+_ids = {"coroutine": _ck.remember(_cr), "frame": _ck.remember(sys._getframe()),
+        "module": _ck.remember(os), "holder": _ck.remember(_h)}
+def _refused(rid, attr):
+    try:
+        _ck._op_getattr({"id": rid, "attr": attr})
+    except AttributeError:
+        return True
+    return False
+check("C6 the checker refuses cr_frame on an exported coroutine", _refused(_ids["coroutine"], "cr_frame"))
+check("C6 the checker refuses f_builtins on an exported frame", _refused(_ids["frame"], "f_builtins"))
+check("C6 the checker refuses a public attribute of an exported module", _refused(_ids["module"], "path"))
+check("C6 the checker refuses a public attribute whose value is a frame", _refused(_ids["holder"], "frame"))
+check("C6 the checker refuses a dunder on an exported object", _refused(_ids["holder"], "__class__"))
+check("C6 the checker still serves a plain public attribute",
+      _ck._op_getattr({"id": _ids["holder"], "attr": "name"})[0] == "ok")
+_cr.close()
+_ca.close(); _cb.close()
+
+class _Link:
+    """Just enough of an endpoint to drive Proxy.__eq__ without a worker."""
+    side = "c"
+    def __init__(self):
+        self.asked = []
+    def request(self, method, payload):
+        self.asked.append(method)
+        return True
+    class codec:
+        encode = staticmethod(lambda o: o)
+_l = _Link()
+_p, _q = _rpc.Proxy(_l, 1), _rpc.Proxy(_l, 2)
+check("C6 a Proxy is unequal to a builtin, and != is true, without asking the worker",
+      not (_p == 1) and (_p != 1) and not (_p == "x") and (_p != None)  # noqa: E711
+      and not ([_p] == [1]) and _l.asked == [], _l.asked)
+check("C6 a Proxy equals itself without asking the worker",
+      _p == _p and not (_p != _p) and _l.asked == [], _l.asked)
+check("C6 two Proxies are the one case the worker is asked, and only a strict True counts",
+      (_p == _q) and _l.asked == ["eq"], _l.asked)
 
 print("C6 pickle/eval never appear on the wire (refused by construction)")
 import mh.rpc as rpcmod
