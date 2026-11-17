@@ -756,27 +756,37 @@ const grepRaceAttempts = 3
 // reaches the reply. A symlink alias on its own never leaked, because the engine
 // does not follow links, skips non-regular files and opens without following.
 //
-// A name the listing did not hold that the engine walked anyway is caught by
-// counting (searchAttempt): the engine accounts for every file it walks, so more
-// files walked than the listing held, whatever they contain and whichever bucket
-// they land in, sends the attempt round again and, if the tree keeps moving,
-// ends in the one error. That covers the engine's own cut at its limit, which an
-// unlisted name's match can shape, and the aggregate counters (files_searched,
-// files_pruned, skipped), which move with the unlisted name and the class of
-// file it links to. The count is an upper bound: a file the engine fails to count
-// (an index-filtered one) or one gone by the time it walks cannot trip it, and
-// the listing's skipped total is allowed for as slack, so an unlisted name is
-// missed when the tree also holds that many too-large, unreadable or
-// unrepresentable files that the search did not reach.
+// A partial narrowing, by counting (searchAttempt). The engine accounts for every
+// regular file it walks, so when the net number of files walked exceeds what the
+// listing held (less the refused ones), the attempt is run again and, if that
+// keeps happening, ends in the one error. That closes the shapes that raise the
+// net count: an unlisted hard link to a withheld file that is simply added while
+// the engine walks. Its effect on the engine's cut at its limit, and on the
+// aggregate counters (files_searched, files_pruned, skipped), no longer reaches
+// the reply. The count is an upper bound: a file the engine fails to count (an
+// index-filtered one) or one gone by the time it walks cannot trip it.
 //
-// What is not decided from the listing alone. The engine cannot be asked to
-// search a named file set or to check the identity of each file it opens
-// (dcgrep.Request carries neither):
+// It does not decide from the listing alone, and the engine-side fix (the engine
+// searching only the listed set, and checking the identity of each file it
+// opens; dcgrep.Request carries neither) is what would. Still open:
 //   - a listed name swapped for a hard link to a withheld file only while the
 //     engine reads it, and restored before either listing: the count is the
 //     same, its match line is the withheld file's content, and it stands as a
 //     listed, unrefused match;
-//   - the slack above.
+//   - slack: the listing's skipped total is allowed for in the bound, because a
+//     too-large, unreadable or unrepresentable file inside a searched directory
+//     is walked but is not in the listing's paths, so without it a quiet tree
+//     would retry. The cost is that an unreached such file elsewhere (in a
+//     directory the search skips because it holds a refused file) absorbs one
+//     transient alias, which then leaks the cap-slot and content-class bits as
+//     before;
+//   - count-preserving shapes: a listed file moved out of the tree while an
+//     unlisted alias is linked in under a new name leaves the net count unchanged.
+//
+// Accepted cost: a transient unlisted name now ends in retry-then-error where the
+// previous code dropped its match silently, so benign churn during a grep (an
+// editor's atomic save, a temp file) can make it fail with the retry error after
+// grepRaceAttempts attempts.
 func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
 	for range grepRaceAttempts {
 		out, refused, tree, err := r.searchAttempt(ctx, req)
