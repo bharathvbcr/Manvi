@@ -19,8 +19,9 @@ import (
 //
 // The writer is the w21Fixture wrapper, which also pins the stamp clock so the
 // post-search check always takes the full relist path. The test proves it was
-// not vacuous: the writer's hook ran (a marker file it touches), and the full
-// relist-and-judge path ran.
+// not vacuous: the writer's hook ran (a marker file it touches), and either the
+// walked-file count ended the attempt (hard link) or the full relist-and-judge
+// path ran (symlink).
 func TestGrepTransientLinkToAWithheldFileIsPatternIndependent(t *testing.T) {
 	for name, lnCmd := range map[string]string{
 		"hard link": `ln "$ROOT/.env" "$ROOT/src/alias.txt"`,
@@ -43,7 +44,15 @@ func TestGrepTransientLinkToAWithheldFileIsPatternIndependent(t *testing.T) {
 			b := advGrepRaw(t, fb, "zzz-none", extra)
 			w21WriterRan(t, fa)
 			w21WriterRan(t, fb)
-			if *rechecks == 0 {
+			// A hard-linked alias is a regular file the engine walks and the
+			// listing did not hold, so the attempt ends on the walked-file count
+			// before the post-search check is reached; a symlinked one is not
+			// walked as a file and the post-search check runs as before.
+			if name == "hard link" {
+				if !strings.Contains(a, "the tree changed under the search repeatedly; retry") {
+					t.Errorf("the walked-file count did not end the search in the retry error: %s", a)
+				}
+			} else if *rechecks == 0 {
 				t.Fatal("the full relist-and-judge path never ran, so the post-search check was not exercised")
 			}
 			if a != b {
