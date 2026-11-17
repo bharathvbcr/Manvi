@@ -35,8 +35,7 @@ the checker is untrusted: `CheckerEndpoint` serves only CHECKER_OPS (call, getat
 and setattr on objects the hidden test exported as callbacks, coroutine driving,
 release), refuses any other op by exiting the checker with a failing code, and
 never exposes a private or dunder name. And a Proxy never lets candidate code
-decide `==`/`!=` against a value the checker supplied: it is unequal to anything
-but itself and another proxy.
+decide `==`/`!=`: a Proxy is equal only to itself.
 
 The wire is a restricted, typed JSON encoding. There is no pickle, marshal or
 eval anywhere on it. A malformed message, an oversize message, EOF, or a blown
@@ -241,19 +240,13 @@ class Proxy:
         return self._ep.request("bool", {"id": self._rid})
 
     def __eq__(self, other):
-        # Candidate code never decides a comparison against a value the checker
-        # supplied: a Proxy equals only itself (proxies are one per remote id, so
-        # `is` is identity of the real object) and another Proxy that the worker
-        # says is equal. Against anything else -- every builtin, every checker
-        # object -- it is unequal without a round trip. The worker's answer is
-        # reduced to a strict bool, so an `__eq__` that returns a handle cannot
-        # leak through `not`/`!=` either.
-        if other is self:
-            return True
-        if self._ep.side == "c" and type(other) is Proxy and other._ep is self._ep:
-            return self._ep.request(
-                "eq", {"id": self._rid, "other": self._ep.codec.encode(other)}) is True
-        return False
+        # Candidate code never decides a comparison. A Proxy equals only itself
+        # (proxies are one per remote id, so `is` is identity of the real
+        # object); against every other value, builtin or another Proxy, it is
+        # unequal and the worker is never asked. A hidden test that compares two
+        # returned objects with each other would otherwise be answered by the
+        # `__eq__` of the code under test.
+        return other is self
 
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -335,7 +328,7 @@ CHECKER_OPS = frozenset({"call", "getattr", "setattr", "codrive", "aiter",
 # What the WORKER will do when the checker asks: everything the proxies can say,
 # plus the worker-only ops that import and execute candidate code.
 WORKER_OPS = CHECKER_OPS | frozenset({
-    "getitem", "setitem", "len", "bool", "hash", "eq", "str", "repr", "iter",
+    "getitem", "setitem", "len", "bool", "hash", "str", "repr", "iter",
     "next", "find", "modattr", "forbid", "exec_source", "arun"})
 
 
@@ -518,6 +511,11 @@ class Endpoint:
                     self._fatal("peer closed the connection")
                 self._done = True
                 return
+            # A frame is a dict with a hashable lane. Anything else would raise
+            # in this thread and end it silently, leaving the verification to
+            # time out; fail it now instead.
+            if type(frame) is not dict or not isinstance(frame.get("lane", 0), int):
+                self._fatal("malformed frame")
             k = frame.get("k")
             if k == "hello":
                 continue
@@ -738,10 +736,6 @@ class Endpoint:
 
     def _op_hash(self, p):
         return self.codec.encode(hash(self._obj(p))), None
-
-    def _op_eq(self, p):
-        return self.codec.encode(
-            (self._obj(p) == self.codec.decode(p["other"])) is True), None
 
     def _op_str(self, p):
         return self.codec.encode(str(self._obj(p))), None

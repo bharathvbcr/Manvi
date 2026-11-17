@@ -938,8 +938,102 @@ check("C6 a Proxy is unequal to a builtin, and != is true, without asking the wo
       and not ([_p] == [1]) and _l.asked == [], _l.asked)
 check("C6 a Proxy equals itself without asking the worker",
       _p == _p and not (_p != _p) and _l.asked == [], _l.asked)
-check("C6 two Proxies are the one case the worker is asked, and only a strict True counts",
-      (_p == _q) and _l.asked == ["eq"], _l.asked)
+check("C6 two distinct Proxies are unequal and the worker is never asked",
+      not (_p == _q) and (_p != _q) and _l.asked == [], _l.asked)
+
+_MALFORMED = (
+    "import sys, socket, struct, json\n"
+    "sys.path.insert(0, %r)\n"
+    "from mh import rpc\n"
+    "a, b = socket.socketpair()\n"
+    "ep = rpc.CheckerEndpoint(a, '/', 5)\n"
+    "body = json.dumps(%s).encode()\n"
+    "b.sendall(struct.pack('>I', len(body)) + body)\n"
+    "ep._read_loop()\n"
+)
+for _label, _frame in (("a non-dict frame", "[1, 2]"), ("an unhashable lane", '{"k": "q", "lane": [1]}')):
+    _t0 = time.time()
+    _rp = subprocess.run([sys.executable, "-I", "-B", "-c",
+                          _MALFORMED % (os.path.dirname(os.path.abspath(__file__)), _frame)],
+                         capture_output=True, text=True, timeout=30)
+    check(f"C6 {_label} fails the checker at once, not at the deadline",
+          _rp.returncode == _rpc.FATAL_EXIT and "malformed frame" in _rp.stderr and time.time() - _t0 < 10,
+          f"rc={_rp.returncode} {_rp.stderr[-120:]}")
+
+# Two worker-returned objects compared with each other (the hidden test's
+# `any(x != vs[0] ...)` / `left != right`): the worker must not decide that.
+def _ref_src(task_name, fname):
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks",
+                           task_name, "reference", fname)) as _f:
+        return _f.read()
+
+def _verify_with(task_name, fname, src):
+    _t = load_tasks([task_name])[0]
+    _sb = _t.materialise(os.path.join(tmpdir(), task_name))
+    _st.overlay(os.path.join(_t.dir, "reference"), _sb)
+    if src is not None:
+        open(os.path.join(_sb, fname), "w").write(src)
+    return _t.verify(_sb)
+
+_AE = ("\nclass _Q:\n    __eq__ = lambda s, o: True\n"
+       "    __ne__ = lambda s, o: False\n    __hash__ = lambda s: 0\n")
+
+def _distcache(always_equal):
+    # The fifteen caches the fixed cases build behave; from the sixteenth (the
+    # fuzzer's) heal() does nothing, and with always_equal every view is a _Q.
+    return _ref_src("cache_invalidation_dist", "distcache.py") + _AE + (
+        "\n_n = [0]\n_Base = DistCache\n"
+        "class DistCache(_Base):\n"
+        "    def __init__(self, *a, **k):\n"
+        "        _n[0] += 1\n"
+        "        self._broken = _n[0] > 15\n"
+        "        super().__init__(*a, **k)\n"
+        "    def heal(self):\n"
+        "        if not self._broken:\n"
+        "            super().heal()\n"
+        "    def get(self, node, key):\n"
+        "        v = super().get(node, key)\n"
+        "        return _Q() if (self._broken and %s) else v\n") % always_equal
+
+_ok, _out = _verify_with("cache_invalidation_dist", "distcache.py", None)
+check("C6 control: cache_invalidation_dist reference passes", _ok, _out[:200])
+_ok, _out = _verify_with("cache_invalidation_dist", "distcache.py", _distcache(False))
+check("C6 control: a heal() that never converges fails the fuzzer",
+      not _ok and "heal diverge" in _out, _out[:200])
+_ok, _out = _verify_with("cache_invalidation_dist", "distcache.py", _distcache(True))
+check("C6 a heal() that never converges does not pass with always-equal views", not _ok, _out[:200])
+
+def _ot(always_equal):
+    # After 143 `apply` calls the transform has no site-id tie-break; with
+    # always_equal every result is a str that claims to equal anything.
+    return _ref_src("ot_transform", "ot.py") + _AE + (
+        "\nclass _S(str):\n"
+        "    __eq__ = lambda s, o: True\n"
+        "    __ne__ = lambda s, o: False\n"
+        "    __hash__ = lambda s: 0\n"
+        "_n = [0]\n_apply, _transform = apply, transform\n"
+        "def apply(doc, op):\n"
+        "    if not isinstance(doc, str):\n"
+        "        doc = doc.v\n"
+        "    _n[0] += 1\n"
+        "    r = _apply(doc, op)\n"
+        "    if _n[0] > 143 and %s:\n"
+        "        s = _S(r)\n"
+        "        s.v = r\n"
+        "        return s\n"
+        "    return r\n"
+        "def transform(a, b):\n"
+        "    if _n[0] > 143 and a[0] == 'ins' and b[0] == 'ins':\n"
+        "        return a, ('ins', b[1] + 1, b[2], b[3])\n"
+        "    return _transform(a, b)\n") % always_equal
+
+_ok, _out = _verify_with("ot_transform", "ot.py", None)
+check("C6 control: ot_transform reference passes", _ok, _out[:200])
+_ok, _out = _verify_with("ot_transform", "ot.py", _ot(False))
+check("C6 control: a transform without a tie-break fails the fuzzer",
+      not _ok and "order-dependent" in _out, _out[:200])
+_ok, _out = _verify_with("ot_transform", "ot.py", _ot(True))
+check("C6 a transform without a tie-break does not pass with always-equal results", not _ok, _out[:200])
 
 print("C6 pickle/eval never appear on the wire (refused by construction)")
 import mh.rpc as rpcmod
