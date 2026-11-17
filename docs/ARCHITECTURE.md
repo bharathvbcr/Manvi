@@ -231,8 +231,9 @@ classDiagram
 These are **DevCouncil components**, not MANVI internals. The diagram below is
 the internal structure of the binaries the harness execs; MANVI never calls any
 of these functions directly, and never links the crates that contain them. The
-crate paths shown are DevCouncil's, mirrored under MANVI's `crates/` so the
-harness can be built and tested without a DevCouncil checkout — see
+crate paths shown are DevCouncil's, reached through MANVI's `crates/`
+symlinks into the sibling checkout (`../DevCouncil/rust/`, pinned in
+`scripts/module-pins.txt`), which the harness build and tests need — see
 [`COMPONENTS_AND_HARNESS.md`](COMPONENTS_AND_HARNESS.md) §7.
 
 
@@ -403,7 +404,7 @@ Manvi/
 │   │   └── tui/               # Elm-style full-screen interactive UI
 │   └── workflow/              # Workflow definitions & catalog store
 │
-├── DevCouncil/backend/go_orchestrator/  # Imported Go packages via manvi/go.mod
+├── ../DevCouncil/backend/go_orchestrator/  # SIBLING checkout (not in this repo): Go packages imported via manvi/go.mod
 │   ├── dc/                    # Domain types & IPC clients (dcgrep, dcverify, devmap, store)
 │   ├── flags/                 # Settings catalog, origin tracking & postures
 │   ├── fnmatch/               # Go fnmatch glob engine
