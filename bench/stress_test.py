@@ -922,24 +922,77 @@ _cr.close()
 _ca.close(); _cb.close()
 
 class _Link:
-    """Just enough of an endpoint to drive Proxy.__eq__ without a worker."""
+    """Just enough of an endpoint to drive Proxy.__eq__ without a worker: the
+    worker it stands for holds no builtin data, or answers with a verdict."""
     side = "c"
-    def __init__(self):
+    def __init__(self, answer):
         self.asked = []
+        self.answer = answer
     def request(self, method, payload):
-        self.asked.append(method)
-        return True
+        self.asked.append((method, sorted(payload)))
+        return self.answer
     class codec:
         encode = staticmethod(lambda o: o)
-_l = _Link()
+_l = _Link([False, None])
 _p, _q = _rpc.Proxy(_l, 1), _rpc.Proxy(_l, 2)
-check("C6 a Proxy is unequal to a builtin, and != is true, without asking the worker",
+check("C6 a Proxy with no builtin data is unequal to a builtin, and != is true",
       not (_p == 1) and (_p != 1) and not (_p == "x") and (_p != None)  # noqa: E711
-      and not ([_p] == [1]) and _l.asked == [], _l.asked)
+      and not ([_p] == [1]), _l.asked)
+check("C6 the checker asks only for the object's data, never sending the other operand",
+      {m for m, _ in _l.asked} == {"value"} and all(k == ["id"] for _, k in _l.asked), _l.asked)
+_l.asked.clear()
 check("C6 a Proxy equals itself without asking the worker",
       _p == _p and not (_p != _p) and _l.asked == [], _l.asked)
-check("C6 two distinct Proxies are unequal and the worker is never asked",
-      not (_p == _q) and (_p != _q) and _l.asked == [], _l.asked)
+check("C6 two distinct Proxies with no builtin data are unequal",
+      not (_p == _q) and (_p != _q), _l.asked)
+for _label, _ans in (("True", True), ("[True]", [True]), ("[True, <a handle>]", [True, _p]),
+                      ("[1, (1, 2)]", [1, (1, 2)]), ("['yes', (1, 2)]", ["yes", (1, 2)])):
+    _lv = _Link(_ans)
+    check(f"C6 a worker answer of {_label} is not taken as data or a verdict",
+          not (_rpc.Proxy(_lv, 3) == (1, 2)), _label)
+
+# Over a real link: a builtin subclass the candidate returns compares by its
+# builtin contents, read through the builtin type's own methods; an override
+# of __eq__/__iter__/__str__/items on the subclass decides nothing.
+import collections as _co
+import enum as _en
+_sa, _sb = _sk.socketpair()
+_ckl, _wkl = _rpc.CheckerEndpoint(_sa, "/", 20), _rpc.WorkerEndpoint(_sb, "/", 20)
+_ckl.start_reader(); _wkl.start_reader()
+def _h(o):
+    return _ckl.resolve_handle("w", _wkl.remember(o))
+_NT = _co.namedtuple("_NT", "x y")
+class _IE(_en.IntEnum):
+    A = 3
+class _AET(tuple):
+    __eq__ = lambda s, o: True; __ne__ = lambda s, o: False; __hash__ = lambda s: 0
+    __iter__ = lambda s: iter((1, 2))
+class _AES(str):
+    __eq__ = lambda s, o: True; __ne__ = lambda s, o: False; __hash__ = lambda s: 0
+    __str__ = lambda s: "want"
+class _AED(dict):
+    __eq__ = lambda s, o: True; items = lambda s: [("a", 1)]
+class _AEO:
+    __eq__ = lambda s, o: True
+for _name, _got, _want in (
+        ("an honest namedtuple equals its tuple", _h(_NT(1, 2)) == (1, 2), True),
+        ("the reflected tuple == namedtuple holds", (1, 2) == _h(_NT(1, 2)), True),
+        ("a namedtuple with other data is unequal", _h(_NT(1, 3)) == (1, 2), False),
+        ("a namedtuple's fields still read", _h(_NT(1, 2)).x == 1, True),
+        ("an honest Counter equals its dict", _h(_co.Counter(a=2)) == {"a": 2}, True),
+        ("an honest defaultdict equals its dict", _h(_co.defaultdict(int, a=1)) == {"a": 1}, True),
+        ("an honest IntEnum equals its int", _h(_IE.A) == 3, True),
+        ("an IntEnum is unequal to another int", _h(_IE.A) == 4, False),
+        ("a nested namedtuple compares by contents", _h(_NT(_NT(1, 2), 3)) == ((1, 2), 3), True),
+        ("two returned namedtuples with equal data are equal", _h(_NT(1, 2)) == _h(_NT(1, 2)), True),
+        ("an always-equal tuple subclass holding other data is unequal", _h(_AET((9, 9))) == (1, 2), False),
+        ("an always-equal str subclass holding other data is unequal", "want" == _h(_AES("nope")), False),
+        ("an always-equal dict subclass holding other data is unequal", _h(_AED(b=2)) == {"a": 1}, False),
+        ("an always-equal plain object is unequal", _h(_AEO()) == 1, False),
+        ("two always-equal plain objects are unequal", _h(_AEO()) == _h(_AEO()), False)):
+    check(f"C6 {_name}", _got is _want, _got)
+# The pair stays open: closing the worker's end would make the checker reader
+# treat it as a transport failure and exit this run.
 
 _MALFORMED = (
     "import sys, socket, struct, json\n"

@@ -22,7 +22,7 @@ The split closes both by construction:
     has nothing to exfiltrate and nowhere to put it.
 
 When the hidden test imports a sandbox module it gets a PROXY. Every operation on
-that proxy -- attribute access, call, item access, iteration, len, bool, compare,
+that proxy -- attribute access, call, item access, iteration, len, bool,
 context managers, async iteration -- is a typed message to the worker, which runs
 the real thing and sends back a value (copied) or a handle (a proxy the other
 way, so a test-supplied callback or Clock still works). Candidate code exiting,
@@ -35,7 +35,10 @@ the checker is untrusted: `CheckerEndpoint` serves only CHECKER_OPS (call, getat
 and setattr on objects the hidden test exported as callbacks, coroutine driving,
 release), refuses any other op by exiting the checker with a failing code, and
 never exposes a private or dunder name. And a Proxy never lets candidate code
-decide `==`/`!=`: a Proxy is equal only to itself.
+decide `==`/`!=`: a Proxy equals itself, and otherwise the checker compares a
+plain copy of a builtin subclass's contents (a namedtuple, Counter, IntEnum)
+that it asked the worker for, never sending the other operand. Any other
+worker object is unequal to everything but itself.
 
 The wire is a restricted, typed JSON encoding. There is no pickle, marshal or
 eval anywhere on it. A malformed message, an oversize message, EOF, or a blown
@@ -240,13 +243,31 @@ class Proxy:
         return self._ep.request("bool", {"id": self._rid})
 
     def __eq__(self, other):
-        # Candidate code never decides a comparison. A Proxy equals only itself
+        # Candidate code never decides a comparison. A Proxy equals itself
         # (proxies are one per remote id, so `is` is identity of the real
-        # object); against every other value, builtin or another Proxy, it is
-        # unequal and the worker is never asked. A hidden test that compares two
-        # returned objects with each other would otherwise be answered by the
+        # object). Otherwise the checker asks the worker for the object's DATA,
+        # never for a verdict: a builtin subclass (a namedtuple, Counter,
+        # defaultdict, IntEnum, a str subclass) comes back as a plain copy of
+        # its builtin contents, read through the builtin type's own methods,
+        # and the checker compares that copy itself. The other operand is never
+        # sent. Any other object has no data to give and is unequal; so is
+        # another Proxy unless its own copy compares equal. Two returned
+        # objects compared with each other are then compared by data the worker
+        # supplied for both: the same trust as two values it returned by value,
+        # which is the candidate's answer, never a verdict. A hidden test that
+        # compares a returned object would otherwise be answered by the
         # `__eq__` of the code under test.
-        return other is self
+        if other is self:
+            return True
+        if self._ep.side == "w":
+            return False
+        got = self._ep.request("value", {"id": self._rid})
+        if type(got) is not list or len(got) != 2 or got[0] is not True:
+            return False
+        data = got[1]
+        if type(data) not in _BYVAL:
+            return False
+        return (data == other) is True
 
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -329,7 +350,42 @@ CHECKER_OPS = frozenset({"call", "getattr", "setattr", "codrive", "aiter",
 # plus the worker-only ops that import and execute candidate code.
 WORKER_OPS = CHECKER_OPS | frozenset({
     "getitem", "setitem", "len", "bool", "hash", "str", "repr", "iter",
-    "next", "find", "modattr", "forbid", "exec_source", "arun"})
+    "next", "value", "find", "modattr", "forbid", "exec_source", "arun"})
+
+
+def _builtin_data(obj):
+    """The builtin contents of an instance of a builtin subclass, as an exact
+    builtin, or None when obj is not one.
+
+    The base is found from type(obj) (an instance cannot fake its type the way
+    it can fake `__class__` for isinstance), and the copy is read through the
+    base type's own unbound methods, so an override of `__iter__`, `__eq__`,
+    `items`, `__index__` or `__str__` on the subclass is never called.
+    """
+    t = type(obj)
+    if t in _BYVAL:
+        return None
+    if issubclass(t, int):
+        return int.__index__(obj)
+    if issubclass(t, float):
+        return float.__float__(obj)
+    if issubclass(t, str):
+        return str.__str__(obj)
+    if issubclass(t, bytes):
+        return bytes(memoryview(obj))
+    if issubclass(t, bytearray):
+        return bytearray(memoryview(obj))
+    if issubclass(t, tuple):
+        return tuple.__getitem__(obj, slice(None))
+    if issubclass(t, list):
+        return list.copy(obj)
+    if issubclass(t, dict):
+        return dict(dict.items(obj))
+    if issubclass(t, frozenset):
+        return frozenset(frozenset.__iter__(obj))
+    if issubclass(t, set):
+        return set(set.__iter__(obj))
+    return None
 
 
 class Endpoint:
@@ -475,7 +531,9 @@ class Endpoint:
             return None
         try:
             return json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError: a frame nested deeper than the parser's stack
+            # would otherwise end this reader thread silently.
             self._fatal("malformed frame")
 
     def _fatal(self, why):
@@ -869,6 +927,16 @@ class WorkerEndpoint(Endpoint):
     def _op_call(self, p):
         self.candidate_ran = True
         return super()._op_call(p)
+
+    def _op_value(self, p):
+        # The data a Proxy compares with, never a comparison: [True, copy] for
+        # a builtin subclass, [False, None] for anything else. Elements of the
+        # copy cross by the usual rule (exact builtins by value, the rest as
+        # handles), so a nested namedtuple is compared the same way in turn.
+        data = _builtin_data(self._obj(p))
+        if data is None:
+            return self.codec.encode([False, None]), None
+        return self.codec.encode([True, data]), None
 
     def _op_find(self, p):
         name = p["name"]
