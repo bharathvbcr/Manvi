@@ -162,7 +162,7 @@ func TestAttachmentReadinessNamesTheLastTransientReasonWhenTheBudgetRunsOut(t *t
 	cancel()
 	if _, _, err := waitForAttachment(ctx, func(context.Context) (Session, error) {
 		return Session{}, nil
-	}, 1, time.Hour); err != context.Canceled {
+	}, 1, time.Hour); err != context.Canceled { //nolint:errorlint // the assertion is that the error is the bare context error, not one wrapped around it
 		t.Fatalf("decorated an error with no reason to add: %v", err)
 	}
 }

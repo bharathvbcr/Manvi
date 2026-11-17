@@ -128,10 +128,10 @@ func TestClaudeMcpArgsChild(t *testing.T) {
 		os.Exit(2)
 	}
 	tmp := out + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil { //nolint:gosec // G703: a test helper child writing to the capture path its own test passed in the environment
 		os.Exit(3)
 	}
-	if err := os.Rename(tmp, out); err != nil {
+	if err := os.Rename(tmp, out); err != nil { //nolint:gosec // G703: the same test-owned capture path
 		os.Exit(4)
 	}
 	os.Exit(0)
