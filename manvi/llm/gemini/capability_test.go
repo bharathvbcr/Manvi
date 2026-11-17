@@ -149,6 +149,30 @@ func TestReplayabilityIsClaimedOnlyForTheSameModel(t *testing.T) {
 	}
 }
 
+// gemini-4-hydrogen is the model Vani triages with. Like 3.8-flash it must
+// carry its stated limits, or budget.Provider cannot bound a reservation.
+func TestGemini4HydrogenIsServedWithItsStatedLimits(t *testing.T) {
+	c, ok := Capability("gemini-4-hydrogen")
+	if !ok {
+		t.Fatal("gemini-4-hydrogen is not served")
+	}
+	if c.ContextWindow != 1_048_576 || c.MaxOutputTokens != 65_536 {
+		t.Fatalf("limits = %d/%d", c.ContextWindow, c.MaxOutputTokens)
+	}
+	if !c.SupportsTools || !c.SupportsReasoning {
+		t.Fatalf("capabilities = %+v", c)
+	}
+	for _, effort := range []string{"", "low", "high"} {
+		if err := ValidateRequest(llm.Request{Model: "gemini-4-hydrogen", Effort: effort}); err != nil {
+			t.Fatalf("effort %q refused: %v", effort, err)
+		}
+	}
+	// Carbon and Argon were not added: their pages were not read.
+	if _, ok := Capability("gemini-4-carbon"); ok {
+		t.Error("gemini-4-carbon is served without its limits having been read")
+	}
+}
+
 // gemini-3.8-flash is the model Jarvis's campaign runs. It must be served, and
 // its stated limits must be present, because budget.Provider refuses to meter a
 // model whose limits it cannot read.

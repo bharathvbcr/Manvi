@@ -139,6 +139,18 @@ const StoreInteractions = false
 // "not stated", which the neutral Capability does not enforce. Inventing the
 // numbers would produce a gate that rejects requests the provider accepts.
 var catalogue = llm.Catalogue{
+	// gemini-4-hydrogen (GA 2026-11-12) is Vani's triage model. Its model page
+	// (aistudio.google.com/docs/models/gemini-4-hydrogen, read 2026-11-17)
+	// states a unified 1,048,576-token context window and 65,536 output tokens
+	// by default (up to 1,048,576 only with long decode, which this adapter
+	// does not request), function calling, structured outputs and thinking.
+	"gemini-4-hydrogen": {
+		Provider: Name, Model: "gemini-4-hydrogen",
+		ContextWindow: 1_048_576, MaxOutputTokens: 65_536,
+		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
+		SupportsReasoning: true,
+		EffortLevels:      thinkingLevels,
+	},
 	// gemini-3.8-flash is the one entry whose limits are stated: Jarvis, which
 	// meters it against a spend cap, needs them to bound a reservation, and
 	// Google's model page for it gives 1,048,576 input and 65,536 output tokens.

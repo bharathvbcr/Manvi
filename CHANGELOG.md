@@ -23,6 +23,11 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **The Gemini adapter serves `gemini-4-hydrogen`** (GA 2026-11-12), with the
+  limits its model page states: a 1,048,576-token context window and 65,536
+  output tokens. Vani triages with it. `gemini-4-carbon` and `gemini-4-argon`
+  are not added; their pages were not read.
+
 - `manvi use [cloud|local] [--model ID] [--base-url URL] [--json]`: Manvi's own
   user config as the single cloud/local switch for every host. `use cloud` saves
   `llm.provider.default: anthropic` (and, with `--model`, `llm.tier.main`,
