@@ -61,6 +61,25 @@ func TestRigorDefaultTimeoutScalesWhenLeanKernelModeEnabled(t *testing.T) {
 	}
 }
 
+// dcverify accepts only auto and require for DC_VERIFY_LEAN_KERNEL and fails
+// closed on any other value, so a value it would reject must not widen the
+// deadline either.
+func TestRigorLeanDeadlineIgnoresValuesDcverifyRejects(t *testing.T) {
+	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "")
+	for _, v := range []string{"1", "true", "TRUE", "yes", "on", "0", "off", "false", "lexical", ""} {
+		t.Setenv("DC_VERIFY_LEAN_KERNEL", v)
+		if got := (rigorClient{}).effectiveTimeout(); got != 30*time.Second {
+			t.Errorf("DC_VERIFY_LEAN_KERNEL=%q: effectiveTimeout() = %v, want the 30s default", v, got)
+		}
+	}
+	for _, v := range []string{"auto", "AUTO", " require "} {
+		t.Setenv("DC_VERIFY_LEAN_KERNEL", v)
+		if got := (rigorClient{}).effectiveTimeout(); got != 240*time.Second {
+			t.Errorf("DC_VERIFY_LEAN_KERNEL=%q: effectiveTimeout() = %v, want 240s", v, got)
+		}
+	}
+}
+
 // The Lean step is DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s, 180s when
 // it is unset or not an unsigned decimal; the deadline is that plus 60s and
 // never under 240s.

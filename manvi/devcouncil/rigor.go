@@ -78,15 +78,17 @@ const (
 )
 
 // effectiveTimeout is the dcverify deadline. An explicit Timeout wins. With
-// DC_VERIFY_LEAN_KERNEL on (auto, require, 1 or true) it is the Lean kernel
-// step (DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s, 180s when unset or
-// unparseable) plus 60s, and never under 240s. Otherwise it is 30s.
+// DC_VERIFY_LEAN_KERNEL on (auto or require, the only values dcverify accepts:
+// it fails closed on anything else, so 1 and true do not widen the deadline)
+// it is the Lean kernel step (DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s,
+// 180s when unset or unparseable) plus 60s, and never under 240s. Otherwise it
+// is 30s.
 func (c rigorClient) effectiveTimeout() time.Duration {
 	if c.Timeout > 0 {
 		return c.Timeout
 	}
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("DC_VERIFY_LEAN_KERNEL")))
-	if mode == "auto" || mode == "require" || mode == "1" || mode == "true" {
+	if mode == "auto" || mode == "require" {
 		step := 180 * time.Second
 		if raw := strings.TrimSpace(os.Getenv("DC_LEAN_KERNEL_TIMEOUT_MS")); raw != "" {
 			if ms, err := strconv.ParseUint(raw, 10, 64); err == nil {
