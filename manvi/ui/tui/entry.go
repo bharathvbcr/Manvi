@@ -436,7 +436,11 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		// unbranded first line too.
 		title := render.Styled(logo.Name, th.AccentStyle())
 		if th.LogoBlocks() {
-			title = logo.Lines(logo.SizeCompact, th.Logo(), true, "", body)[0]
+			// The compact mark is one row, and a row narrower than it is none:
+			// the plain name above stands in for it then.
+			if mark := logo.Lines(logo.SizeCompact, th.Logo(), true, "", body); len(mark) > 0 {
+				title = mark[0]
+			}
 		}
 		title = title.Append("  "+orDash(ev.Posture), th.Muted()).
 			Append("  "+g.Dot+"  ", th.Subtle()).

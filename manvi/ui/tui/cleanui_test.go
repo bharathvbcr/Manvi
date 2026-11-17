@@ -104,7 +104,7 @@ func TestALiveThoughtLaysOutABoundedSpan(t *testing.T) {
 		t.Fatalf("%d rows, want %d", len(rows), thoughtTail)
 	}
 	first := tailRows(long, 80, render.Style{}, thoughtTail)
-	if first == nil {
+	if len(first) == 0 {
 		t.Fatal("no rows for a long thought")
 	}
 	a := first[0].Text()
@@ -1508,6 +1508,9 @@ func TestTheFooterKeepsWhatMatters(t *testing.T) {
 	}
 	st := Status{Posture: "strict", Model: "claude-opus-5-5", GitBranch: "main", Grants: 2}
 	wide, b := draw(110, st)
+	// draw hands back the buffer it made, which is never nil; nilaway loses that
+	// through the closure's second result, and without this reports the reads of b
+	// below (measured: two findings).
 	if b == nil {
 		t.Fatal("the footer was not drawn into a buffer")
 	}

@@ -306,9 +306,10 @@ func WrapText(text string, width int, s Style) []Line {
 	for _, raw := range strings.Split(text, "\n") {
 		out = append(out, Styled(raw, s).Wrap(width)...)
 	}
-	// Wrap says "no rows" with a nil slice, and appending nothing to a non-nil
-	// slice leaves it non-nil; the check is for callers' analysers, which do not
-	// model append, and a caller indexes the result without one of its own.
+	// This cannot be true: out starts non-nil and append never makes a slice nil.
+	// It is here because nilaway does not model append, and without it reports
+	// every caller that indexes the result (measured: 70 findings with it
+	// absent, 68 with it).
 	if out == nil {
 		out = []Line{}
 	}
