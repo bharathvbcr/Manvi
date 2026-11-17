@@ -120,6 +120,36 @@ func (s *session) await(id string, within time.Duration) Response {
 	}
 }
 
+// awaitAll collects the answer to every id in ids, whichever order they arrive in,
+// and ignores any other answer it reads. await returns the first answer for ONE id
+// and drops every other answer it reads past, so two calls that finish
+// concurrently cannot be awaited one after the other with it: when the second
+// finishes first, awaiting the first swallows its answer and the second await then
+// times out on an answer that was already thrown away.
+func (s *session) awaitAll(within time.Duration, ids ...string) map[string]Response {
+	s.t.Helper()
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	got := make(map[string]Response, len(ids))
+	deadline := time.After(within)
+	for len(got) < len(want) {
+		select {
+		case r, ok := <-s.got:
+			if !ok {
+				s.t.Fatalf("stream ended with %d of %v answered", len(got), ids)
+			}
+			if want[r.ID] {
+				got[r.ID] = r
+			}
+		case <-deadline:
+			s.t.Fatalf("%d of %v were answered within %v", len(got), ids, within)
+		}
+	}
+	return got
+}
+
 // The defect lanes exist for: an instant cancel waited behind a slow call.
 // Under serial dispatch this stop was answered only after prepare returned.
 func TestStopIsAnsweredWhilePrepareHoldsItsLane(t *testing.T) {
