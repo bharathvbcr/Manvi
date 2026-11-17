@@ -384,13 +384,15 @@ func trimSpace(s string) string {
 
 // accent is the card's colour. A question is not a warning: painting it in the
 // approval palette teaches an operator that the model asking something is the
-// same event as a blocked write, and the two want different reactions.
+// same event as a blocked write, and the two want different reactions. A block
+// the operator may grant is the text colour, and only one that cannot be
+// granted takes the failure colour.
 func (c *ApprovalCard) accent(th Theme) render.Color {
 	switch {
 	case c.isQuestion():
 		return th.Info
 	case c.Request.Grantable:
-		return th.Warning
+		return th.Fg
 	}
 	return th.Danger
 }
@@ -532,8 +534,13 @@ func (c *ApprovalCard) Draw(b *render.Buffer, r render.Rect, th Theme, tick int,
 	border := accent
 	if fxOn {
 		// The crest blends a third of the way toward the card's foreground:
-		// enough to catch the eye, not enough to strobe it.
-		border = accent.Blend(th.Fg, fx.Pulse(tick, 24)*0.4)
+		// enough to catch the eye, not enough to strobe it. A card already in
+		// the foreground colour breathes toward the quiet text colour instead.
+		toward := th.Fg
+		if accent == th.Fg {
+			toward = th.FgSubtle
+		}
+		border = accent.Blend(toward, fx.Pulse(tick, 24)*0.4)
 	}
 
 	title := " " + g.Warn + " approval required "

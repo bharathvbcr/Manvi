@@ -77,8 +77,15 @@ func (a *App) drawEmpty(b *render.Buffer, r render.Rect) {
 	if top < r.Y {
 		top = r.Y
 	}
-	used := logo.Draw(b, render.Rect{X: r.X, Y: top, W: r.W, H: r.H - (top - r.Y)},
-		th.Logo(), blocks, "the DevCouncil execution harness")
+	// The ribbon draws itself in when this screen appears, carries a glint now
+	// and then, and answers a keypress with another. All of it is the mark's
+	// own function of the tick, and with animation off it is the still mark.
+	motion := logo.Motion{}
+	if a.fxOn() {
+		motion = logo.Motion{Live: true, Tick: a.tick, Start: a.emptyAt, Nudge: a.nudgeAt}
+	}
+	used := logo.DrawAt(b, render.Rect{X: r.X, Y: top, W: r.W, H: r.H - (top - r.Y)},
+		th.Logo(), blocks, "the DevCouncil execution harness", motion)
 
 	// The hint types itself out once at startup — a first-run cue that the
 	// keys on it are live, timed to finish inside the first couple of seconds.
@@ -103,15 +110,17 @@ func (a *App) drawNotice(b *render.Buffer, r render.Rect) {
 	}
 	x := r.Right() - w - 2
 
-	// Below the status bar, and below the strict banner when there is one. A
-	// transient message may cover transcript, which scrolls back; it may not
-	// cover the statement that this run's results are not strict, which is the
-	// one thing on screen with nowhere else to be read.
-	y := r.Y + 1
-	if v := a.Current(); v != nil {
-		if strict, _ := v.Status.StrictSummary(); !strict {
-			y = r.Y + 2
-		}
+	// On the first row of the transcript, under the session strip when there
+	// is one. A transient message may cover transcript, which scrolls back. It
+	// cannot cover the statement that this run's results are not strict: that
+	// is drawn above the composer, at the other end of the screen.
+	y := r.Y
+	switch {
+	case a.mode == ModeDashboard:
+		// Under the dashboard's own heading, where it has always been.
+		y = r.Y + 1
+	case !a.tabRow.Empty():
+		y = a.tabRow.Bottom()
 	}
 	if y >= r.Bottom() {
 		y = r.Bottom() - 1

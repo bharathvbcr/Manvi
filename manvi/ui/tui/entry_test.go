@@ -89,7 +89,9 @@ func TestQualificationsAreAlwaysRendered(t *testing.T) {
 func TestDegradedChecksAreNotHiddenByFolding(t *testing.T) {
 	// Printing nothing here is what would make an unexamined result look
 	// examined, so folding must not be able to hide it either — a folded entry
-	// still carries the degraded marker in its gutter.
+	// still carries the degraded marker in its gutter, and still names the
+	// check that did not run. The marker alone was all a folded entry kept,
+	// which told a reader that something was unexamined and not what.
 	th := Dark()
 	e := &Entry{
 		Event:    ui.Event{Kind: ui.KindToolResult, Text: strings.Repeat("output\n", 40), Degraded: []string{"secret_scan"}},
@@ -97,8 +99,12 @@ func TestDegradedChecksAreNotHiddenByFolding(t *testing.T) {
 		Folded:   true,
 	}
 	lines := e.Lines(th, 80)
-	if len(lines) != 1 {
-		t.Fatalf("a folded entry rendered %d lines", len(lines))
+	// The result's one row, and the qualification under it.
+	if len(lines) > 2 {
+		t.Fatalf("a folded entry rendered %d lines of a 40-line result", len(lines))
+	}
+	if got := lineText(lines); !strings.Contains(got, "checks that did not run: secret_scan") {
+		t.Fatalf("a folded entry does not name the check that did not run:\n%s", got)
 	}
 	if e.Status() != StatusDegraded {
 		t.Fatal("a folded entry lost its degraded status")
@@ -137,7 +143,7 @@ func TestRenderCacheIsKeyedOnEverythingThatChangesOutput(t *testing.T) {
 	// theme change, and the bug reads as a rendering glitch rather than a cache
 	// miss.
 	e := &Entry{
-		Event:    ui.Event{Kind: ui.KindToolResult, Text: "one\ntwo\nthree"},
+		Event:    ui.Event{Kind: ui.KindToolResult, Text: strings.Repeat("line\n", 15)},
 		Foldable: true,
 	}
 	expanded := len(e.Lines(Dark(), 60))
@@ -163,7 +169,9 @@ func TestToolArgumentsAreFormattedNotEchoed(t *testing.T) {
 	if strings.Contains(got, "\n") {
 		t.Fatalf("a newline survived into the tool banner: %q", got)
 	}
-	if !strings.Contains(got, "path=src/x.go") {
+	// The path is what the call is about, so it leads and stands without its
+	// key; the other arguments keep theirs.
+	if !strings.HasPrefix(got, "src/x.go") || !strings.Contains(got, "content=") {
 		t.Fatalf("detail = %q", got)
 	}
 	// Ordering must be stable: map iteration is random, and a banner that
@@ -337,18 +345,18 @@ func TestSessionStartLineCarriesTheMark(t *testing.T) {
 	th.Unicode = true
 	e := &Entry{Event: ui.Event{Kind: ui.KindSessionStart, Posture: "strict", Model: "some-model"}}
 	got := lineText(e.Lines(th, 80)[:1])
-	for _, want := range []string{"█", "manvi", "strict", "some-model"} {
+	for _, want := range []string{"▞▚▞▚ manvi", "strict", "some-model"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("the session line is missing %q: %q", want, got)
 		}
 	}
 
-	// A pane too narrow for the tile keeps the name: the branding degrades, the
-	// report does not.
+	// A theme with no palette for the ribbon keeps the name: the branding
+	// degrades, the report does not.
 	plain := NoColorTheme()
 	got = lineText(e.Lines(plain, 40)[:1])
-	if strings.Contains(got, "█") {
-		t.Fatalf("the plain theme drew a tile: %q", got)
+	if strings.ContainsAny(got, "▞▚█") {
+		t.Fatalf("the plain theme drew the ribbon: %q", got)
 	}
 	if !strings.Contains(got, "manvi") || !strings.Contains(got, "some-model") {
 		t.Fatalf("the plain session line lost content: %q", got)

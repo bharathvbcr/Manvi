@@ -85,6 +85,10 @@ type rowRef struct {
 	// first marks the entry's opening row, which is where selection highlights
 	// and fold markers anchor.
 	first bool
+	// gap marks the blank row that separates this entry from the one above. It
+	// belongs to the layout and not to the entry's own rows, so an entry renders
+	// the same wherever it sits and the row caches never hold a spacer.
+	gap bool
 }
 
 // layoutSlot is the flattened row index at one width and theme.
@@ -144,10 +148,24 @@ func (s *Scrollback) Append(ev ui.Event) {
 	if ev.Kind.WireOnly() {
 		return
 	}
-	if ev.Kind == ui.KindText && len(s.entries) > 0 {
+	if ev.Kind == ui.KindTurnEnd {
+		// A turn's end has nothing to draw: it was an entry with an empty body,
+		// which is a bullet on a row of its own after every turn. It still ends
+		// whatever was arriving, so a thought the turn stopped on is collapsed.
+		s.settleLast()
+		return
+	}
+	// A model's thinking streams as a reply does, and for the same reason is
+	// one entry. Kept apart, each chunk was a row of its own and a sentence
+	// broke wherever the provider happened to cut it. A sub-agent's stream is
+	// never merged into this session's: the entry says whose it is.
+	if (ev.Kind == ui.KindText || ev.Kind == ui.KindReasoning) && len(s.entries) > 0 {
 		last := s.entries[len(s.entries)-1]
-		if last.Event.Kind == ui.KindText {
+		if last.Event.Kind == ev.Kind && last.Event.Agent == ev.Agent {
 			last.Body.WriteString(ev.Text)
+			if !ev.At.IsZero() {
+				last.until = ev.At
+			}
 			// The same rule foldable applies to a whole body, decided from the
 			// delta alone. A body that held a line break or ran past the bound
 			// still does once more text is added to it, so the answer only ever
@@ -163,15 +181,59 @@ func (s *Scrollback) Append(ev ui.Event) {
 		}
 	}
 
-	if n := len(s.entries); n > 0 {
-		// Only the last entry grows, so whatever was last has stopped.
-		s.entries[n-1].settle()
-	}
-	e := &Entry{Event: ev}
-	if ev.Kind == ui.KindText {
+	// Only the last entry grows, so whatever was last has stopped.
+	s.settleLast()
+	e := &Entry{Event: ev, until: ev.At}
+	if ev.Kind == ui.KindText || ev.Kind == ui.KindReasoning {
 		e.Body.WriteString(ev.Text)
 	}
 	e.Foldable = foldable(ev)
+	switch ev.Kind {
+	case ui.KindReasoning:
+		// Shown as it arrives, and collapsed by settle once it has stopped.
+		e.live = true
+	case ui.KindToolResult:
+		// A result opens folded. A read of a large file or a chatty command is
+		// thousands of rows, and unfolded by default it pushed the reply it led
+		// to off the screen.
+		e.Folded = e.Foldable
+		// One that comes straight after its call takes the call's row: a call
+		// and its outcome are one thing that happened, and were two rows. Only
+		// straight after — with a policy decision between them the call keeps
+		// its own row, and what is attached to it stays under it.
+		//
+		// A result carries no id of the call it answers, so the pairing is by
+		// position. The agent loop runs a response's calls one at a time, each
+		// logged, run and answered before the next is logged (agent
+		// dispatchCalls), so the call a result follows is the call it answers.
+		// Where that is not plain from the transcript itself — two calls by the
+		// same agent open at once — nothing is paired: each call and each
+		// result keeps a row, and no result is drawn as another call's.
+		n := len(s.entries)
+		at := n - 1
+		for at >= 0 && decision(s.entries[at].Event.Kind) && s.entries[at].Event.Agent == ev.Agent {
+			at--
+		}
+		if at >= 0 && s.answers(at, ev) {
+			call := s.entries[at]
+			call.result = e
+			if at == n-1 {
+				e.call, call.absorbed = call, true
+				call.Invalidate()
+				s.changed(at)
+				if s.selected == at {
+					// The row the operator had selected is now this entry's.
+					s.selected = n
+				}
+			} else {
+				// The call keeps its row, which now says how it came out.
+				e.under = true
+				e.absorbed = s.restates(at, n, ev)
+				call.Invalidate()
+				s.changed(at)
+			}
+		}
+	}
 	s.entries = append(s.entries, e)
 
 	if s.MaxEntries > 0 && len(s.entries) > s.MaxEntries {
@@ -192,12 +254,127 @@ func (s *Scrollback) Append(ev ui.Event) {
 	}
 }
 
+// settleLast ends the newest entry's stream, and lays it out again when that
+// changed how it is drawn.
+func (s *Scrollback) settleLast() {
+	if n := len(s.entries); n > 0 && s.entries[n-1].settle() {
+		s.changed(n - 1)
+	}
+}
+
+// answers reports whether a result is the answer to the call at an index: the
+// call is this agent's, is not answered yet, is the tool the result names when
+// it names one, and is the only call of this agent's still open just there.
+func (s *Scrollback) answers(at int, result ui.Event) bool {
+	call := s.entries[at]
+	if call.Event.Kind != ui.KindToolStart || call.result != nil || call.Event.Agent != result.Agent {
+		return false
+	}
+	if result.Tool != "" && result.Tool != call.Event.Tool {
+		return false
+	}
+	for i := at - 1; i >= 0; i-- {
+		prev := s.entries[i]
+		if prev.Event.Agent != result.Agent {
+			break
+		}
+		switch {
+		case prev.Event.Kind == ui.KindToolStart && prev.result == nil:
+			return false
+		case prev.Event.Kind == ui.KindToolStart, decision(prev.Event.Kind):
+			continue
+		}
+		break
+	}
+	return true
+}
+
+// decision reports whether a kind is a ruling on a tool call: what sits between
+// a call and its result when the call was questioned.
+// restates reports whether a result under its call, with the decisions at
+// (call, end) between them, would only say again what is already on screen.
+//
+// The loop writes a gate's verdict twice: as the decision, and as the text of
+// the result it then returns to the model (agent recordCall logs both from
+// one Result.Text). Drawn as logged, a refusal was the same sentence on two
+// rows. The same holds for a file tool's "patched a.go (9 bytes)" under a call
+// already drawn as "Edited a.go".
+//
+// A result that carries a qualification of its own is never dropped: the grant
+// or the unrun check it names is drawn under it and nowhere else.
+func (s *Scrollback) restates(call, end int, result ui.Event) bool {
+	text := strings.TrimSpace(result.Text)
+	if text == "" || result.Qualified() {
+		return false
+	}
+	if !result.IsError && confirms(s.entries[call].Event, text) {
+		return true
+	}
+	for _, d := range s.entries[call+1 : end] {
+		if d.Event.Kind == ui.KindPolicy && strings.TrimSpace(d.Event.Text) == text {
+			return true
+		}
+	}
+	return false
+}
+
+func decision(k ui.Kind) bool {
+	switch k {
+	case ui.KindPolicy, ui.KindApproval, ui.KindApprovalDone:
+		return true
+	}
+	return false
+}
+
 func foldable(ev ui.Event) bool {
 	switch ev.Kind {
-	case ui.KindToolResult, ui.KindReasoning, ui.KindText:
+	case ui.KindReasoning:
+		// Always: a finished thought collapses to its heading whatever its
+		// length, so the transcript reads as what was done and not as what was
+		// considered on the way.
+		return true
+	case ui.KindToolResult:
+		// Whatever it printed: a result is drawn as one row, so even a single
+		// line of output can be more than the row shows.
+		return strings.TrimSpace(ev.Text) != ""
+	case ui.KindText, ui.KindTurnStart:
 		return strings.Contains(ev.Text, "\n") || len(ev.Text) > 200
 	}
 	return false
+}
+
+// gapBefore reports whether a blank row separates an entry from the one above.
+//
+// The transcript is read in three kinds of block: what was said, by the
+// operator or the model; the work between — thoughts, calls, their results and
+// the decisions on them; and notices. A blank row goes between blocks and never
+// inside one, so the work of a turn is one run of rows, a row to a step, with
+// what was asked above it and the reply below.
+func gapBefore(prev, cur *Entry) bool {
+	work := func(k ui.Kind) bool {
+		switch k {
+		case ui.KindReasoning, ui.KindToolStart, ui.KindToolResult,
+			ui.KindPolicy, ui.KindApproval, ui.KindApprovalDone:
+			return true
+		}
+		return false
+	}
+	said := func(k ui.Kind) bool {
+		switch k {
+		case ui.KindSessionStart, ui.KindTurnStart, ui.KindHarnessMessage, ui.KindText:
+			return true
+		}
+		return false
+	}
+	p, c := prev.Event.Kind, cur.Event.Kind
+	switch {
+	case work(c):
+		return !work(p)
+	case said(c):
+		return true
+	}
+	// Notices, lease changes, usage and reports: a run of them stacks.
+	return work(p) || said(p)
 }
 
 // rows brings the flat row index at a width up to date and returns it.
@@ -215,15 +392,49 @@ func (s *Scrollback) rows(th Theme, width int) []rowRef {
 			keep--
 		}
 		out := slot.rows[:keep]
+		// The entry above, for the spacing: the nearest one that is drawn. A
+		// call absorbed by its result has no rows, and is not what an entry
+		// sits under.
+		above := slot.valid - 1
+		for above >= 0 && s.entries[above].absorbed {
+			above--
+		}
 		for i := slot.valid; i < len(s.entries); i++ {
+			if s.entries[i].absorbed {
+				continue
+			}
+			// No spacer under a row that is already blank: a reply that ends in
+			// a line break leaves one, and two blank rows read as a section
+			// break the transcript does not have.
+			if above >= 0 && gapBefore(s.entries[above], s.entries[i]) && !blankTail(out) {
+				out = append(out, rowRef{entry: i, gap: true})
+			}
 			for j, l := range s.entries[i].Lines(th, width) {
 				out = append(out, rowRef{entry: i, line: l, first: j == 0})
 			}
+			above = i
 		}
 		slot.rows, slot.valid = out, len(s.entries)
 	}
 	s.layout = slot.rows
 	return slot.rows
+}
+
+// blankTail reports whether the last row laid out so far shows nothing.
+func blankTail(rows []rowRef) bool {
+	if len(rows) == 0 {
+		return true
+	}
+	last := rows[len(rows)-1]
+	if last.gap {
+		return true
+	}
+	for _, span := range last.line {
+		if strings.TrimSpace(span.Text) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // slotFor finds the layout slot for a width and theme, claiming the less
@@ -371,6 +582,23 @@ func (s *Scrollback) SelectDelta(n int, th Theme) {
 	if s.selected >= len(s.entries) {
 		s.selected = len(s.entries) - 1
 	}
+	// A call absorbed by its result has no row to select. The selection goes on
+	// in the direction it was moving, and turns back only at the end of the
+	// transcript.
+	step := 1
+	if n <= 0 {
+		step = -1
+	}
+	for _, dir := range []int{step, -step} {
+		i := s.selected
+		for i >= 0 && i < len(s.entries) && s.entries[i].absorbed {
+			i += dir
+		}
+		if i >= 0 && i < len(s.entries) {
+			s.selected = i
+			break
+		}
+	}
 	s.revealSelected(th)
 }
 
@@ -409,7 +637,9 @@ func (s *Scrollback) revealSelected(th Theme) {
 	rows := s.rows(th, width)
 	first, last := -1, -1
 	for i, r := range rows {
-		if r.entry != s.selected {
+		// The spacer above an entry is not part of it: revealing an entry means
+		// showing its first row, not the blank one before it.
+		if r.entry != s.selected || r.gap {
 			continue
 		}
 		if first < 0 {
@@ -442,6 +672,7 @@ func (s *Scrollback) ToggleFold() bool {
 		return false
 	}
 	e.Folded = !e.Folded
+	e.foldSet = true
 	s.changed(s.selected)
 	return true
 }
@@ -451,6 +682,7 @@ func (s *Scrollback) SetFoldAll(folded bool) {
 	for _, e := range s.entries {
 		if e.Foldable {
 			e.Folded = folded
+			e.foldSet = true
 		}
 	}
 	s.touch()
@@ -509,7 +741,8 @@ func (s *Scrollback) SetSearch(query string, th Theme) bool {
 	// this once per keystroke, and lowering every entry's whole text each time
 	// copied the transcript per key — a large tool result alone is megabytes.
 	for i, e := range s.entries {
-		if strings.Contains(e.lowerText(), qLower) {
+		// A call drawn on its result's row has none of its own to jump to.
+		if !e.absorbed && strings.Contains(e.lowerText(), qLower) {
 			s.matches = append(s.matches, i)
 		}
 	}
@@ -643,13 +876,21 @@ func (s *Scrollback) Draw(b *render.Buffer, r render.Rect, th Theme, focused boo
 		}
 	}
 	for i := start; i < len(rows) && row < r.H; i++ {
+		if rows[i].gap {
+			// Blank, and left out of the selection and search tints: a
+			// highlight that ran up into the spacer would read as one more row
+			// of the entry.
+			row++
+			continue
+		}
 		line := rows[i].line
 		y := body.Y + row
 		line.Truncate(body.W).Draw(b, body.X, y)
 		if s.searchQuery != "" && s.isMatch(rows[i].entry) && rows[i].entry != s.selected {
-			// Subtle match tint for search results
+			// A lighter wash of the selection's own colour for the other
+			// matches, so the selected one is the stronger of the same thing.
 			band := render.Rect{X: r.X, Y: y, W: r.W, H: 1}
-			b.BlendBackground(band, th.Warning, 0.25)
+			b.BlendBackground(band, th.Selection, 0.3)
 		}
 		if rows[i].entry == s.selected {
 			// A tint rather than a fill, so the severity colouring underneath —
@@ -675,12 +916,16 @@ func drawScrollbar(b *render.Buffer, r render.Rect, offset, viewport, total int,
 	if r.Empty() || total <= 0 {
 		return
 	}
+	// The track is empty and only the thumb is drawn. A rule down every row of
+	// the pane was a second border beside the transcript, and the brightest
+	// thing in the column least worth looking at. Position reads from the thumb
+	// alone, and the column still takes a click anywhere along it.
 	track := render.Style{Fg: th.Border, Bg: th.Bg}
-	thumb := render.Style{Fg: th.AccentDim, Bg: th.Bg}
-	glyph := "│"
+	thumb := render.Style{Fg: th.FgSubtle, Bg: th.Bg}
+	glyph := " "
 	block := "┃"
 	if !th.Unicode {
-		glyph, block = "|", "#"
+		block = "#"
 	}
 
 	size := r.H * viewport / total

@@ -562,8 +562,9 @@ func TestAssistAnswersBusyOnTheWireWhileTwoAreInFlightAndNeverQueuesBehindThem(t
 		t.Fatalf("hello: %+v", r)
 	}
 	close(gate)
-	for _, id := range []string{"one", "two"} {
-		if r := s.await(id, 5*time.Second); !r.OK {
+	// The two held calls finish together, in either order.
+	for id, r := range s.awaitAll(5*time.Second, "one", "two") {
+		if !r.OK {
 			t.Fatalf("%s: %+v", id, r.Error)
 		}
 	}

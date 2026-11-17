@@ -523,7 +523,17 @@ func (r *Runner) draw() error {
 	if caret.W > 0 {
 		cursor = render.Cursor{X: caret.X, Y: caret.Y, Visible: true}
 	}
-	return r.painter.Flush(r.term.Out(), cursor)
+	if err := r.painter.Flush(r.term.Out(), cursor); err != nil {
+		return err
+	}
+	// The tab follows the frame. Asked on every frame and written only when
+	// the answer has changed, which the terminal keeps track of: see
+	// term.SetTitle. After the draw, because a stall is measured against the
+	// same moment the frame was.
+	status := r.app.TermStatus()
+	r.term.SetTitle(status.Title)
+	r.term.SetProgress(status.Progress)
+	return nil
 }
 
 // maxNoticeBytes bounds one captured stderr line. A diagnostic longer than this

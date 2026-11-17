@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
@@ -49,8 +51,11 @@ type Status struct {
 	// at a glance rather than only in the ledger.
 	Grants int
 
-	Busy       bool
-	BusyLabel  string
+	Busy      bool
+	BusyLabel string
+	// BusySecs is how long the running turn has run, and StallSecs how long
+	// since it last produced anything. Both are for the working row.
+	BusySecs   int
 	StallSecs  int
 	Sessions   int
 	Interrupts int
@@ -81,117 +86,118 @@ func (s Status) StrictSummary() (bool, string) {
 	return false, strings.Join(reasons, "; ")
 }
 
-// DrawStatusBar paints the identity row.
+// DrawStatusBar paints the identity row: what is enforcing, which model, which
+// task, and what the session has spent.
+//
+// It says what the session is, not what it is doing. Whether a turn is running
+// is on the working row above the composer (DrawActivity), next to where the
+// operator is typing, so this row does not change shape as turns start and end.
+//
+// Everything on it is a segment with a rank, and a bar too narrow for all of
+// them drops whole segments, least important first. It used to draw the right
+// cluster in full and cut the left to whatever remained, which at sixty
+// columns left the posture, an ellipsis, and a row of counters — the
+// model and the task gone, and a branch name cut to its first letter at a
+// hundred. The posture is never dropped, and the grant count goes last of
+// the rest: both say how far this run's results can be trusted.
 //
 // spark is the recent tokens-per-tick series, drawn as a sparkline while a
-// turn runs so "the model is working" has a shape rather than just a spinner.
-// fxOn gates the motion: the pulse on the busy label and the marquee on a
-// label too long for its strip.
+// turn runs on a bar wide enough to spare the room.
 func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick int, spark []float64, fxOn bool) {
 	if r.Empty() {
 		return
 	}
 	g := th.Glyphs()
-	bg := th.BgRaised
-	base := render.Style{Fg: th.FgMuted, Bg: bg}
+	// On the screen's own ground, in the two quietest text colours. It was a
+	// raised bar across the top row with the model in bold: the first thing in
+	// the frame, saying what does not change from one turn to the next. What
+	// does need seeing — a grant, a full context window, a lease running out —
+	// is still drawn strong, and is the only thing on the row that is.
+	bg := th.Bg
+	base := render.Style{Fg: th.FgSubtle, Bg: bg}
+	name := render.Style{Fg: th.FgMuted, Bg: bg}
 	strong := render.Style{Fg: th.Fg, Bg: bg, Attrs: render.Bold}
+	if th.reducedPalette() {
+		// One dark grey is all a sixteen-colour terminal has for both.
+		base = name
+	}
 	b.Fill(r, ' ', base)
 
-	line := render.Line{}
+	type segment struct {
+		line render.Line
+		// rank orders what goes first when the bar is too narrow: the highest
+		// rank is dropped first, and rank 0 is never dropped.
+		rank  int
+		right bool
+	}
+	var segs []segment
+	put := func(rank int, right bool, l render.Line) {
+		segs = append(segs, segment{line: l, rank: rank, right: right})
+	}
 
-	// Posture is first and it is a chip, not a word, because it is the single
-	// fact that changes what everything else on this bar means.
-	// Three colours for three answers to "is this run enforcing?": success for
-	// strict, warning for a posture that still records what it demoted, danger
-	// for one that has stopped asking. yolo is not a louder dev — an operator
-	// glancing at the bar has to be able to tell the two apart without reading.
-	postureStyle := render.Style{Fg: th.FgOn, Bg: th.Success, Attrs: render.Bold}
+	// Posture is first, because it is the single fact that changes what
+	// everything else on this bar means.
+	// Three weights for three answers to "is this run enforcing?": quiet for
+	// strict, which is the usual case; the text colour in bold for a posture
+	// that still records what it demoted; the failure colour for one that has
+	// stopped asking. yolo is not a louder dev — an operator glancing at the
+	// bar has to be able to tell the two apart without reading.
+	// It is a word, not a block of colour behind one: a filled chip was the
+	// brightest thing on the screen and said one word.
+	postureStyle := name
 	switch {
 	case st.Posture == "":
-		postureStyle.Bg = th.FgSubtle
+		postureStyle = render.Style{Fg: th.FgSubtle, Bg: bg}
 	case st.Posture == flags.PostureYolo:
-		postureStyle.Bg = th.Danger
+		postureStyle = render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold}
 	case flags.DescribePosture(st.Posture).Relaxed:
-		postureStyle.Bg = th.Warning
+		postureStyle = strong
 	}
-	line = line.Append(" "+orDash(st.Posture)+" ", postureStyle).Append(" ", base)
+	put(0, false, render.Styled(orDash(st.Posture), postureStyle))
 
-	if st.Busy {
-		label := st.BusyLabel
-		if label == "" {
-			label = "working"
-		}
-		if st.StallSecs >= 15 {
-			label = label + " (no progress " + itoa(st.StallSecs) + "s)"
-		}
-		busyFg := th.Accent
-		if st.StallSecs >= 30 {
-			busyFg = th.Warning
-		}
-		if fxOn {
-			// The label breathes, and one that outgrows its strip scrolls
-			// rather than truncating — a phase like "waiting on the gate,
-			// retrying" is the difference between a stall and a slow step.
-			busyFg = busyFg.Blend(th.Fg, fx.Pulse(tick, 16)*0.45)
-			label = fx.Marquee(label, 32, tick)
-		}
-		line = line.Append(render.Spinner(g.Spinner, tick)+" ",
-			render.Style{Fg: busyFg, Bg: bg, Attrs: render.Bold}).
-			Append(label+" ", render.Style{Fg: busyFg, Bg: bg})
-	} else {
-		line = line.Append(g.Pass+" ready ", render.Style{Fg: th.FgSubtle, Bg: bg})
-	}
-
-	if st.Model != "" {
-		line = line.Append(g.Bullet+" ", render.Style{Fg: th.Border, Bg: bg}).
-			Append(st.Model, strong)
-		if st.Provider != "" {
-			line = line.Append("@"+st.Provider, base)
-		}
-		line = line.Append(" ", base)
-	}
 	if st.TaskID != "" {
-		line = line.Append(g.Bullet+" ", render.Style{Fg: th.Border, Bg: bg}).
-			Append(st.TaskID, render.Style{Fg: th.Info, Bg: bg, Attrs: render.Bold})
+		task := render.Styled(st.TaskID, render.Style{Fg: th.Info, Bg: bg, Attrs: render.Bold})
 		if !st.LeaseExpiry.IsZero() {
 			remain := time.Until(st.LeaseExpiry)
-			leaseStyle := render.Style{Fg: th.FgSubtle, Bg: bg}
 			switch {
 			case remain <= 0:
 				// An expired lease is not a cosmetic detail: the task is
 				// takeable by another builder from this moment.
-				leaseStyle = render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold}
-				line = line.Append(" lease EXPIRED", leaseStyle)
+				task = task.Append(" lease EXPIRED", render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold})
 			case remain < 2*time.Minute:
-				leaseStyle = render.Style{Fg: th.Warning, Bg: bg, Attrs: render.Bold}
-				line = line.Append(" lease "+shortDuration(remain), leaseStyle)
+				task = task.Append(" lease "+shortDuration(remain), render.Style{Fg: th.Fg, Bg: bg, Attrs: render.Bold})
 			default:
-				line = line.Append(" lease "+shortDuration(remain), leaseStyle)
+				task = task.Append(" lease "+shortDuration(remain), render.Style{Fg: th.FgSubtle, Bg: bg})
 			}
 		}
-		line = line.Append(" ", base)
+		put(2, false, task)
 	}
-
+	if st.Model != "" {
+		model := render.Styled(st.Model, name)
+		put(3, false, model)
+		if st.Provider != "" {
+			// A segment of its own that joins the model without a separator, so
+			// a narrow bar loses the provider before it loses the model.
+			put(8, false, render.Styled("@"+st.Provider, base))
+		}
+	}
 	if st.GitBranch != "" {
-		gitLine := " " + g.Bullet + " " + st.GitBranch
+		branch := st.GitBranch
 		if st.GitAhead > 0 {
-			gitLine += "↑" + itoa(st.GitAhead)
+			branch += "↑" + itoa(st.GitAhead)
 		}
 		if st.GitBehind > 0 {
-			gitLine += "↓" + itoa(st.GitBehind)
+			branch += "↓" + itoa(st.GitBehind)
 		}
 		if st.GitDirty > 0 {
-			gitLine += " ●" + itoa(st.GitDirty)
+			branch += " ●" + itoa(st.GitDirty)
 		}
-		line = line.Append(gitLine+" ", render.Style{Fg: th.AccentDim, Bg: bg})
+		put(6, false, render.Styled(branch, base))
 	}
 
-	// Right-hand cluster: counters, context pressure gauge, and throughput sparkline.
-	right := render.Line{}
-	if st.Busy && len(spark) > 2 && r.W >= 110 {
-		right = render.Sparkline(spark, render.Style{Fg: th.AccentDim, Bg: bg}).
-			Append("  ", base).
-			Concat(right)
+	// Right-hand cluster: what the session has spent and leaned on.
+	if st.Busy && len(spark) > 2 {
+		put(10, true, render.Sparkline(spark, render.Style{Fg: th.AccentDim, Bg: bg}))
 	}
 	if st.ContextMax > 0 && st.ContextUsed > 0 {
 		pct := (st.ContextUsed * 100) / st.ContextMax
@@ -199,41 +205,202 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 			pct = 100
 		}
 		filled := (pct * 5) / 100
-		blocks := ""
-		for i := 0; i < 5; i++ {
-			if i < filled {
-				blocks += "▓"
-			} else {
-				blocks += "░"
-			}
-		}
+		blocks := strings.Repeat("▓", filled) + strings.Repeat("░", 5-filled)
 		if !th.Unicode {
 			blocks = strings.Repeat("#", filled) + strings.Repeat("-", 5-filled)
 		}
-		gaugeStyle := render.Style{Fg: th.Success, Bg: bg}
+		// Quiet until it matters: the gauge is secondary text while there is
+		// room, bold as the window fills, and the failure colour only when it
+		// is nearly full.
+		gaugeStyle := base
 		if pct >= 90 {
 			gaugeStyle = render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold}
 		} else if pct >= 70 {
-			gaugeStyle = render.Style{Fg: th.Warning, Bg: bg}
+			gaugeStyle = strong
 		}
-		right = right.Append("ctx "+blocks+" "+itoa(pct)+"%  ", gaugeStyle)
+		put(4, true, render.Styled("ctx "+blocks+" "+itoa(pct)+"%", gaugeStyle))
 	}
 	if st.Steps > 0 {
-		right = right.Append("step "+itoa(st.Steps)+"  ", base)
+		put(7, true, render.Styled("step "+itoa(st.Steps), base))
 	}
 	if st.InputTokens > 0 || st.OutputTokens > 0 {
-		right = right.Append(compactCount(st.InputTokens)+"↓ "+compactCount(st.OutputTokens)+"↑  ", base)
+		put(5, true, render.Styled(compactCount(st.InputTokens)+"↓ "+compactCount(st.OutputTokens)+"↑", base))
 	}
 	if st.Grants > 0 {
-		right = right.Append(g.Granted+" "+itoa(st.Grants)+" granted  ",
-			render.Style{Fg: th.Granted, Bg: bg, Attrs: render.Bold})
+		put(1, true, render.Styled(g.Granted+" "+itoa(st.Grants)+" granted",
+			strong))
 	}
 	if st.Sessions > 1 {
-		right = right.Append(itoa(st.Sessions)+" sessions ", base)
+		put(9, true, render.Styled(itoa(st.Sessions)+" sessions", base))
 	}
 
-	line.Truncate(r.W-right.Width()-1).Draw(b, r.X, r.Y)
-	right.Draw(b, r.Right()-right.Width(), r.Y)
+	sep := render.Styled("  "+g.Dot+"  ", render.Style{Fg: th.FgSubtle, Bg: bg})
+	join := func(right bool) render.Line {
+		var out render.Line
+		for i, s := range segs {
+			if s.right != right {
+				continue
+			}
+			switch {
+			case len(out) == 0:
+				if !right {
+					out = out.Append(" ", base)
+				}
+			case right:
+				out = out.Append("  ", base)
+			case s.rank == 8 && i > 0 && segs[i-1].rank == 3:
+				// The provider, joined to its model.
+			case i > 0 && segs[i-1].rank == 0:
+				out = out.Append("  ", base)
+			default:
+				out = out.Concat(sep)
+			}
+			out = out.Concat(s.line)
+		}
+		if right && len(out) > 0 {
+			out = out.Append(" ", base)
+		}
+		return out
+	}
+	for {
+		left, right := join(false), join(true)
+		if left.Width()+right.Width()+1 <= r.W {
+			left.Draw(b, r.X, r.Y)
+			right.Draw(b, r.Right()-right.Width(), r.Y)
+			return
+		}
+		drop := -1
+		for i, s := range segs {
+			if s.rank > 0 && (drop < 0 || s.rank > segs[drop].rank) {
+				drop = i
+			}
+		}
+		if drop < 0 {
+			// Only the chip is left and the bar is narrower than it.
+			left.Truncate(r.W).Draw(b, r.X, r.Y)
+			return
+		}
+		segs = slices.Delete(segs, drop, drop+1)
+	}
+}
+
+// DrawActivity paints the working row: what the turn is doing, for how long,
+// and how to stop it.
+//
+// It sits directly above the composer. A turn in progress was a spinner on the
+// status bar at the far edge of the screen from where the operator is typing
+// and from where the reply is arriving, and the first thing a narrow bar
+// dropped. fxOn gates the motion: the pulse on the label, the marquee on a
+// label too long for the row, and the Fold M ribbon standing in for the
+// spinner. The spinner itself is not gated. It is how a running turn is told
+// from a hung one, so with motion off it is what is drawn.
+func DrawActivity(b *render.Buffer, r render.Rect, th Theme, st Status, tick int, fxOn bool) {
+	if r.Empty() || !st.Busy {
+		return
+	}
+	g := th.Glyphs()
+	b.Fill(r, ' ', th.Base())
+
+	label := st.BusyLabel
+	if label == "" {
+		label = "working"
+	}
+	if st.StallSecs >= 15 {
+		label = label + " (no progress " + itoa(st.StallSecs) + "s)"
+	}
+	// A turn that has gone quiet for half a minute is said in bold, not in a
+	// colour: it may be a slow step, and only the count beside it says how slow.
+	fg := th.Accent
+	labelFg := th.Fg
+	var labelAttrs render.Attr
+	if st.StallSecs >= stallWarnSecs {
+		labelAttrs = render.Bold
+	}
+	meta := "ctrl+c to interrupt"
+	if st.BusySecs > 0 {
+		meta = elapsed(st.BusySecs) + " " + g.Dot + " " + meta
+	}
+	meta = "  (" + meta + ")"
+	// The lead is the spinner, or the Fold M ribbon where the ribbon can do the
+	// spinner's job. The ribbon is wider than the gutter, so it takes the
+	// spinner's place only where the row still fits whole with it, label and note
+	// both: on a row already too short for those, the decoration is not worth the
+	// room. This is decided on the label as it reads, before it is scrolled.
+	lead := render.Styled(render.Spinner(g.Spinner, tick), render.Style{Fg: fg, Bg: th.Bg, Attrs: render.Bold})
+	if pad := gutter - lead.Width(); pad > 0 {
+		lead = lead.Append(strings.Repeat(" ", pad), th.Base())
+	}
+	if ribbon := busyRibbon(th, st, th.Bg, tick, fxOn); ribbon != nil &&
+		ribbon.Width()+render.StringWidth(label)+render.StringWidth(meta) <= r.W {
+		lead = ribbon
+	}
+	if fxOn {
+		// The label breathes, and one that outgrows the row scrolls rather
+		// than truncating — a phase like "waiting on the gate, retrying" is
+		// the difference between a stall and a slow step. It has the row less
+		// the lead and the note after it, and is not scrolled while it fits in that.
+		labelFg = th.FgMuted.Blend(labelFg, 0.55+fx.Pulse(tick, 16)*0.45)
+		label = fx.Marquee(label, max(r.W-lead.Width()-render.StringWidth(meta), 8), tick)
+	}
+	line := lead.Append(label, render.Style{Fg: labelFg, Bg: th.Bg, Attrs: labelAttrs})
+	line = line.Append(meta, th.Subtle())
+	line.Truncate(r.W).Draw(b, r.X, r.Y)
+}
+
+// elapsed writes a running time the way a person reads one off a clock: seconds
+// alone under a minute, then minutes with the seconds padded so the row does
+// not change width as it counts.
+func elapsed(secs int) string {
+	if secs < 60 {
+		return itoa(secs) + "s"
+	}
+	s := itoa(secs % 60)
+	if len(s) < 2 {
+		s = "0" + s
+	}
+	if secs < 3600 {
+		return itoa(secs/60) + "m " + s + "s"
+	}
+	m := itoa(secs / 60 % 60)
+	if len(m) < 2 {
+		m = "0" + m
+	}
+	return itoa(secs/3600) + "h " + m + "m"
+}
+
+// busyRibbon is the mark as the busy indicator: the one-line ribbon with light
+// running round it, and the cell after it. It returns nil when the mark cannot
+// do that job, and the caller keeps the spinner.
+//
+// A busy indicator has to move, and the ribbon's only motion is colour. So it
+// is used only when it has a colour to move toward: animation on, a terminal
+// that draws the blocks, and a theme that lends a glint, which the
+// sixteen-colour one does not. That choice is made from the theme's own
+// colours and not from a stall, so a stall cannot change it. The caller's width
+// rule still can: a row that stops fitting whole part way through a turn,
+// because the stall label appeared or a counter grew, goes back to the spinner.
+//
+// A turn that has gone quiet for half a minute is said in bold, not in a colour
+// (see DrawActivity: the label goes bold), and the mark says the same thing the
+// same way: it keeps its place and its colours and its cells go bold. The
+// terminal UI has no warning colour left to turn it.
+//
+// bg is the background of the row the mark is set in.
+func busyRibbon(th Theme, st Status, bg render.Color, tick int, fxOn bool) render.Line {
+	faces := th.Logo()
+	if !fxOn || !th.LogoBlocks() || faces.Glint.IsDefault() {
+		return nil
+	}
+	// The ribbon's slanted blocks are half empty, so each face is drawn on the
+	// background of the row it is set in, whatever the theme's own logo faces say.
+	faces.Lit.Bg, faces.Shade.Bg = bg, bg
+	mark := logo.Ribbon(faces, logo.Motion{Live: true, Tick: tick, Working: true})
+	if st.StallSecs >= stallWarnSecs {
+		for i := range mark {
+			mark[i].Style.Attrs |= render.Bold
+		}
+	}
+	return mark.Append(" ", render.Style{Bg: bg})
 }
 
 // DrawStrictBanner paints the persistent warning that this run's results are
@@ -251,10 +418,14 @@ func DrawStrictBanner(b *render.Buffer, r render.Rect, th Theme, st Status) {
 		return
 	}
 	g := th.Glyphs()
-	style := render.Style{Fg: th.FgOn, Bg: th.Warning, Attrs: render.Bold}
-	b.Fill(r, ' ', style)
-	render.Styled(" "+g.Warn+" not a strict run: ", style).
-		Append(why, render.Style{Fg: th.FgOn, Bg: th.Warning}).
+	// In the warning colour on the screen's own background. It was a bar of
+	// that colour from edge to edge, which a reader's eye went back to on every
+	// frame of a session that had nothing new to say there; the row of its own
+	// and the mark are what keep it from being missed.
+	warn := th.Status(StatusWarn)
+	b.Fill(r, ' ', th.Base())
+	render.Styled(" "+g.Warn+" not a strict run: ", warn.With(render.Bold)).
+		Append(why, warn).
 		Truncate(r.W).Draw(b, r.X, r.Y)
 }
 
@@ -263,17 +434,79 @@ func DrawShortcutBar(b *render.Buffer, r render.Rect, th Theme, ctx Context, ext
 	if r.Empty() {
 		return
 	}
-	bg := th.Bg
-	keyStyle := render.Style{Fg: th.Accent, Bg: bg, Attrs: render.Bold}
-	labelStyle := render.Style{Fg: th.FgSubtle, Bg: bg}
-	sep := render.Style{Fg: th.Border, Bg: bg}
-	b.Fill(r, ' ', labelStyle)
+	line, fill := shortcutLine(th, ctx, r.W, extra...)
+	b.Fill(r, ' ', fill)
+	line.Truncate(r.W).Draw(b, r.X, r.Y)
+}
 
+// DrawFooter paints the one row under the composer: what the session is on the
+// left, and the keys of the moment on the right.
+//
+// The posture is never given up: it is the one fact that changes what the rest
+// of the screen means, so the keys are cut to leave it room. After it the keys
+// and the notices beside them come first. They say what the operator can do
+// next and what just changed — more approvals waiting, a transcript scrolled
+// back — and the rest of the status gives up segments to make room for them,
+// as it does on any narrow row.
+func DrawFooter(b *render.Buffer, r render.Rect, th Theme, st Status, ctx Context, tick int, spark []float64, fxOn bool, extra ...string) {
+	if r.Empty() {
+		return
+	}
+	posture := 1 + render.StringWidth(orDash(st.Posture)) + 2
+	// The keys leave room for the posture and the model. With the transcript
+	// focused there are eight of them, and given the whole row they left the
+	// status its posture alone, so the model came and went with the focus.
+	// What does not fit is behind F1, as it always was. A notice outranks the
+	// model: it says what just changed, and the model has not.
+	keep := posture
+	if st.Model != "" {
+		keep += render.StringWidth(st.Model) + 2
+	}
+	budget := r.W - keep
+	notices := 0
+	for _, s := range extra {
+		notices += 1 + render.StringWidth(s)
+	}
+	budget = min(max(budget, notices), r.W-posture)
+	hints, fill := shortcutLine(th, ctx, budget, extra...)
+	b.Fill(r, ' ', fill)
+	if hints.Width() > budget {
+		hints = hints.Truncate(max(budget, 0))
+	}
+	if r.W < sparkFrom {
+		// The throughput sparkline is for a row with room to spare, measured
+		// on the whole row and not on the status's share of it.
+		spark = nil
+	}
+	room := r.W - hints.Width() - 1
+	DrawStatusBar(b, render.Rect{X: r.X, Y: r.Y, W: room, H: 1}, th, st, tick, spark, fxOn)
+	hints.Draw(b, r.Right()-hints.Width()-1, r.Y)
+}
+
+// sparkFrom is the narrowest footer that draws the throughput sparkline.
+const sparkFrom = 110
+
+// shortcutLine is the key hints for a context, cut to width, and the style the
+// rest of their row is filled with.
+func shortcutLine(th Theme, ctx Context, width int, extra ...string) (render.Line, render.Style) {
+	r := render.Rect{W: width, H: 1}
+	// The one row of key hints, and the quietest row on the screen: the key in
+	// the secondary text colour, its label a step below, and space between
+	// items instead of a rule. In the brand colour and bold, with a bar between
+	// each, it was the loudest thing in the frame and said the least.
+	bg := th.Bg
+	keyStyle := render.Style{Fg: th.FgMuted, Bg: bg}
+	labelStyle := render.Style{Fg: th.FgSubtle, Bg: bg}
+	sep := render.Style{Fg: th.FgSubtle, Bg: bg}
+	if th.monochrome() {
+		// Nothing but weight tells a key from its label without colour.
+		keyStyle.Attrs |= render.Bold
+		labelStyle.Attrs |= render.Dim
+	}
 	line := render.Line{}
 	for _, s := range extra {
 		line = line.Append(" "+s, render.Style{Fg: th.FgMuted, Bg: bg, Attrs: render.Italic})
 	}
-	truncated := false
 	hints := hintsFor(ctx)
 	for i, bd := range hints {
 		if bd.Label == "" || len(bd.Keys) == 0 {
@@ -281,26 +514,28 @@ func DrawShortcutBar(b *render.Buffer, r render.Rect, th Theme, ctx Context, ext
 		}
 		itemLine := render.Line{}
 		if line.Width() > 0 {
-			itemLine = itemLine.Append("  "+th.Glyphs().VBar+" ", sep)
+			itemLine = itemLine.Append("   ", sep)
+		} else {
+			itemLine = itemLine.Append(" ", sep)
 		}
 		itemLine = itemLine.Append(bd.Keys[0], keyStyle).Append(" "+bd.Label, labelStyle)
 		if line.Width()+itemLine.Width() > r.W-12 && i < len(hints)-1 {
-			truncated = true
 			break
 		}
 		line = line.Concat(itemLine)
 		if line.Width() > r.W {
-			truncated = true
 			break
 		}
 	}
-	if truncated && r.W > 25 {
-		more := render.Styled(" … ", sep).Append("F1", keyStyle).Append(" more", labelStyle)
+	// Always, not only when the row ran out: the row names the keys of the
+	// moment and never all of them, so the way to the rest is part of it.
+	if r.W > 25 {
+		more := render.Styled("   ", sep).Append("F1", keyStyle).Append(" more", labelStyle)
 		if line.Width()+more.Width() <= r.W {
 			line = line.Concat(more)
 		}
 	}
-	line.Truncate(r.W).Draw(b, r.X, r.Y)
+	return line, labelStyle
 }
 
 func orDash(s string) string {
@@ -357,10 +592,10 @@ func DrawSessionTabBar(b *render.Buffer, r render.Rect, th Theme, views []*Agent
 
 		// Status glyph for session state
 		badge := g.Bullet + " "
-		badgeStyle := render.Style{Fg: th.Success, Bg: tabBg}
+		badgeStyle := render.Style{Fg: th.FgSubtle, Bg: tabBg}
 		if v.Approval() != nil {
 			badge = g.Warn + " "
-			badgeStyle = render.Style{Fg: th.Warning, Bg: tabBg, Attrs: render.Bold}
+			badgeStyle = render.Style{Fg: th.Fg, Bg: tabBg, Attrs: render.Bold}
 		} else if v.Error() != "" {
 			badge = "✕ "
 			badgeStyle = render.Style{Fg: th.Danger, Bg: tabBg, Attrs: render.Bold}
@@ -400,8 +635,9 @@ func DrawSessionTabBar(b *render.Buffer, r render.Rect, th Theme, views []*Agent
 		tabs = append(tabs, TabRef{IsNewButton: true, Rect: newRect})
 	}
 
-	// Right side hints
-	right := render.Styled("Ctrl+T Next • Ctrl+S Switch • Ctrl+G All", render.Style{Fg: th.FgSubtle, Bg: bg})
+	// Right side hints, written as the shortcut bar writes its own.
+	dot := "  " + g.Dot + "  "
+	right := render.Styled("ctrl+t next"+dot+"ctrl+s switch"+dot+"ctrl+g all", render.Style{Fg: th.FgSubtle, Bg: bg})
 	if r.W > 70 && r.Right()-right.Width()-1 > curX+newW {
 		right.Draw(b, r.Right()-right.Width()-1, r.Y)
 	}

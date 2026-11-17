@@ -27,15 +27,15 @@ func showLogo(out io.Writer, args []string) error {
 		}
 	}
 	if svg {
-		_, err := io.WriteString(out, logo.SVG(0))
+		_, err := io.WriteString(out, logo.SVG())
 		return err
 	}
 
 	profile := outputProfile(out)
 	th := outputTheme(profile)
 	colors := th.Logo()
-	colors.Tile = onTerminal(colors.Tile)
-	colors.Glyph = onTerminal(colors.Glyph)
+	colors.Lit = onTerminal(colors.Lit)
+	colors.Shade = onTerminal(colors.Shade)
 	colors.Word = onTerminal(colors.Word)
 	colors.Tag = onTerminal(colors.Tag)
 

@@ -153,6 +153,30 @@ under **Unreleased** in the same commit as the code.
   worktree write tools; whether `agy` asks before an MCP tool call is not
   verified. The default is intended (owner, 2026-11-15). To opt out, point
   `MANVI_GITPULSE_MCP_BINARY` at a path that is not an executable file.
+- The terminal's tab says what the agent is doing. While `manvi tui` runs, the
+  tab title is the one-line mark, a state and the session: `▞▚▞▚ thinking ·
+  session one`, with `working`, `writing`, `running <tool>`, `needs approval`,
+  `no progress`, `done` and `failed` as the other states, and `(+N)` when more
+  sessions are open. Without block characters the mark is `M`. The title is
+  written only when it changes and is put back when the TUI stops or is
+  suspended. `MANVI_TERM_TITLE=off` keeps the one static title, `manvi`; the
+  live title is held back by default in GNU screen and where `TERM` is `linux`,
+  `dumb` or unset.
+- A progress indicator for terminals that draw one (OSC 9;4): busy while a turn
+  runs, paused while an approval waits, error when a turn failed, cleared on
+  exit. Left alone it is sent only to Windows Terminal, ConEmu and Ghostty 1.2.0
+  or later, and not inside tmux or GNU screen, because other terminals read
+  OSC 9 as a notification. `MANVI_TERM_PROGRESS=on` sends it everywhere, tmux
+  included, and `off` nowhere.
+- The mark moves in the TUI. On the empty screen it unfolds along the ribbon
+  when the screen opens, a light crosses it every nine seconds, and a keypress
+  sends one. While a turn runs, the working row above the composer shows the
+  one-line mark with a light lapping it where the spinner was, and the mark
+  goes bold once a turn has gone thirty seconds without progress, as the
+  row's label does; it keeps its colours, since the terminal UI has no warning
+  colour. The spinner still draws when `MANVI_FX` is off, at 16 colours,
+  without block characters, or when the row would not fit the mark.
+  `manvi logo` and the session line stay still.
 
 ### Changed
 
@@ -186,6 +210,120 @@ under **Unreleased** in the same commit as the code.
   and the log guard rejected that, so no run could be green. `RUFF_VERSION` was
   already pinned in `scripts/tool-versions.env`; the bench leg now installs it
   with `pipx`.
+- **The TUI's transcript, working indicator, status bar and composer are
+  redrawn.** Nothing on the event wire or in the key bindings changes; what
+  changes is what a frame shows.
+  - The transcript is spaced in blocks: what was asked, the work of the turn,
+    and the reply, with a blank row between them and none inside the work. A
+    thought, a tool call and a decision on a call are a row each. What the
+    operator asked is bold behind a `›` mark in the brand's red, on the same
+    ground as the rest and with no fill behind it, and is the only row that
+    carries a time.
+  - A model's thinking is a `Thinking…` heading over its last six rows while it
+    arrives, and folds to the one row `Thought for 9s` once it stops. `Enter`
+    on it opens it whole.
+  - A tool call reads as what was done and to what, not as a tool's name and
+    its arguments: `Read reader.go`, `Edited reader.go  +3  -1`,
+    `Ran go test ./...`, `Searched for flush( in ui/input`,
+    `Ran 3 subagents reader, tests, docs`, `Loaded skill devmap-impact`,
+    `Checked out TASK-7`. While it runs it is the same in the present
+    (`Reading reader.go`), in the transcript and on the working row. A tool
+    with no wording of its own is `Used <tool>`, leading with the argument it
+    is about, without its key. An edit's size is the lines it added and
+    removed, not counting the lines it quotes around the change; a failed edit
+    has none. A file tool's one line saying it did the write (`patched
+    reader.go (2148 bytes)`) is not repeated beside `Edited reader.go`; it is
+    there when the row is opened, and anything else the tool says is shown.
+    The working row gives a long label the width of the row before it scrolls
+    it. The mark for a refusal or a failure is `✕`, not the `⛔` emoji, which a
+    terminal paints in colours of its own.
+  - The palette is the brand's red for the interface, one blue for a file a
+    turn changed and for code in a reply, greys for text, and the failure red.
+    Green is a line a diff adds, or the count of them, and nothing else. The
+    yellow, orange and purple are gone, and so is the green tick: a pass is
+    grey, a demotion bold, a pass a grant cleared underlined, an unrun check
+    slanted and underlined, at every colour depth.
+  - The work of a turn is a step quieter than its reply. A call's row is in
+    the secondary text colour, and the one coloured thing in it is a file the
+    turn edited, wrote or deleted; in the text colour, every row of the log
+    stood level with the answer. A call that has returned, a result that
+    passed and a thought share one quiet mark (`•`). A call still running, a
+    failure, a grant, a caution and an unrun check keep marks of their own, so
+    the marks down the left edge are the exceptions. Without Unicode the marks are words and are unchanged.
+  - Nothing is pinned to the top of the screen. What the session is (posture,
+    model, branch, context, tokens, grants) is one row under the composer, on
+    the screen's own ground and in the quietest text colours, sharing the row
+    with the keys of the moment; it was a raised bar across the top with the
+    model in bold. A grant, a context window nearly full and a lease running
+    out are still drawn strong. The posture is never dropped from that row,
+    however narrow. The row that says a run is not strict sits directly above
+    the composer. The key row no longer lists `enter send`.
+  - The composer's frame is a neutral rule, a step brighter while it has the
+    keys. In the brand's red it was the largest red area on the screen, in a
+    red close to a failure's.
+  - Nothing in the transcript sits on a fill: a code block is set apart by the
+    rule down its left edge, and inline code by its colour.
+  - No status colour is a fill. The posture is a word (quiet for strict, bold
+    for a relaxed posture, the failure red for yolo), not a filled chip; the
+    row that says a run is not strict is bold text, not a yellow bar; the
+    dashboard's blocked and error states are words.
+  - A tool call and its result are one row: the outcome's mark, the call, and
+    how much came back (`• Read reader.go · 213 lines`), where a result
+    used to print up to 2,000 lines under a row for the call. One line of
+    output is shown in place of the count where the row has room. A failure
+    says so on the call's row (`✕ Ran go test ./... · failed`) and keeps the
+    first eight lines of what it printed, with a `… +N lines` row. Those lines
+    are set in behind a rule in the failure red and drawn a step quieter than
+    the reply: flush with the calls and in the text colour, each `FAIL` read
+    as one more row of the transcript. A failure of one line is said on the
+    call's row instead (`✕ Editing reader.go · target not found`). A call that
+    failed stays in the present, since `Edited reader.go` would say a change
+    was made that was not; a command is `Ran`, because it ran. `Enter` opens
+    any of them whole. A call whose result does not come straight after it (a
+    policy decision between them, or a second call started first) keeps its
+    own row, which then says how it came out: an edit's size if it worked,
+    `· failed` if it did not.
+  - A refusal is said once. The loop logs a gate's verdict as the decision
+    and again as the result handed back to the model, with the same text, and
+    the transcript drew both: the reason twice, under two failure marks. A
+    result that only repeats the decision above it, or only confirms the call
+    above it, now draws nothing. One that carries a grant or an unrun check of
+    its own is always drawn.
+  - A policy decision names its rule and severity on its own row
+    (`… · exec.allowlist (warn)`) where they fit, and an approval its rule and
+    path. The turn's usage line reads `18,234 in / 912 out · $0.31 <model>`.
+    The session's opening line carries the quick actions at its far edge where
+    the pane is wide enough for both.
+  - The key row under the composer is the keys of the moment and `F1 more`:
+    `enter send`, `tab focus`, `ctrl+p commands`. `ctrl+c`, quit, the dashboard
+    and the session switcher are no longer standing hints; every one is still
+    bound and listed by `F1`, and `ctrl+c to interrupt` is on the working row
+    while a turn runs.
+  - A running turn is a working row above the composer: spinner, `Thinking`,
+    `Writing`, what a call is doing (`Reading reader.go`) or `Working`, the time it has run, and
+    `ctrl+c to interrupt`. It replaces the spinner on the status bar and the
+    beam that swept the composer's top edge, and `fx.SweepStyled` is removed
+    with it.
+  - The status bar no longer shows `✓ ready`. Too narrow for everything, it
+    drops whole segments, least important first, instead of cutting the
+    session's identity to fit the counters; the posture is never dropped
+    and the grant count goes last.
+  - The composer's frame carries a word only when the word changes what Enter
+    does (`queue follow-up`, `multiline`). The idle `compose` label, the hint
+    strip in its bottom edge and the count on every short draft are gone; the
+    one hint row is the shortcut bar, drawn in the text colours.
+  - A fenced code block is the inset surface and a rule down its left edge,
+    with no box. Headings lose their glyph prefixes, list items wrap beside
+    their marker, and numbered lists, quotes and rules are drawn as such.
+    Inline code and code keywords take the informational colour, not the
+    brand's red. The scrollbar is its thumb alone.
+- **The mark is the Fold M.** A ribbon folded four times into an M replaces the
+  tile with an M knocked out of a 7×7 grid, in `assets/manvi-mark.svg`, in
+  `manvi logo` and on the TUI's empty screen. The terminal draws it from
+  quadrant block characters at three sizes (19×6, 10×3 and the one-line
+  `▞▚▞▚ manvi`), sampled from the same measurements the SVG is generated from.
+  `manvi logo --svg` still prints the published asset byte for byte.
+
 - **The DevCouncil pin moves to the workbench schema 17 store** (`d9c7a512`,
   from `c6788883`). Schema 17 adds a cross-repository execution queue, two-way
   GitHub issue sync state, an opt-in confirmed durable outbox and the
@@ -424,6 +562,34 @@ under **Unreleased** in the same commit as the code.
   checked against the previous branches over random input.
 
 ### Fixed
+
+- Defects in how the TUI drew a transcript and the dashboard, each now held by
+  a test in `manvi/ui/tui/cleanui_defect_test.go` that fails against the
+  previous code.
+  - A model's thinking was one transcript entry per streamed chunk, so a
+    sentence broke across rows wherever the provider cut the stream. It is one
+    entry, as a reply is; a sub-agent's is kept apart from the session's own.
+  - A `- item` in a reply was drawn as a line a diff removed, in the danger
+    colour with its inline markup left as backticks: a diff was recognised
+    anywhere, ahead of a list. It is recognised only in a fence marked `diff` or
+    `patch` and in tool output from its first hunk header on.
+  - What the operator asked was one row cut at the pane's edge. It wraps.
+  - Tab-indented code was drawn flush left, in a reply's code block and in a
+    tool result alike: the buffer drops a tab as it drops every control
+    character. Tabs are expanded to four-column stops before they are drawn.
+  - At 60 columns the status bar showed the posture, an ellipsis and a row
+    of counters, with the model gone.
+  - Every turn end was a transcript entry with no body: a bullet on a row of
+    its own.
+  - A `--- FAIL: TestX` line of test output was styled as a diff header.
+  - Tool output was read as markdown, so a `# comment` in a script a tool read
+    was drawn as a heading with the `#` removed.
+- A folded transcript entry kept only the outcome's marker in its gutter. It
+  now also prints what qualifies the outcome (the grant that cleared it, the
+  rule the posture demoted, the checks that did not run, the settings off
+  default), as an open entry does.
+- The dashboard's activity column read `just now ago` for a session active in
+  the last second.
 
 - The `ps` listing the test-support store guard (`internal/storeguard`) runs to
   find leaked `dcstore` children started with a nil `Env`, so it inherited every
