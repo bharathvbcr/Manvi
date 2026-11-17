@@ -680,6 +680,23 @@ under **Unreleased** in the same commit as the code.
   engine's read returns that file's line (this predates the change). All three
   need the engine to search only the listed set and verify each opened file's
   identity.
+- `devcouncil_grep` counts the files the engine walked against the listing. The
+  engine accounts for every regular file it walks in `files_searched`,
+  `files_pruned` or a skipped count, and the listing counts the same walk, so a
+  search that walked more files than the listing held (less the refused ones)
+  treats the tree as moved and runs the attempt again; after three attempts the
+  call ends in "the tree changed under the search repeatedly; retry". This
+  closes a name the listing did not hold that took a result slot or moved the
+  counts with the class of file it linked to: a matching and a non-matching
+  pattern now get the same reply. The accepted cost (owner, 2026-11-17): benign
+  churn during a grep, such as an editor's atomic save, can end in that retry
+  error instead of a silently dropped match. Not closed, and still needing the
+  engine to search only the listed set and verify each opened file's identity
+  (cards ft-c85799c6 and ft-ac7a93f4): a listed name swapped for a hard link
+  only while the engine reads it; a transient name hidden by the slack that
+  too-large, unreadable or unrepresentable files the listing skipped leave in
+  the count; and a transient name that replaces a removed listed file, which
+  keeps the count unchanged.
 - `native/` locks `rustix` 1.1.6 instead of 1.1.4: RUSTSEC-2026-0486 (xattr
   functions mark unwritten bytes as initialized given a zero-length buffer) is an
   unsound advisory, and verify denies unsound crates in `native/`. Lockfile only;
