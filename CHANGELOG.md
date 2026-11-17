@@ -361,6 +361,24 @@ under **Unreleased** in the same commit as the code.
   `scripts/release-build.sh` and `scripts/.dev-build.sh` moves from 12.0 to
   13.0. CI and the release workflow follow `go.mod`. A macOS 12 user should stay
   on the last release built with Go 1.26.
+- **macOS native observe and attach read less and settle first**
+  (perf1109-observe-cost). One observation now takes two window enumerations,
+  two accessibility walks and one screenshot (it took three, three and two, and
+  discarded the first screenshot); the returned image is still bracketed by two
+  equal walks 150 ms apart, and the window geometry and scale checks are the
+  stricter of the two old ones. `attach` now waits, for at most three seconds, for
+  two accessibility walks 150 ms apart to be equal before it reports the window
+  ready (the deadline is checked after a comparison, never before the first, so a
+  slow window whose walks alone outlast it is judged on one pair of walks rather
+  than refused unseen); a tree still changing then is `accessibility_pending` (not sent), which
+  the host's bounded attach retry already handles, instead of a ready window
+  whose first observation then fails with `observation_inconsistent`. When the
+  host's ten second attach budget ends first, the error now names the last
+  transient reason (still the context error, still not a `BrokerError`). No wire
+  field changed, and no screenshot is taken that is not returned. Privacy note:
+  attach now reads the full accessibility tree, text values included, at least
+  twice and discards it in memory (the fingerprint comparison is all that is
+  kept); before, attach read only window metadata. Nothing is logged or stored.
 - **Record format change: neutralised agent text is now unambiguous**
   (ft-bf52b840). Every agent-authored string a managed run records is
   neutralised once, at the adapters' `Next`, and rendered so that no input

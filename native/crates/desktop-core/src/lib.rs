@@ -1,5 +1,10 @@
 //! Versioned native desktop contracts. Platform handles never cross this boundary.
+mod capture_flow;
 mod visual;
+pub use capture_flow::{
+    BracketedObservation, CaptureSource, OBSERVE_SETTLE_MS, SettlePolicy, TreeRead,
+    observe_bracketed, settle_attach,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};

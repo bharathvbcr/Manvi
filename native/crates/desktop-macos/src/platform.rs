@@ -4,10 +4,11 @@ use crate::input_guard;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use block2::RcBlock;
 use desktop_core::{
-    Action, ActionKind, Attach, Bounds, Delivery, DesktopError, InputStamp, MAX_DEPTH,
-    MAX_IMAGE_PIXELS, MAX_NODES, MAX_TEXT_BYTES, Node, Observation, Receipt, ResolvedTarget,
-    Result, Screenshot, VisualAnchor, VisualMatch, Window, WorkerRequest, err, now_ms,
-    revalidate_visual, same_target, state_difference, state_fingerprint, validate_state,
+    Action, ActionKind, Attach, Bounds, CaptureSource, Delivery, DesktopError, InputStamp,
+    MAX_DEPTH, MAX_IMAGE_PIXELS, MAX_NODES, MAX_TEXT_BYTES, Node, Observation, Receipt,
+    ResolvedTarget, Result, Screenshot, SettlePolicy, TreeRead, VisualAnchor, VisualMatch, Window,
+    WorkerRequest, err, now_ms, observe_bracketed, revalidate_visual, same_target, settle_attach,
+    validate_state,
 };
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use objc2::{AnyThread, MainThreadMarker};
@@ -586,6 +587,56 @@ fn tree(window: &Window) -> Result<(CFRetained<AXUIElement>, Vec<Node>, bool, bo
     walk(&root, Vec::new(), None, &mut nodes, &mut complete)?;
     Ok((root, nodes, complete, foreground))
 }
+/// The live reads behind desktop_core's observe and attach-settle flows. The
+/// order of the reads, and so the bracketing the masking depends on, is owned
+/// by `desktop_core::capture_flow`; this only performs one read at a time.
+struct LiveSource {
+    pid: u32,
+    window_id: u64,
+}
+impl LiveSource {
+    fn attach(&self, window_id: Option<u64>) -> Attach {
+        Attach {
+            pid: self.pid,
+            window_id,
+            read_only_targets: vec![],
+            focus: false,
+        }
+    }
+}
+impl CaptureSource for LiveSource {
+    fn window(&mut self) -> Result<Window> {
+        capture(&self.attach(Some(self.window_id)), false).map(|(window, _)| window)
+    }
+    fn tree(&mut self, window: &Window) -> Result<TreeRead> {
+        let (_, nodes, complete, foreground) = tree(window)?;
+        Ok(TreeRead {
+            nodes,
+            complete,
+            foreground,
+        })
+    }
+    fn image(&mut self, window: &Window) -> Result<(Window, Screenshot)> {
+        let (captured, image) = capture(&self.attach(Some(window.window_id)), true)?;
+        let image = image.ok_or_else(|| err("capture_failed", "Missing screenshot"))?;
+        Ok((captured, image))
+    }
+    fn now_ms(&self) -> u64 {
+        now_ms()
+    }
+    fn pause_ms(&mut self, ms: u64) {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+}
+
+/// Attach waits for the target's tree to hold still: two walks 150 ms apart
+/// must be equal. Three seconds is well inside the host's ten second attach
+/// budget, which retries `accessibility_pending`.
+const ATTACH_SETTLE: SettlePolicy = SettlePolicy {
+    interval_ms: 150,
+    deadline_ms: 3_000,
+};
+
 fn current_window(expected: &Window) -> Result<Window> {
     let (window, _) = capture(
         &Attach {
@@ -975,6 +1026,15 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
             }
             let app = application(window.pid)?;
             matching_ax_window(&app, &window)?;
+            settle_attach(
+                &mut LiveSource {
+                    pid: window.pid,
+                    window_id: window.window_id,
+                },
+                &window,
+                ATTACH_SETTLE,
+                attach.focus,
+            )?;
             window.foreground = exact_foreground(&app, &window)?;
             serde_json::to_value(window)
                 .map_err(|e| DesktopError::new("serialization", e.to_string()))
@@ -999,109 +1059,27 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
             let expected = request
                 .window
                 .ok_or_else(|| err("invalid_request", "Window required"))?;
-            let (mut window, _) = capture(
-                &Attach {
+            // One flow owns the order of the reads (desktop_core::capture_flow):
+            // two enumerations, two tree walks and exactly one image, which is
+            // the image returned.
+            let bracketed = observe_bracketed(
+                &mut LiveSource {
                     pid: expected.pid,
-                    window_id: Some(expected.window_id),
-                    read_only_targets: vec![],
-                    focus: false,
+                    window_id: expected.window_id,
                 },
-                false,
+                &expected.process_identity,
             )?;
-            if window.process_identity != expected.process_identity {
-                return Err(err(
-                    "process_changed",
-                    "Application process identity changed",
-                ));
-            }
-            let tree_at_ms = now_ms();
-            let (_, nodes, complete, foreground) = tree(&window)?;
-            window.foreground = foreground;
-            let (captured, image) = capture(
-                &Attach {
-                    pid: window.pid,
-                    window_id: Some(window.window_id),
-                    read_only_targets: vec![],
-                    focus: false,
-                },
-                true,
-            )?;
-            if !captured.bounds.near(window.bounds, 1.0)
-                || captured.process_identity != window.process_identity
-            {
-                return Err(err(
-                    "observation_inconsistent",
-                    "Window changed between accessibility and image capture",
-                ));
-            }
-            // The first scoped frame is used only to establish stability. It is
-            // never persisted or returned to the host.
-            let first_screenshot =
-                image.ok_or_else(|| err("capture_failed", "Missing screenshot"))?;
-            let (_, after_nodes, after_complete, _) = tree(&window)?;
-            if complete != after_complete
-                || state_fingerprint(&nodes)? != state_fingerprint(&after_nodes)?
-            {
-                return Err(DesktopError::new(
-                    "observation_inconsistent",
-                    format!(
-                        "Accessibility state changed during first scoped capture: {}",
-                        state_difference(&nodes, &after_nodes)
-                    ),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(150));
-            let (second_window, second_image) = capture(
-                &Attach {
-                    pid: window.pid,
-                    window_id: Some(window.window_id),
-                    focus: false,
-                    read_only_targets: vec![],
-                },
-                true,
-            )?;
-            if second_window.process_identity != window.process_identity
-                || !second_window.bounds.near(window.bounds, 0.0)
-                || second_window.scale != window.scale
-            {
-                return Err(err(
-                    "observation_inconsistent",
-                    "Window geometry changed between two scoped captures",
-                ));
-            }
-            let (_, stable_nodes, stable_complete, stable_foreground) = tree(&window)?;
-            if stable_complete != complete
-                || state_fingerprint(&nodes)? != state_fingerprint(&stable_nodes)?
-            {
-                return Err(DesktopError::new(
-                    "observation_inconsistent",
-                    format!(
-                        "Accessibility state changed between two scoped captures: {}",
-                        state_difference(&nodes, &stable_nodes)
-                    ),
-                ));
-            }
-            let screenshot = second_image
-                .ok_or_else(|| err("capture_failed", "Second scoped capture missing"))?;
-            if screenshot.width != first_screenshot.width
-                || screenshot.height != first_screenshot.height
-            {
-                return Err(err(
-                    "observation_inconsistent",
-                    "Scoped image dimensions changed",
-                ));
-            }
-            window.foreground = stable_foreground;
             pointer_motion |= input_guard::check_semantic(&input_stamp)?
                 == input_guard::Interference::PointerMotion;
+            let complete = bracketed.complete;
             let observation = Observation {
                 observation_id: String::new(),
                 epoch: 0,
-                captured_at_ms: now_ms(),
-                tree_at_ms,
-                window,
-                nodes,
-                screenshot,
+                captured_at_ms: bracketed.captured_at_ms,
+                tree_at_ms: bracketed.tree_at_ms,
+                window: bracketed.window,
+                nodes: bracketed.nodes,
+                screenshot: bracketed.screenshot,
                 complete,
                 pointer_motion,
                 input_stamp: Some(input_stamp),
