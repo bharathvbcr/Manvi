@@ -55,9 +55,12 @@ func (m *blockingModule) Configure(r *Router) error {
 // session drives a server over a pipe the test writes to, and collects its
 // responses as they arrive.
 type session struct {
-	t     *testing.T
-	in    *io.PipeWriter
-	got   chan Response
+	t   *testing.T
+	in  *io.PipeWriter
+	got chan Response
+	// early holds responses read while waiting for a different id, so awaiting
+	// ids in an order other than the one they were answered in loses none.
+	early map[string]Response
 	done  chan error
 	srvMu sync.Mutex
 }
@@ -104,6 +107,10 @@ func (s *session) send(id, op string, params string) {
 
 func (s *session) await(id string, within time.Duration) Response {
 	s.t.Helper()
+	if r, ok := s.early[id]; ok {
+		delete(s.early, id)
+		return r
+	}
 	deadline := time.After(within)
 	for {
 		select {
@@ -114,6 +121,10 @@ func (s *session) await(id string, within time.Duration) Response {
 			if r.ID == id {
 				return r
 			}
+			if s.early == nil {
+				s.early = map[string]Response{}
+			}
+			s.early[r.ID] = r
 		case <-deadline:
 			s.t.Fatalf("%q was not answered within %v", id, within)
 		}
@@ -348,5 +359,21 @@ func TestHelloAdvertisesEachOpsLaneAndDeadline(t *testing.T) {
 	}
 	if laneFor(opManagedFollow) != "" {
 		t.Fatal("follow must be inline so a queued message is not parked behind the turn")
+	}
+}
+
+// Awaiting ids in a different order than they were answered must not lose the
+// earlier answers: the assist wire test awaits "one" and "two" while either may
+// finish first.
+func TestSessionAwaitKeepsResponsesForLaterAwaits(t *testing.T) {
+	s := startSession(t, t.Context(), Options{})
+	s.send("a", OpHello, "")
+	s.send("b", OpHello, "")
+	// Hello is answered inline, in arrival order, so "a" is read first here.
+	if r := s.await("b", 5*time.Second); r.ID != "b" || !r.OK {
+		t.Fatalf("b = %+v", r)
+	}
+	if r := s.await("a", 5*time.Second); r.ID != "a" || !r.OK {
+		t.Fatalf("a = %+v", r)
 	}
 }
