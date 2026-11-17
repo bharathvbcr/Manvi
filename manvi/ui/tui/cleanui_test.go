@@ -103,7 +103,11 @@ func TestALiveThoughtLaysOutABoundedSpan(t *testing.T) {
 	if len(rows) != thoughtTail {
 		t.Fatalf("%d rows, want %d", len(rows), thoughtTail)
 	}
-	a := tailRows(long, 80, render.Style{}, thoughtTail)[0].Text()
+	first := tailRows(long, 80, render.Style{}, thoughtTail)
+	if first == nil {
+		t.Fatal("no rows for a long thought")
+	}
+	a := first[0].Text()
 	b := tailRows(long+"word ", 80, render.Style{}, 2*thoughtTail)
 	found := false
 	for _, r := range b {
@@ -341,7 +345,7 @@ func TestARefusalIsSaidOnce(t *testing.T) {
 			s.Append(ev)
 		}
 		s.Append(result)
-		var out []string
+		out := []string{}
 		for _, r := range s.rows(th, 90) {
 			if text := strings.TrimSpace(r.line.Text()); text != "" {
 				out = append(out, text)
@@ -355,6 +359,12 @@ func TestARefusalIsSaidOnce(t *testing.T) {
 	all := strings.Join(got, "\n")
 	if strings.Count(all, reason) != 1 {
 		t.Fatalf("the refusal is said %d times:\n%s", strings.Count(all, reason), all)
+	}
+	if got == nil {
+		t.Fatalf("a refused write drew no rows:\n%s", all)
+	}
+	if len(got) < 3 {
+		t.Fatalf("a refused write drew %d rows, want at least 3:\n%s", len(got), all)
 	}
 	if got[1] != th.Glyphs().Bullet+"  Writing manvi/.env  · failed" {
 		t.Fatalf("a refused write reads %q", got[1])
@@ -525,6 +535,17 @@ func TestAHugeOneLineResultPreviewsWithoutLayingItAllOut(t *testing.T) {
 	}
 }
 
+// mustCurrent is the active session of an app that a test has given one. A test
+// that drives a session cannot go on without it, so its absence stops the test
+// here, with a reason, instead of as a nil dereference further down.
+func mustCurrent(a *App) *AgentView {
+	v := a.Current()
+	if v == nil {
+		panic("tui test: the app has no current session")
+	}
+	return v
+}
+
 // paintedWorking draws the app and returns how the working row's indicator is
 // painted: the first five cells of the row (the ribbon and the space after it,
 // or the spinner, its padding and the start of the label), each as its text and,
@@ -683,8 +704,12 @@ func TestSpacersDoNotMoveClicksOrTakeTheHighlight(t *testing.T) {
 	s.Draw(b, b.Bounds(), th, true)
 	// Rows: first, blank, reply, blank, second.
 	for y, want := range map[int]string{0: "first", 2: "reply", 4: "second"} {
-		if !s.SelectAt(y) || s.Selected().text() != want {
-			t.Fatalf("row %d selected %v, want %q", y, s.Selected(), want)
+		if !s.SelectAt(y) {
+			t.Fatalf("row %d is not selectable, want %q", y, want)
+		}
+		sel := s.Selected()
+		if sel == nil || sel.text() != want {
+			t.Fatalf("row %d selected %v, want %q", y, sel, want)
 		}
 	}
 	s.selected = 1
@@ -711,7 +736,7 @@ func TestSpacersDoNotMoveClicksOrTakeTheHighlight(t *testing.T) {
 func TestTheWorkingRowSaysWhatTheTurnIsDoing(t *testing.T) {
 	a, _ := newTestApp()
 	a.Theme.Unicode = true
-	v := a.Current()
+	v := mustCurrent(a)
 	has := func(want string) bool { return contains2(screen(a, 100, 30), want) }
 
 	if has("to interrupt") {
@@ -848,6 +873,12 @@ func TestMarkdownConstructs(t *testing.T) {
 
 	// A diff is one where it says it is.
 	rows := renderMarkdown("```diff\n-old\n+new\n ctx\n```", th, 30, false)
+	if rows == nil {
+		t.Fatal("a diff fence drew no rows")
+	}
+	if len(rows) < 3 {
+		t.Fatalf("a diff fence drew %d rows, want 3", len(rows))
+	}
 	if rows[0][1].Style.Fg != th.Danger || rows[1][1].Style.Fg != th.Success || rows[2][1].Style.Fg == th.Success {
 		t.Errorf("a diff fence is not coloured as a diff: %+v", rows)
 	}
@@ -863,7 +894,14 @@ func TestMarkdownConstructs(t *testing.T) {
 			}
 		}
 	}
-	if code := renderMarkdown("```\nx\n```", th, 20, false)[0]; !strings.HasPrefix(code.Text(), th.Glyphs().VBar+" x") {
+	fence := renderMarkdown("```\nx\n```", th, 20, false)
+	if fence == nil {
+		t.Fatal("a code fence drew no rows")
+	}
+	if len(fence) == 0 {
+		t.Fatal("a code fence drew an empty row set")
+	}
+	if code := fence[0]; !strings.HasPrefix(code.Text(), th.Glyphs().VBar+" x") {
 		t.Errorf("a code row is not behind its rule: %q", code.Text())
 	}
 }
@@ -875,6 +913,12 @@ func TestToolOutputIsNotMarkdownAndADiffIsColouredOnceItIsOne(t *testing.T) {
 	plain := th.Muted()
 	out := "- a yaml item\n--- a/x.go\n+++ b/x.go\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n**not bold**"
 	rows := renderPre(out, th, 60, plain)
+	if rows == nil {
+		t.Fatal("preformatted output drew no rows")
+	}
+	if len(rows) == 0 || len(rows[0]) == 0 {
+		t.Fatalf("preformatted output drew an empty first row: %+v", rows)
+	}
 	if got := rows[0][0]; got.Text != "- a yaml item" || got.Style != plain {
 		t.Fatalf("a line before any hunk is styled: %+v", got)
 	}
@@ -1076,7 +1120,7 @@ func paletteSession(th Theme) *App {
 	a := NewApp(th, &stubHost{})
 	a.Dispatch(ActionResize{W: 120, H: 60})
 	_ = a.AddSession("S1", "first")
-	v := a.Current()
+	v := mustCurrent(a)
 	for _, ev := range []ui.Event{
 		{Kind: ui.KindSessionStart, Posture: "dev", Model: "some-model"},
 		{Kind: ui.KindTurnStart, Text: "fix the reader"},
@@ -1352,7 +1396,7 @@ func TestACallReadsAsWhatWasDone(t *testing.T) {
 // The working row words a running call the way the transcript does.
 func TestTheWorkingRowNamesWhatIsBeingDone(t *testing.T) {
 	a, _ := newTestApp()
-	v := a.Current()
+	v := mustCurrent(a)
 	v.SetBusy(true, "working")
 	v.Apply(ui.Event{Kind: ui.KindToolStart, Tool: "devcouncil_read_file", Arguments: []byte(`{"path":"ui/reader.go"}`)})
 	if rows := screen(a, 100, 30); !contains2(rows, "Reading ui/reader.go") {
@@ -1406,7 +1450,7 @@ func TestACallWithItsOwnRowIsPastTenseOnceAnswered(t *testing.T) {
 // moment; the top row is the transcript's.
 func TestTheFrameHasNoTopBarAndOneQuietFooter(t *testing.T) {
 	a, _ := newTestApp()
-	v := a.Current()
+	v := mustCurrent(a)
 	v.Status.Model, v.Status.Posture = "claude-opus-5-5", "strict"
 	v.Status.GitBranch = "main"
 	v.Apply(ui.Event{Kind: ui.KindTurnStart, Text: "hello"})
@@ -1464,6 +1508,9 @@ func TestTheFooterKeepsWhatMatters(t *testing.T) {
 	}
 	st := Status{Posture: "strict", Model: "claude-opus-5-5", GitBranch: "main", Grants: 2}
 	wide, b := draw(110, st)
+	if b == nil {
+		t.Fatal("the footer was not drawn into a buffer")
+	}
 	if !strings.Contains(wide, "2 granted") || !strings.Contains(wide, "F1 more") {
 		t.Fatalf("a wide footer reads %q", wide)
 	}

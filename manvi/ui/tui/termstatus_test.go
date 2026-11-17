@@ -244,7 +244,11 @@ func TestOneTabSpeaksForTheMostUrgentSession(t *testing.T) {
 	// A failure outranks a finished turn and a running one, but not that.
 	a.Dispatch(ActionTurnEnded{SessionID: "S2", Err: errors.New("boom")})
 	wantTab(t, a, "needs approval · session one (+1)", term.ProgressPaused)
-	a.viewByID("S1").approval = nil
+	s1 := a.viewByID("S1")
+	if s1 == nil {
+		t.Fatal("session S1 is not open")
+	}
+	s1.approval = nil
 	wantTab(t, a, "failed · session two (+1)", term.ProgressError)
 
 	// Input clears the outcome of the session in front of the operator only.

@@ -10,6 +10,9 @@ import (
 )
 
 func bufferString(b *render.Buffer) string {
+	if b == nil {
+		return ""
+	}
 	var sb strings.Builder
 	for y := 0; y < b.H; y++ {
 		for x := 0; x < b.W; x++ {

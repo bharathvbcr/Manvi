@@ -15,7 +15,7 @@ import (
 
 // rowsOf lays an entry out and returns its rows as text.
 func rowsOf(e *Entry, th Theme, width int) []string {
-	var out []string
+	out := []string{}
 	for _, l := range e.Lines(th, width) {
 		out = append(out, l.Text())
 	}
@@ -160,7 +160,7 @@ func TestTestOutputIsNotADiffHeader(t *testing.T) {
 // last second is already a phrase, and took the suffix every other age takes.
 func TestTheDashboardDoesNotSayJustNowAgo(t *testing.T) {
 	a, _ := newTestApp()
-	a.Current().Apply(ui.Event{Kind: ui.KindNotice, Text: "something happened"})
+	mustCurrent(a).Apply(ui.Event{Kind: ui.KindNotice, Text: "something happened"})
 	// Dated ahead of the clock, so the age is under a second however long the
 	// test takes to reach the draw.
 	a.Current().lastActivity = time.Now().Add(time.Hour)

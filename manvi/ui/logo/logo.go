@@ -195,7 +195,7 @@ func LinesAt(size Size, c Colors, unicode bool, tagline string, maxWidth int, m 
 	}
 	switch size {
 	case SizeNone:
-		return nil
+		return []render.Line{}
 
 	case SizeText:
 		return []render.Line{render.Styled(Name, c.Word).Truncate(maxWidth)}

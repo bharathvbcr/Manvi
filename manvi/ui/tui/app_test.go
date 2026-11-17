@@ -92,7 +92,7 @@ func TestTypingAndSubmitting(t *testing.T) {
 	if !ok || sub.Text != "fix the parser" {
 		t.Fatalf("got %#v, want a submit of the typed text", effects[0])
 	}
-	if !a.Current().Prompt.Empty() {
+	if !mustCurrent(a).Prompt.Empty() {
 		t.Fatal("the composer was not cleared on submit")
 	}
 	_ = host
@@ -188,7 +188,7 @@ func TestTabCompletesAndEnterSends(t *testing.T) {
 		t.Fatal("no completion overlay")
 	}
 	key(a, "tab")
-	if got := a.Current().Prompt.Value(); got != "/check " {
+	if got := mustCurrent(a).Prompt.Value(); got != "/check " {
 		t.Fatalf("tab left the prompt as %q", got)
 	}
 	if a.overlay != nil {
@@ -197,7 +197,7 @@ func TestTabCompletesAndEnterSends(t *testing.T) {
 
 	// A command typed in full and sent with Enter must run, not be replaced by
 	// whichever row the dropdown had highlighted.
-	a.Current().Prompt.Clear()
+	mustCurrent(a).Prompt.Clear()
 	typeText(a, "/doctor")
 	if a.overlay == nil {
 		t.Fatal("the completer did not reopen")
@@ -263,11 +263,11 @@ func TestEscapeNeedsTwoPressesToDiscardADraft(t *testing.T) {
 	a, _ := newTestApp()
 	typeText(a, "half a thought")
 	key(a, "esc")
-	if a.Current().Prompt.Empty() {
+	if mustCurrent(a).Prompt.Empty() {
 		t.Fatal("one Escape discarded the draft")
 	}
 	key(a, "esc")
-	if !a.Current().Prompt.Empty() {
+	if !mustCurrent(a).Prompt.Empty() {
 		t.Fatal("the second Escape did not clear the draft")
 	}
 }
@@ -1203,7 +1203,7 @@ func TestAutocompleteNavigationAndEnterExecution(t *testing.T) {
 	if a.overlay != nil {
 		t.Fatal("overlay should be closed after Enter")
 	}
-	if got := a.Current().Prompt.Value(); got != "/check " {
+	if got := mustCurrent(a).Prompt.Value(); got != "/check " {
 		t.Fatalf("prompt = %q, want the command waiting for its argument", got)
 	}
 	if notice, kind := a.Notice(); !strings.Contains(notice, "PATH") || kind != StatusInfo {
@@ -1296,7 +1296,7 @@ func TestSearchableOverlayFilteringAndEditing(t *testing.T) {
 	if effects := key(a, "enter"); len(effects) != 0 {
 		t.Fatalf("Enter on filtered palette ran a command needing an argument: %#v", effects)
 	}
-	if got := a.Current().Prompt.Value(); got != "/check " {
+	if got := mustCurrent(a).Prompt.Value(); got != "/check " {
 		t.Fatalf("prompt = %q, want the command waiting for its argument", got)
 	}
 }

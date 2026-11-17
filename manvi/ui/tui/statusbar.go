@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -279,7 +280,7 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 			left.Truncate(r.W).Draw(b, r.X, r.Y)
 			return
 		}
-		segs = append(segs[:drop], segs[drop+1:]...)
+		segs = slices.Delete(segs, drop, drop+1)
 	}
 }
 

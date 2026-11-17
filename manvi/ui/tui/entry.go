@@ -325,7 +325,7 @@ func firstLine(s string) string {
 func (e *Entry) Lines(th Theme, width int) []render.Line {
 	if width <= 0 || e.absorbed {
 		// An absorbed call has no rows of its own: its result's row names it.
-		return nil
+		return []render.Line{}
 	}
 	if e.cacheLines != nil && e.cacheWidth == width &&
 		e.cacheFolded == e.Folded && e.cacheTheme == th.Name {
@@ -408,7 +408,7 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		return out
 	}
 
-	var out []render.Line
+	out := []render.Line{}
 	// ready counts the leading rows of out already in their final form, which
 	// only a streamed reply's cached rows are.
 	ready := 0
@@ -991,7 +991,7 @@ func (e *Entry) finishRow(th Theme, g Glyphs, body, i int, l render.Line) render
 func (e *Entry) streamRows(th Theme, body int, g Glyphs) (out []render.Line, ready int) {
 	text := e.text()
 	if text == "" {
-		return nil, 0
+		return []render.Line{}, 0
 	}
 	sl := e.streamSlot(th.Name, body)
 	// The rows describe src; text that does not still begin with it is not
@@ -1489,12 +1489,12 @@ func highlightCodeLine(raw string, th Theme, lang string) render.Line {
 
 func renderMarkdown(text string, th Theme, width int, isToolResult bool) []render.Line {
 	if text == "" {
-		return nil
+		return []render.Line{}
 	}
 	if isToolResult {
 		return renderPre(text, th, width, th.Base())
 	}
-	var out []render.Line
+	out := []render.Line{}
 	var st mdState
 	for _, raw := range strings.Split(text, "\n") {
 		out = st.line(out, raw, th, width)
@@ -1509,9 +1509,9 @@ func renderMarkdown(text string, th Theme, width int, isToolResult bool) []rende
 // rewrote what the tool said.
 func renderPre(text string, th Theme, width int, plain render.Style) []render.Line {
 	if text == "" {
-		return nil
+		return []render.Line{}
 	}
-	var out []render.Line
+	out := []render.Line{}
 	st := mdState{pre: true, plain: plain}
 	for _, raw := range strings.Split(text, "\n") {
 		out = st.line(out, raw, th, width)

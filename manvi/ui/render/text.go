@@ -302,9 +302,15 @@ func trimTrailingSpace(l Line) Line {
 
 // WrapText wraps plain text in one style, splitting on newlines first.
 func WrapText(text string, width int, s Style) []Line {
-	var out []Line
+	out := []Line{}
 	for _, raw := range strings.Split(text, "\n") {
 		out = append(out, Styled(raw, s).Wrap(width)...)
+	}
+	// Wrap says "no rows" with a nil slice, and appending nothing to a non-nil
+	// slice leaves it non-nil; the check is for callers' analysers, which do not
+	// model append, and a caller indexes the result without one of its own.
+	if out == nil {
+		out = []Line{}
 	}
 	return out
 }
