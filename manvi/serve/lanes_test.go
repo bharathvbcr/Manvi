@@ -58,9 +58,10 @@ type session struct {
 	t   *testing.T
 	in  *io.PipeWriter
 	got chan Response
-	// early holds responses read while waiting for a different id, so awaiting
-	// ids in an order other than the one they were answered in loses none.
-	early map[string]Response
+	// early holds responses read while waiting for a different id, in arrival
+	// order per id, so awaiting ids in an order other than the one they were
+	// answered in loses none, and a reused id loses neither answer.
+	early map[string][]Response
 	done  chan error
 	srvMu sync.Mutex
 }
@@ -107,9 +108,13 @@ func (s *session) send(id, op string, params string) {
 
 func (s *session) await(id string, within time.Duration) Response {
 	s.t.Helper()
-	if r, ok := s.early[id]; ok {
-		delete(s.early, id)
-		return r
+	if held := s.early[id]; len(held) > 0 {
+		if len(held) == 1 {
+			delete(s.early, id)
+		} else {
+			s.early[id] = held[1:]
+		}
+		return held[0]
 	}
 	deadline := time.After(within)
 	for {
@@ -122,9 +127,9 @@ func (s *session) await(id string, within time.Duration) Response {
 				return r
 			}
 			if s.early == nil {
-				s.early = map[string]Response{}
+				s.early = map[string][]Response{}
 			}
-			s.early[r.ID] = r
+			s.early[r.ID] = append(s.early[r.ID], r)
 		case <-deadline:
 			s.t.Fatalf("%q was not answered within %v", id, within)
 		}
@@ -171,8 +176,8 @@ func TestASlowLaneDoesNotHoldAnotherLane(t *testing.T) {
 		t.Fatal("a work op waited behind a managed prepare")
 	}
 	close(m.release)
-	// Two lanes answer in whichever order they finish; await discards what it
-	// is not waiting for, so wait for both ids from one stream.
+	// Two lanes answer in whichever order they finish, so read both ids from
+	// one stream rather than awaiting them in a fixed order.
 	for pending := 2; pending > 0; pending-- {
 		select {
 		case r := <-s.got:
@@ -193,9 +198,8 @@ func TestALaneRunsItsRequestsInArrivalOrder(t *testing.T) {
 	s := startSession(t, context.Background(), Options{Modules: []Module{m}})
 	// No more than the lane can hold waiting. Past laneQueue the outcome is
 	// scheduling, not ordering: an overflow is answered E_BUSY on the read loop,
-	// ahead of the lane's own replies, and await discards it while waiting on an
-	// earlier id — so under load the test timed out on a reply it had already
-	// thrown away. TestAFullLaneIsBusyAndBounded owns the overflow.
+	// ahead of the lane's own replies. TestAFullLaneIsBusyAndBounded owns the
+	// overflow.
 	const n = laneQueue
 	for i := range n {
 		tag := "t" + strings.Repeat("x", i)
@@ -375,5 +379,17 @@ func TestSessionAwaitKeepsResponsesForLaterAwaits(t *testing.T) {
 	}
 	if r := s.await("a", 5*time.Second); r.ID != "a" || !r.OK {
 		t.Fatalf("a = %+v", r)
+	}
+	// A reused id keeps both answers: neither overwrites the other while held.
+	s.send("c", OpHello, "")
+	s.send("c", OpHello, "")
+	s.send("d", OpHello, "")
+	if r := s.await("d", 5*time.Second); r.ID != "d" || !r.OK {
+		t.Fatalf("d = %+v", r)
+	}
+	for i := range 2 {
+		if r := s.await("c", 5*time.Second); r.ID != "c" || !r.OK {
+			t.Fatalf("c #%d = %+v", i+1, r)
+		}
 	}
 }
