@@ -167,31 +167,37 @@ func agyPolicy(o Options) (acpMode, approval, reviewer string, sandbox Sandbox, 
 }
 
 func normalizeAgyMcpServers(servers []McpServer) ([]McpServer, error) {
+	return normalizeMcpServers("Antigravity", servers)
+}
+
+func normalizeMcpServers(provider string, servers []McpServer) ([]McpServer, error) {
 	if len(servers) > maxAgyMcpServers {
-		return nil, fmt.Errorf("managed Antigravity accepts at most %d explicit MCP servers", maxAgyMcpServers)
+		return nil, fmt.Errorf("managed %s accepts at most %d explicit MCP servers", provider, maxAgyMcpServers)
 	}
 	out := make([]McpServer, 0, len(servers))
 	seenNames := make(map[string]bool, len(servers))
 	for _, srv := range servers {
 		if !opaque(srv.Name) || seenNames[srv.Name] {
-			return nil, errors.New("managed Antigravity MCP server requires a unique opaque name")
+			return nil, fmt.Errorf("managed %s MCP server requires a unique opaque name", provider)
 		}
 		seenNames[srv.Name] = true
 		if !filepath.IsAbs(srv.Command) || strings.ContainsAny(srv.Command, "\x00\r\n") || !utf8.ValidString(srv.Command) {
-			return nil, errors.New("managed Antigravity MCP server requires an absolute executable path")
+			return nil, fmt.Errorf("managed %s MCP server requires an absolute executable path", provider)
 		}
 		args := make([]string, len(srv.Args))
 		for i, a := range srv.Args {
 			if strings.ContainsRune(a, 0) || !utf8.ValidString(a) || len(a) > 4096 {
-				return nil, errors.New("managed Antigravity MCP server argument is invalid")
+				return nil, fmt.Errorf("managed %s MCP server argument is invalid", provider)
 			}
 			args[i] = a
 		}
 		env := make([]McpEnvVar, len(srv.Env))
+		seenEnv := make(map[string]bool, len(srv.Env))
 		for i, ev := range srv.Env {
-			if !opaque(ev.Name) || strings.ContainsRune(ev.Name, '=') || strings.ContainsRune(ev.Value, 0) || !utf8.ValidString(ev.Value) || len(ev.Value) > 16384 {
-				return nil, errors.New("managed Antigravity MCP server environment entry is invalid")
+			if !opaque(ev.Name) || strings.ContainsRune(ev.Name, '=') || seenEnv[ev.Name] || strings.ContainsRune(ev.Value, 0) || !utf8.ValidString(ev.Value) || len(ev.Value) > 16384 {
+				return nil, fmt.Errorf("managed %s MCP server environment entry is invalid", provider)
 			}
+			seenEnv[ev.Name] = true
 			env[i] = ev
 		}
 		out = append(out, McpServer{

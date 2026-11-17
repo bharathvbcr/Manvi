@@ -153,6 +153,32 @@ under **Unreleased** in the same commit as the code.
   worktree write tools; whether `agy` asks before an MCP tool call is not
   verified. The default is intended (owner, 2026-11-15). To opt out, point
   `MANVI_GITPULSE_MCP_BINARY` at a path that is not an executable file.
+- **Managed `claude` sessions get the `gitpulse` MCP server too, and both `agy`
+  and `claude` get a `devmap` one.** In `manvi serve`, a managed Claude session
+  now receives the same `gitpulse` server a managed `agy` session already did,
+  passed with `--mcp-config` (without `--strict-mcp-config`, so the user's own
+  MCP settings still load), and both adapters receive `devmap mcp` as a server
+  named `devmap` when `MANVI_DEVMAP_MCP_BINARY` (else `MANVI_MAP_BINARY`, else
+  `devmap`) resolves to an executable file. Every server is passed in every
+  mode, `inspect` and `bypass` included, and Manvi filters none of its tools.
+  **Security impact: this widens what a managed Claude session can reach** to
+  GitPulse's task-board and worktree write tools, terminal spawn and send, agent
+  messaging and `browser_open`, and gives both adapters DevMap's read-only
+  code-graph tools. Whether a call asks the operator first depends on the
+  agent's own permission mode and is not verified here. Accepted by the owner on
+  2026-11-17. To opt out, point `MANVI_GITPULSE_MCP_BINARY` and
+  `MANVI_DEVMAP_MCP_BINARY` at paths that are not executable files; the devmap
+  one is separate so Manvi's own `MANVI_MAP_BINARY` is untouched. The Claude
+  adapter also answers `AskUserQuestion` and MCP form-mode elicitation requests
+  the session raises, and cancels URL-mode elicitations without counting them
+  against the request budget. That handling is verified against scripted
+  stand-ins only: the `AskUserQuestion` answer shape matches the Agent SDK's
+  documented `updatedInput.answers`, but the stream-json elicitation frame
+  (`subtype`, `mode`, `requested_schema`, the `{action, content}` reply) is not
+  in Anthropic's public docs, so it was not checked against the real CLI. An `agy` MCP server with a duplicate environment
+  variable name is now refused. The `queue_if_in_flight` serve option from the
+  same branch is not part of this change: it changes the serve contract and has
+  to land with GitPulse's copy.
 - The terminal's tab says what the agent is doing. While `manvi tui` runs, the
   tab title is the one-line mark, a state and the session: `▞▚▞▚ thinking ·
   session one`, with `working`, `writing`, `running <tool>`, `needs approval`,

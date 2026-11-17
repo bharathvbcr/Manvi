@@ -31,8 +31,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,9 +59,13 @@ const (
 )
 
 type claudePending struct {
-	source    Request
-	requestID string
-	sent      bool
+	source       Request
+	requestID    string
+	sent         bool
+	kind         string // "", "approval", "ask_user_question", "elicitation_form"
+	rawInput     json.RawMessage
+	questionKeys []string
+	elicitTypes  []string
 }
 
 // Claude owns one session and one turn. Operations serialize; Close can
@@ -235,6 +242,13 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 			return nil, beforeStart(err)
 		}
 	}
+	if len(options.McpServers) > 0 {
+		mcpConfig, mcpErr := claudeMcpConfigJSON(options.McpServers)
+		if mcpErr != nil {
+			return nil, beforeStart(mcpErr)
+		}
+		args = append(args, "--mcp-config", mcpConfig)
+	}
 	wire, err := startConnectionOverrides(ctx, program, args, cwd, childenv.Inherit(), seatOverrides, validateClaudeFrame)
 	if err != nil {
 		return nil, err
@@ -275,6 +289,41 @@ func claudeArgs(mode, session string) []string {
 		"--setting-sources", "user",
 		"--session-id", session,
 	}
+}
+
+func claudeMcpConfigJSON(servers []McpServer) (string, error) {
+	normalized, err := normalizeMcpServers("Claude", servers)
+	if err != nil {
+		return "", err
+	}
+	type claudeMcpEntry struct {
+		Type    string            `json:"type"`
+		Command string            `json:"command"`
+		Args    []string          `json:"args,omitempty"`
+		Env     map[string]string `json:"env,omitempty"`
+	}
+	mcpMap := make(map[string]claudeMcpEntry, len(normalized))
+	for _, srv := range normalized {
+		entry := claudeMcpEntry{
+			Type:    "stdio",
+			Command: srv.Command,
+			Args:    srv.Args,
+		}
+		if len(srv.Env) > 0 {
+			entry.Env = make(map[string]string, len(srv.Env))
+			for _, ev := range srv.Env {
+				entry.Env[ev.Name] = ev.Value
+			}
+		}
+		mcpMap[srv.Name] = entry
+	}
+	raw, err := json.Marshal(struct {
+		McpServers map[string]claudeMcpEntry `json:"mcpServers"`
+	}{McpServers: mcpMap})
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 // claudeResumeArgs is claudeArgs with `--session-id` replaced by `--resume`.
@@ -863,24 +912,86 @@ func (s *Claude) withdrawPending() []Event {
 	return s.withdrawn.withdrawalEvents(ids)
 }
 
-// capture turns an approval request into a durable, one-use callback.
+// capture turns an approval or supported question request into a durable,
+// one-use callback, or immediately declines URL-mode elicitations.
 func (s *Claude) capture(f claudeFrame) (Event, bool, error) {
 	var request struct {
-		Subtype   string          `json:"subtype"`
-		ToolName  string          `json:"tool_name"`
-		Display   string          `json:"display_name"`
-		Input     json.RawMessage `json:"input"`
-		ToolUseID string          `json:"tool_use_id"`
-		Reason    string          `json:"decision_reason"`
-		Kind      string          `json:"decision_reason_type"`
+		Subtype         string          `json:"subtype"`
+		ToolName        string          `json:"tool_name"`
+		Display         string          `json:"display_name"`
+		Input           json.RawMessage `json:"input"`
+		ToolUseID       string          `json:"tool_use_id"`
+		Reason          string          `json:"decision_reason"`
+		Kind            string          `json:"decision_reason_type"`
+		Mode            string          `json:"mode"`
+		Message         string          `json:"message"`
+		RequestedSchema json.RawMessage `json:"requested_schema"`
 	}
 	if json.Unmarshal(f.Request, &request) != nil {
 		return Event{}, false, errors.New("invalid Claude control request")
 	}
+	if request.Subtype == "elicitation" && request.Mode == "url" {
+		if !opaque(f.RequestID) {
+			return Event{}, false, errors.New("invalid Claude control request")
+		}
+		if err := s.send(s.wire.ctx, map[string]any{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "success",
+				"request_id": f.RequestID,
+				"response":   map[string]any{"action": "cancel"},
+			},
+		}); err != nil {
+			return Event{}, false, err
+		}
+		return Event{}, false, nil
+	}
+
+	if request.Subtype == "elicitation" && (request.Mode == "form" || request.Mode == "") {
+		questions, keys, types, ok := parseClaudeElicitationForm(request.Message, request.RequestedSchema)
+		if !ok {
+			return Event{}, false, fmt.Errorf("unsupported Claude callback %q; no response was granted", request.Subtype)
+		}
+		if !s.started || s.finished || s.turnID == "" {
+			return Event{}, false, errors.New("Claude callback has no matching active turn")
+		}
+		if !opaque(f.RequestID) {
+			return Event{}, false, errors.New("Claude callback omits its request identity")
+		}
+		if s.seen[f.RequestID] || len(s.pending) >= claudeMaxPending || s.requestCount >= claudeMaxRequests {
+			return Event{}, false, errors.New("Claude callback is duplicated or exceeds the run budget")
+		}
+		payload := bytes.TrimSpace(f.Request)
+		if len(payload) == 0 || len(payload) > 65536 {
+			return Event{}, false, errors.New("complete Claude elicitation payload exceeds 64 KiB")
+		}
+		r := Request{
+			ID:        f.RequestID,
+			ThreadID:  s.sessionID,
+			TurnID:    s.turnID,
+			Kind:      "question",
+			Payload:   string(payload),
+			Digest:    payloadDigest(string(payload)),
+			Questions: questions,
+			ExpiresAt: time.Now().Add(5 * time.Minute),
+		}
+		s.pending[f.RequestID] = &claudePending{
+			source:       r,
+			requestID:    f.RequestID,
+			kind:         "elicitation_form",
+			questionKeys: keys,
+			elicitTypes:  types,
+		}
+		s.seen[f.RequestID] = true
+		s.requestCount++
+		return Event{Request: &r}, true, nil
+	}
+
 	if request.Subtype != "can_use_tool" {
-		// `request_user_dialog` and `elicitation` need a free-form answer whose
-		// shape this adapter does not model. Refusing is the honest outcome:
-		// granting a response it cannot construct would be worse than failing.
+		// `request_user_dialog` and unsupported/schema-less `elicitation` need a
+		// free-form answer whose shape this adapter does not model. Refusing is
+		// the honest outcome: granting a response it cannot construct would be
+		// worse than failing.
 		return Event{}, false, fmt.Errorf("unsupported Claude callback %q; no response was granted", request.Subtype)
 	}
 	// A `can_use_tool` always follows the `tool_use` block that provoked it, so
@@ -908,19 +1019,125 @@ func (s *Claude) capture(f claudeFrame) (Event, bool, error) {
 	if err != nil || len(payload) > 65536 {
 		return Event{}, false, errors.New("complete Claude approval payload exceeds 64 KiB")
 	}
+	kind := "permission"
+	pending := &claudePending{requestID: f.RequestID}
+	var questions []Question
+	if request.ToolName == "AskUserQuestion" {
+		if qs, keys, ok := parseClaudeAskUserQuestion(request.Input); ok {
+			kind = "question"
+			questions = qs
+			pending.kind = "ask_user_question"
+			pending.rawInput = append(json.RawMessage(nil), request.Input...)
+			pending.questionKeys = keys
+		}
+	}
 	r := Request{
 		ID:        f.RequestID,
 		ThreadID:  s.sessionID,
 		TurnID:    s.turnID,
-		Kind:      "permission",
+		Kind:      kind,
 		Payload:   string(payload),
 		Digest:    payloadDigest(string(payload)),
+		Questions: questions,
 		ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
-	s.pending[f.RequestID] = &claudePending{source: r, requestID: f.RequestID}
+	pending.source = r
+	s.pending[f.RequestID] = pending
 	s.seen[f.RequestID] = true
 	s.requestCount++
 	return Event{Request: &r}, true, nil
+}
+
+func parseClaudeAskUserQuestion(raw json.RawMessage) ([]Question, []string, bool) {
+	var in struct {
+		Questions []struct {
+			Question    string `json:"question"`
+			Header      string `json:"header"`
+			MultiSelect bool   `json:"multiSelect"`
+		} `json:"questions"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &in) != nil {
+		return nil, nil, false
+	}
+	if len(in.Questions) < 1 || len(in.Questions) > 3 {
+		return nil, nil, false
+	}
+	questions := make([]Question, 0, len(in.Questions))
+	keys := make([]string, 0, len(in.Questions))
+	seenKeys := make(map[string]struct{}, len(in.Questions))
+	for i, item := range in.Questions {
+		if item.MultiSelect || strings.TrimSpace(item.Question) == "" {
+			return nil, nil, false
+		}
+		if _, dup := seenKeys[item.Question]; dup {
+			return nil, nil, false
+		}
+		seenKeys[item.Question] = struct{}{}
+		questions = append(questions, Question{
+			ID:       fmt.Sprintf("q_%d", i),
+			Header:   item.Header,
+			Question: item.Question,
+		})
+		keys = append(keys, item.Question)
+	}
+	return questions, keys, true
+}
+
+func parseClaudeElicitationForm(message string, raw json.RawMessage) ([]Question, []string, []string, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil, nil, false
+	}
+	var schema struct {
+		Type       string `json:"type"`
+		Properties map[string]struct {
+			Type        string `json:"type"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(raw, &schema) != nil || schema.Type != "object" {
+		return nil, nil, nil, false
+	}
+	if len(schema.Properties) < 1 || len(schema.Properties) > 3 {
+		return nil, nil, nil, false
+	}
+	keys := make([]string, 0, len(schema.Properties))
+	for k := range schema.Properties {
+		if strings.TrimSpace(k) == "" {
+			return nil, nil, nil, false
+		}
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	questions := make([]Question, 0, len(keys))
+	types := make([]string, 0, len(keys))
+	for i, k := range keys {
+		prop := schema.Properties[k]
+		switch prop.Type {
+		case "string", "boolean", "integer", "number":
+		default:
+			return nil, nil, nil, false
+		}
+		header := prop.Title
+		if strings.TrimSpace(header) == "" {
+			header = k
+		}
+		qText := prop.Description
+		if strings.TrimSpace(qText) == "" {
+			if len(keys) == 1 && strings.TrimSpace(message) != "" {
+				qText = message
+			} else {
+				qText = k
+			}
+		}
+		questions = append(questions, Question{
+			ID:       fmt.Sprintf("q_%d", i),
+			Header:   header,
+			Question: qText,
+		})
+		types = append(types, prop.Type)
+	}
+	return questions, keys, types, true
 }
 
 // ValidateResponse checks the complete response before the host consumes its
@@ -949,19 +1166,109 @@ func (s *Claude) response(request Request, response Response) (any, error) {
 	if p == nil || callbackStale(request, p.source, p.sent, s.finished) {
 		return nil, errors.New("Claude callback is stale, changed or already consumed")
 	}
-	if len(response.Answers) > 0 || (response.Decision != "allow_once" && response.Decision != "deny") {
-		return nil, errors.New("choose a one-time approval or denial")
+	switch p.kind {
+	case "ask_user_question", "elicitation_form":
+		if response.Decision == "deny" {
+			if len(response.Answers) > 0 {
+				return nil, errors.New("declining a question takes no answers")
+			}
+			if p.kind == "elicitation_form" {
+				return map[string]any{"action": "decline"}, nil
+			}
+			return map[string]any{
+				"behavior": "deny",
+				"message":  "The operator declined this question in GitPulse.",
+			}, nil
+		}
+		if response.Decision != "answer" {
+			return nil, errors.New("answer each question or decline it")
+		}
+		if len(response.Answers) != len(p.source.Questions) {
+			return nil, errors.New("answer every question once")
+		}
+		values := make([]string, len(p.source.Questions))
+		for i, q := range p.source.Questions {
+			a := response.Answers[q.ID]
+			if len(a) != 1 || strings.TrimSpace(a[0]) == "" || len(a[0]) > 16384 {
+				return nil, errors.New("each question needs one nonblank answer")
+			}
+			values[i] = a[0]
+		}
+		if p.kind == "ask_user_question" {
+			var updated map[string]any
+			dec := json.NewDecoder(bytes.NewReader(p.rawInput))
+			dec.UseNumber()
+			if len(p.rawInput) == 0 || dec.Decode(&updated) != nil || updated == nil {
+				return nil, errors.New("invalid stored AskUserQuestion input")
+			}
+			answers := make(map[string]string, len(values))
+			for i, key := range p.questionKeys {
+				answers[key] = values[i]
+			}
+			updated["answers"] = answers
+			return map[string]any{
+				"behavior":     "allow",
+				"updatedInput": updated,
+			}, nil
+		}
+		content := make(map[string]any, len(values))
+		for i, key := range p.questionKeys {
+			coerced, err := coerceClaudeElicitationValue(p.elicitTypes[i], values[i])
+			if err != nil {
+				return nil, err
+			}
+			content[key] = coerced
+		}
+		return map[string]any{
+			"action":  "accept",
+			"content": content,
+		}, nil
+	default:
+		if len(response.Answers) > 0 || (response.Decision != "allow_once" && response.Decision != "deny") {
+			return nil, errors.New("choose a one-time approval or denial")
+		}
+		if response.Decision == "allow_once" {
+			// No updatedInput and no updatedPermissions: this approves exactly the
+			// call that was reviewed, and grants nothing beyond it. A rule added
+			// here would outlive the decision the human actually made.
+			return map[string]any{"behavior": "allow"}, nil
+		}
+		return map[string]any{
+			"behavior": "deny",
+			"message":  "The operator denied this action in GitPulse.",
+		}, nil
 	}
-	if response.Decision == "allow_once" {
-		// No updatedInput and no updatedPermissions: this approves exactly the
-		// call that was reviewed, and grants nothing beyond it. A rule added
-		// here would outlive the decision the human actually made.
-		return map[string]any{"behavior": "allow"}, nil
+}
+
+func coerceClaudeElicitationValue(kind, raw string) (any, error) {
+	trimmed := strings.TrimSpace(raw)
+	switch kind {
+	case "string":
+		return raw, nil
+	case "boolean":
+		switch strings.ToLower(trimmed) {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		default:
+			return nil, errors.New("boolean field requires true or false")
+		}
+	case "integer":
+		v, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			return nil, errors.New("integer field requires a whole number")
+		}
+		return v, nil
+	case "number":
+		v, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, errors.New("number field requires a finite number")
+		}
+		return v, nil
+	default:
+		return nil, errors.New("unsupported elicitation field type")
 	}
-	return map[string]any{
-		"behavior": "deny",
-		"message":  "The operator denied this action in GitPulse.",
-	}, nil
 }
 
 func (s *Claude) Respond(ctx context.Context, request Request, response Response) error {
