@@ -718,6 +718,7 @@ type grepOutcome struct {
 	truncated     bool
 	limit         int
 	filesSearched int
+	filesPruned   int
 	skipped       dcgrep.Skipped
 	// ignoreRules is the engine's own report of whether ignore rules applied;
 	// a partitioned search reports true only if every sub-search did.
@@ -745,39 +746,43 @@ const grepRaceAttempts = 3
 // What is closed. A name that existed only while the engine walked (a hard link
 // to a withheld file made just before the search and removed just after) is in
 // neither listing. Its match is dropped from the reply by path (listedFilter),
-// applied to each search's result before the results are merged and cut to the
-// limit, so it can no longer turn into an error or a retry, and no longer takes
-// one of Manvi's own result slots: the isError-versus-withheld split that told a
-// matching pattern from a non-matching one under such a writer is gone. The same
-// drop covers a name the listing held as refused that the engine read anyway
-// (the search target directory renamed and a symlink put in its place, which the
-// engine canonicalises, so it walks a withheld directory and reads a withheld
-// file under its own listed name): its match content never reaches the reply.
-// A symlink alias on its own never leaked, because the engine does not follow
-// links, skips non-regular files and opens without following.
+// and the attempt is run again because the engine walked it (see below), so the
+// isError-versus-withheld split that told a matching pattern from a non-matching
+// one under such a writer is gone: both end in the same retry and the same
+// error. The same drop covers a name the listing held as refused that the engine
+// read anyway (the search target directory renamed and a symlink put in its
+// place, which the engine canonicalises, so it walks a withheld directory and
+// reads a withheld file under its own listed name): its match content never
+// reaches the reply. A symlink alias on its own never leaked, because the engine
+// does not follow links, skips non-regular files and opens without following.
 //
-// What is not. The outcome is not decided from the listing alone, because the
-// engine's answer is computed over a tree walk that includes names the listing
-// did not hold, and some of what it returns is shaped by what it read there:
-//   - the engine's own per-search cut. A search that is cut at its limit (the
-//     speculative whole-tree search, or a sub-search that also reads a withheld
-//     file) returns the smallest keys, so a withheld match that sorts first takes
-//     one of its slots. The reply then holds fewer listed matches by exactly the
-//     number of the withheld file's matching lines inside the cut, and reports
-//     truncated. That is a count, not a bit: limit minus count is how many lines
-//     of the withheld file matched. It needs the engine to search only the
-//     listed set; Manvi cannot see or undo that cut;
-//   - files_searched and the skipped counts, which the engine reports as
-//     aggregates over every file it opened, so they move with a transient name
-//     and with the class of the file it links to (binary, too large,
-//     unreadable); no per-path data comes back to filter them by;
+// A name the listing did not hold that the engine walked anyway is caught by
+// counting (searchAttempt): the engine accounts for every file it walks, so more
+// files walked than the listing held, whatever they contain and whichever bucket
+// they land in, sends the attempt round again and, if the tree keeps moving,
+// ends in the one error. That covers the engine's own cut at its limit, which an
+// unlisted name's match can shape, and the aggregate counters (files_searched,
+// files_pruned, skipped), which move with the unlisted name and the class of
+// file it links to. The count is an upper bound: a file the engine fails to count
+// (an index-filtered one) or one gone by the time it walks cannot trip it, and
+// the listing's skipped total is allowed for as slack, so an unlisted name is
+// missed when the tree also holds that many too-large, unreadable or
+// unrepresentable files that the search did not reach.
+//
+// What is not decided from the listing alone. The engine cannot be asked to
+// search a named file set or to check the identity of each file it opens
+// (dcgrep.Request carries neither):
 //   - a listed name swapped for a hard link to a withheld file only while the
-//     engine reads it, and restored before either listing: its match line is the
-//     withheld file's content and stands as a listed, unrefused match. It needs
-//     the engine to check the identity of each file it opens.
+//     engine reads it, and restored before either listing: the count is the
+//     same, its match line is the withheld file's content, and it stands as a
+//     listed, unrefused match;
+//   - the slack above.
 func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
 	for range grepRaceAttempts {
 		out, refused, tree, err := r.searchAttempt(ctx, req)
+		if errors.Is(err, errTreeMovedDuringSearch) {
+			continue
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1014,6 +1019,7 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 		}
 		res := s.res
 		out.matches, out.truncated, out.limit = keep.keep(res.Matches), res.Truncated, res.Limit
+		out.filesPruned = res.FilesPruned
 		out.filesSearched, out.skipped, out.ignoreRules = res.FilesSearched, res.Skipped, res.IgnoreRulesApplied
 	} else {
 		limit := req.MaxResults
@@ -1042,11 +1048,9 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 			out.matches = append(out.matches, keep.keep(res.Matches)...)
 			out.truncated = out.truncated || res.Truncated
 			out.filesSearched += res.FilesSearched
+			out.filesPruned += res.FilesPruned
 			out.ignoreRules = out.ignoreRules && res.IgnoreRulesApplied
-			out.skipped.TooLarge += res.Skipped.TooLarge
-			out.skipped.Binary += res.Skipped.Binary
-			out.skipped.Unreadable += res.Skipped.Unreadable
-			out.skipped.UnrepresentableName += res.Skipped.UnrepresentableName
+			addSkipped(&out.skipped, res.Skipped)
 		}
 		// The engine's answer is the smallest keys, so the merge keeps that
 		// order and that cut.
@@ -1062,7 +1066,29 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 		out.limit = limit
 	}
 
+	// The engine accounts for every regular file it walks in exactly one of
+	// files_searched, files_pruned or a skipped count, whatever the limit, and
+	// the listing counted the same walk. More files walked than the listing held
+	// (less the refused ones, which no search was pointed at) means a name
+	// existed during the search that the listing did not hold, and the whole
+	// answer, its cut and its counters included, may have been shaped by it. The
+	// verdict reads only that total, which is the same whatever the extra file
+	// holds, never what matched or what class of file it is.
+	if walked := out.filesSearched + out.filesPruned + out.skipped.Total(); walked > len(listing.Paths)-len(refused)+listing.Skipped.Total() {
+		return nil, nil, nil, errTreeMovedDuringSearch
+	}
 	return out, refused, tree, nil
+}
+
+// errTreeMovedDuringSearch is searchAttempt's report that the engine walked
+// more files than the listing held; searchUnrefused runs the attempt again.
+var errTreeMovedDuringSearch = errors.New("the engine walked a file the listing did not hold")
+
+func addSkipped(dst *dcgrep.Skipped, add dcgrep.Skipped) {
+	dst.TooLarge += add.TooLarge
+	dst.Binary += add.Binary
+	dst.Unreadable += add.Unreadable
+	dst.UnrepresentableName += add.UnrepresentableName
 }
 
 // revalidateMatches judges the files a finished search matched in with the full

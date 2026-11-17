@@ -150,6 +150,90 @@ exec "$REAL" "$@"
 	return f
 }
 
+// W21 (a), the result cap, ported from w21-grepbit-adv @ c7fa4f9 onto w21Fixture.
+// A match the reply drops (in a name that exists only while the engine walks)
+// must not occupy a cap slot, so a capped reply does not depend on whether the
+// withheld file matched. The alias sorts before the visible file.
+func TestW21GrepCapSlotTakenByDroppedMatchLeaksWithheldMatch(t *testing.T) {
+	type shape struct {
+		extra  map[string]any
+		secret string
+	}
+	cases := map[string]shape{
+		"max_results=1":           {map[string]any{"include_ignored": true, "max_results": 1}, "API=needle K\n"},             //nolint:gosec // test fixture text, not a credential
+		"default cap":             {map[string]any{"include_ignored": true}, strings.Repeat("needle K\n", 60)},               //nolint:gosec // test fixture text, not a credential
+		"past the engine maximum": {map[string]any{"include_ignored": true}, strings.Repeat("needle K\n", grepMaxLimit+100)}, //nolint:gosec // test fixture text, not a credential
+	}
+	// The alias sorts before the visible match, and after it: the engine sets
+	// truncated for a match that is displaced as well as for one that is kept.
+	for name, c := range cases {
+		for _, alias := range []string{"0alias.txt", "zalias.txt"} {
+			t.Run(name+"/"+alias, func(t *testing.T) {
+				build := func() *fixture {
+					return w21Fixture(t, map[string]string{
+						".env":      c.secret,
+						"src/a.go":  "needle visible\n",
+						"src/b.txt": "plain\n",
+					}, w21Writer{
+						searchPre:  `ln "$ROOT/.env" "$ROOT/src/` + alias + `"`,
+						searchPost: `rm -f "$ROOT/src/` + alias + `"`,
+					})
+				}
+				fa, fb := build(), build()
+				a := advGrepRaw(t, fa, "needle (K|visible)", c.extra)
+				b := advGrepRaw(t, fb, "needle (zzz|visible)", c.extra)
+				w21WriterRan(t, fa)
+				w21WriterRan(t, fb)
+				t.Logf("secret matches:     %s", a)
+				t.Logf("secret not matches: %s", b)
+				if a != b {
+					t.Fatalf("the capped reply depends on whether the withheld file matched:\nmatching: %s\nnot matching: %s", a, b)
+				}
+			})
+		}
+	}
+}
+
+// W21 (a), skipped counts and files_searched. The engine classifies a file as
+// binary, too large or unreadable from its content or mode, not from the
+// pattern, and reports aggregates over every file it opened. Same pattern
+// throughout; only the withheld file a transient alias links to differs.
+func TestW21GrepTransientLinkSkippedCountersIndependentOfWithheldContent(t *testing.T) {
+	variants := map[string]string{
+		"plain":  "TOKEN=abc123\n",
+		"binary": "TOKEN=abc\x00\x00\n",
+		"unread": "TOKEN=abc123\n",
+	}
+	var ref string
+	for _, name := range []string{"plain", "binary", "unread"} {
+		f := w21Fixture(t, map[string]string{
+			".env":     variants[name],
+			"src/a.go": "needle visible\n",
+		}, w21Writer{
+			searchPre:  `ln "$ROOT/.env" "$ROOT/src/alias.txt"`,
+			searchPost: `rm -f "$ROOT/src/alias.txt"`,
+		})
+		if name == "unread" {
+			if err := os.Chmod(filepath.Join(f.root, ".env"), 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got := advGrepRaw(t, f, "needle", map[string]any{"include_ignored": true})
+		if name == "unread" {
+			_ = os.Chmod(filepath.Join(f.root, ".env"), 0o600) //nolint:errcheck // restore for cleanup
+		}
+		w21WriterRan(t, f)
+		t.Logf("%-8s %s", name, got)
+		if ref == "" {
+			ref = got
+			continue
+		}
+		if got != ref {
+			t.Errorf("the reply depends on the withheld file's content (%s vs plain):\nplain: %s\n%s: %s", name, ref, name, got)
+		}
+	}
+}
+
 // W21 (a), writers other than a new hard link in an existing directory: a
 // directory symlink to the withheld directory (a behaviour test, not a
 // regression test: the engine does not follow symlinks), a link in a directory
