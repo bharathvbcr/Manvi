@@ -22,13 +22,23 @@ The split closes both by construction:
     has nothing to exfiltrate and nowhere to put it.
 
 When the hidden test imports a sandbox module it gets a PROXY. Every operation on
-that proxy -- attribute access, call, item access, iteration, len, bool, compare,
+that proxy -- attribute access, call, item access, iteration, len, bool,
 context managers, async iteration -- is a typed message to the worker, which runs
 the real thing and sends back a value (copied) or a handle (a proxy the other
 way, so a test-supplied callback or Clock still works). Candidate code exiting,
 killing, or forging inside the worker only kills the worker: the checker sees the
 pipe close and fails the verification. A verdict can be *earned* by making the
 checks pass; it cannot be *asserted*.
+
+The link is asymmetric. The worker runs candidate code, so everything it sends
+the checker is untrusted: `CheckerEndpoint` serves only CHECKER_OPS (call, getattr
+and setattr on objects the hidden test exported as callbacks, coroutine driving,
+release), refuses any other op by exiting the checker with a failing code, and
+never exposes a private or dunder name. And a Proxy never lets candidate code
+decide `==`/`!=`: a Proxy equals itself, and otherwise the checker compares a
+plain copy of a builtin subclass's contents (a namedtuple, Counter, IntEnum)
+that it asked the worker for, never sending the other operand. Any other
+worker object is unequal to everything but itself.
 
 The wire is a restricted, typed JSON encoding. There is no pickle, marshal or
 eval anywhere on it. A malformed message, an oversize message, EOF, or a blown
@@ -225,19 +235,56 @@ class Proxy:
         return self._ep.request("next", {"id": self._rid})
 
     def __bool__(self):
+        # The worker holds proxies of the checker's callbacks, and the checker
+        # serves no `bool`/`hash`/`str`/`repr`: those are answered here, so an
+        # honest `clock or time.monotonic` or `{cb}` still works.
+        if self._ep.side == "w":
+            return True
         return self._ep.request("bool", {"id": self._rid})
 
     def __eq__(self, other):
-        return self._ep.request("eq", {"id": self._rid,
-                                       "other": self._ep.codec.encode(other)})
+        # Candidate code never decides a comparison. A Proxy equals itself
+        # (proxies are one per remote id, so `is` is identity of the real
+        # object). Otherwise the checker asks the worker for the object's DATA,
+        # never for a verdict: a builtin subclass (a namedtuple, Counter,
+        # defaultdict, IntEnum, a str subclass) comes back as a plain copy of
+        # its builtin contents, read through the builtin type's own methods,
+        # and the checker compares that copy itself. The other operand is never
+        # sent. Any other object has no data to give and is unequal; so is
+        # another Proxy unless its own copy compares equal. Two returned
+        # objects compared with each other are then compared by data the worker
+        # supplied for both: the same trust as two values it returned by value,
+        # which is the candidate's answer, never a verdict. A hidden test that
+        # compares a returned object would otherwise be answered by the
+        # `__eq__` of the code under test.
+        if other is self:
+            return True
+        if self._ep.side == "w":
+            return False
+        got = self._ep.request("value", {"id": self._rid})
+        if type(got) is not list or len(got) != 2 or got[0] is not True:
+            return False
+        data = got[1]
+        if type(data) not in _BYVAL:
+            return False
+        return (data == other) is True
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
     def __hash__(self):
+        if self._ep.side == "w":
+            return hash(("mh-checker-object", self._rid))
         return self._ep.request("hash", {"id": self._rid})
 
     def __str__(self):
+        if self._ep.side == "w":
+            return f"<checker object {self._rid}>"
         return self._ep.request("str", {"id": self._rid})
 
     def __repr__(self):
+        if self._ep.side == "w":
+            return f"<checker object {self._rid}>"
         return self._ep.request("repr", {"id": self._rid})
 
     def __aiter__(self):
@@ -289,8 +336,67 @@ class _Lane:
         self.started = False
 
 
+# What the CHECKER will do when the worker asks. The worker runs candidate code,
+# so everything it sends is untrusted: it may call, read and write the objects
+# the hidden test exported as callbacks (a Clock, a Tracer), drive the test's
+# coroutines, and release handles -- nothing else. Any other op (exec_source,
+# modattr, forbid, find, getitem, len, ...) is a worker-side operation; a worker
+# that sends one to the checker is trying to make the checker run its code, and
+# the verification fails on the spot.
+CHECKER_OPS = frozenset({"call", "getattr", "setattr", "codrive", "aiter",
+                         "anext", "aenter", "aexit", "release"})
+
+# What the WORKER will do when the checker asks: everything the proxies can say,
+# plus the worker-only ops that import and execute candidate code.
+WORKER_OPS = CHECKER_OPS | frozenset({
+    "getitem", "setitem", "len", "bool", "hash", "str", "repr", "iter",
+    "next", "value", "find", "modattr", "forbid", "exec_source", "arun"})
+
+
+def _builtin_data(obj):
+    """The builtin contents of an instance of a builtin subclass, as an exact
+    builtin, or None when obj is not one.
+
+    The base is found from type(obj) (an instance cannot fake its type the way
+    it can fake `__class__` for isinstance), and the copy is read through the
+    base type's own unbound methods, so an override of `__iter__`, `__eq__`,
+    `items`, `__index__` or `__str__` on the subclass is never called.
+    """
+    t = type(obj)
+    if t in _BYVAL:
+        return None
+    if issubclass(t, int):
+        return int.__index__(obj)
+    if issubclass(t, float):
+        return float.__float__(obj)
+    if issubclass(t, str):
+        return str.__str__(obj)
+    if issubclass(t, bytes):
+        return bytes(memoryview(obj))
+    if issubclass(t, bytearray):
+        return bytearray(memoryview(obj))
+    if issubclass(t, tuple):
+        return tuple.__getitem__(obj, slice(None))
+    if issubclass(t, list):
+        return list.copy(obj)
+    if issubclass(t, dict):
+        return dict(dict.items(obj))
+    if issubclass(t, frozenset):
+        return frozenset(frozenset.__iter__(obj))
+    if issubclass(t, set):
+        return set(set.__iter__(obj))
+    return None
+
+
 class Endpoint:
-    """Symmetric half of the checker/worker link."""
+    """One half of the checker/worker link: framing, lanes, codec, dispatch.
+
+    Not instantiated directly. `CheckerEndpoint` and `WorkerEndpoint` fix the
+    side and the set of operations the peer may ask this side to perform; the
+    link is deliberately asymmetric.
+    """
+
+    _OPS = frozenset()
 
     def __init__(self, side, sock, sandbox, deadline_s, server_side):
         self.side = side                 # "c" or "w"
@@ -313,10 +419,6 @@ class Endpoint:
         self._wlock = threading.Lock()
         self._closing = False
         self._done = False
-        # candidate code has executed in this (worker) process; used to fail
-        # closed if an import ban is armed after the fact.
-        self.candidate_ran = False
-        self._forbidden = ()
 
     # ---- object tables ---------------------------------------------------- #
 
@@ -429,7 +531,9 @@ class Endpoint:
             return None
         try:
             return json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError: a frame nested deeper than the parser's stack
+            # would otherwise end this reader thread silently.
             self._fatal("malformed frame")
 
     def _fatal(self, why):
@@ -465,6 +569,11 @@ class Endpoint:
                     self._fatal("peer closed the connection")
                 self._done = True
                 return
+            # A frame is a dict with a hashable lane. Anything else would raise
+            # in this thread and end it silently, leaving the verification to
+            # time out; fail it now instead.
+            if type(frame) is not dict or not isinstance(frame.get("lane", 0), int):
+                self._fatal("malformed frame")
             k = frame.get("k")
             if k == "hello":
                 continue
@@ -618,6 +727,12 @@ class Endpoint:
         if "fatal_kind" in x:
             raise RemoteFatal(f"worker raised {x['fatal_kind']}: {x.get('str', '')}")
         cls = self._build_class(x["mro"], x["mro"][0][1] if x["mro"] else "Exception")
+        if not issubclass(cls, Exception):
+            # `fatal_kind` is what an honest endpoint sends for SystemExit and
+            # friends. A reply that names one through `mro` instead is a forgery
+            # of that kind: re-raising it here would let candidate code end the
+            # checker with the exit code of its choice (SystemExit(0) -> pass).
+            raise RemoteFatal(f"worker raised {cls.__name__}: {x.get('str', '')}")
         try:
             args = tuple(self.codec.decode(a) for a in x.get("args", []))
             exc = cls(*args)
@@ -626,11 +741,14 @@ class Endpoint:
         raise exc
 
     def _execute(self, method, p):
-        # Returns (encoded_value, writeback_list_or_None).
-        h = getattr(self, "_op_" + method, None)
-        if h is None:
-            raise _Fatal(f"unknown op {method!r}")
-        return h(p)
+        # Returns (encoded_value, writeback_list_or_None). The allow-list is the
+        # whole gate: an op outside it never reaches a handler. `_fatal` exits
+        # the process now rather than raising, because a raised exception could
+        # be swallowed by the hidden test's own `except Exception` and the
+        # refusal would then score nothing.
+        if method not in self._OPS:
+            self._fatal(f"refused op {method!r}: not served by this side")
+        return getattr(self, "_op_" + method)(p)
 
     # ---- operations ------------------------------------------------------- #
 
@@ -648,7 +766,6 @@ class Endpoint:
         obj = self._obj(p)
         args = [self.codec.decode(a) for a in p["a"]]
         kwargs = {k: self.codec.decode(v) for k, v in p.get("kw", {}).items()}
-        self.candidate_ran = True
         res = obj(*args, **kwargs)
         wb = self._make_wb(args)
         return self.codec.encode(res), wb
@@ -677,9 +794,6 @@ class Endpoint:
 
     def _op_hash(self, p):
         return self.codec.encode(hash(self._obj(p))), None
-
-    def _op_eq(self, p):
-        return self.codec.encode(self._obj(p) == self.codec.decode(p["other"])), None
 
     def _op_str(self, p):
         return self.codec.encode(str(self._obj(p))), None
@@ -727,7 +841,102 @@ class Endpoint:
         tb = self.codec.decode(p["tb"])
         return self.codec.encode(self._drive(self._obj(p).__aexit__(et, ev, tb))), None
 
-    # ---- worker-only operations ------------------------------------------- #
+    # ---- lifecycle -------------------------------------------------------- #
+
+    def start_reader(self):
+        threading.Thread(target=self._read_loop, daemon=True).start()
+
+
+# Objects whose public attributes lead out of the sandboxed callback surface into
+# the checker's frames, code, globals or builtins.
+_INTERNALS = (types.FrameType, types.CodeType, types.TracebackType,
+              types.ModuleType, types.GeneratorType, types.CoroutineType,
+              types.AsyncGeneratorType)
+
+
+class CheckerEndpoint(Endpoint):
+    """The checker side: serves only the callback ops of `CHECKER_OPS`."""
+
+    _OPS = CHECKER_OPS
+
+    def __init__(self, sock, sandbox, deadline_s):
+        super().__init__("c", sock, sandbox, deadline_s, server_side=False)
+
+    def _public(self, p):
+        # The worker may reach the public surface of an exported callback and
+        # nothing behind it: no dunder, no private name. A `__class__ ->
+        # __init__ -> __globals__ -> __builtins__` walk would otherwise hand the
+        # candidate the checker's builtins as callable handles. The refusal is an
+        # AttributeError (the candidate sees "no such attribute"), not a fatal
+        # exit, so an honest `hasattr(cb, "__name__")` probe still works.
+        name = p["attr"]
+        if not isinstance(name, str) or name.startswith("_"):
+            raise AttributeError(f"{name!r} is not reachable from the worker")
+        obj = self._obj(p)
+        if isinstance(obj, _INTERNALS):
+            raise AttributeError(f"{name!r}: interpreter internals are not reachable")
+        return obj
+
+    def _op_getattr(self, p):
+        # Public names are not enough: `cr_frame`, `f_builtins`, `f_globals`,
+        # `gi_code`, `tb_frame` carry no underscore, and a checker coroutine or
+        # module is exactly what a callback can hand out. Neither the object
+        # asked nor the value found may be an interpreter internal.
+        val = getattr(self._public(p), p["attr"])
+        if isinstance(val, _INTERNALS):
+            raise AttributeError(f"{p['attr']!r}: interpreter internals are not reachable")
+        return self.codec.encode(val), None
+
+    def _op_setattr(self, p):
+        setattr(self._public(p), p["attr"], self.codec.decode(p["val"]))
+        return None, None
+
+    def close_from_checker(self, code):
+        # os._exit skips buffer flushing, so the hidden test's own output (its
+        # FAIL lines, which become the redacted labels the model sees) would be
+        # lost on a block-buffered pipe. Flush before exiting.
+        for s in (sys.stdout, sys.stderr):
+            try:
+                s.flush()
+            except Exception:
+                pass
+        self._closing = True
+        self._done = True
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        os._exit(code if isinstance(code, int) else 1)
+
+
+class WorkerEndpoint(Endpoint):
+    """The worker side: runs candidate code, so it alone serves `WORKER_OPS`."""
+
+    _OPS = WORKER_OPS
+
+    def __init__(self, sock, sandbox, deadline_s):
+        super().__init__("w", sock, sandbox, deadline_s, server_side=True)
+        # candidate code has executed in this process; used to fail closed if an
+        # import ban is armed after the fact.
+        self.candidate_ran = False
+
+    def _op_call(self, p):
+        self.candidate_ran = True
+        return super()._op_call(p)
+
+    def _op_value(self, p):
+        # The data a Proxy compares with, never a comparison: [True, copy] for
+        # a builtin subclass, [False, None] for anything else. Elements of the
+        # copy cross by the usual rule (exact builtins by value, the rest as
+        # handles), so a nested namedtuple is compared the same way in turn.
+        data = _builtin_data(self._obj(p))
+        if data is None:
+            return self.codec.encode([False, None]), None
+        return self.codec.encode([True, data]), None
 
     def _op_find(self, p):
         name = p["name"]
@@ -749,7 +958,6 @@ class Endpoint:
 
     def _op_forbid(self, p):
         names = tuple(self.codec.decode(p["names"]))
-        self._forbidden = names
         if self.candidate_ran:
             # Fail closed: a ban armed after candidate code has already run
             # cannot prove anything, so refuse rather than report a clean scan.
@@ -776,11 +984,6 @@ class Endpoint:
         args = [self.codec.decode(a) for a in p["a"]]
         return self.codec.encode(asyncio.run(fn(*args))), None
 
-    # ---- lifecycle -------------------------------------------------------- #
-
-    def start_reader(self):
-        threading.Thread(target=self._read_loop, daemon=True).start()
-
     def run_worker(self):
         if self.sandbox not in sys.path:
             sys.path.insert(0, self.sandbox)
@@ -788,27 +991,6 @@ class Endpoint:
         self._send({"k": "hello", "v": PROTO})
         while not self._done:
             time.sleep(0.05)
-
-    def close_from_checker(self, code):
-        # os._exit skips buffer flushing, so the hidden test's own output (its
-        # FAIL lines, which become the redacted labels the model sees) would be
-        # lost on a block-buffered pipe. Flush before exiting.
-        for s in (sys.stdout, sys.stderr):
-            try:
-                s.flush()
-            except Exception:
-                pass
-        self._closing = True
-        self._done = True
-        try:
-            self.sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            self.sock.close()
-        except OSError:
-            pass
-        os._exit(code if isinstance(code, int) else 1)
 
 
 class _ImportBan:
@@ -1178,10 +1360,10 @@ def _entry(argv, payload):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=fd)
     deadline_s = float(timeout_s)
     if role == "worker":
-        ep = Endpoint("w", sock, sandbox, deadline_s, server_side=True)
+        ep = WorkerEndpoint(sock, sandbox, deadline_s)
         ep.run_worker()
     elif role == "checker":
-        ep = Endpoint("c", sock, sandbox, deadline_s, server_side=False)
+        ep = CheckerEndpoint(sock, sandbox, deadline_s)
         run_checker(ep, payload.decode("utf-8"))
     else:
         sys.stderr.write(f"mh_rpc: unknown role {role!r}\n")
