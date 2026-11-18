@@ -1,4 +1,4 @@
-<img src="assets/manvi-mark.svg" alt="MANVI Mark" width="72" align="left" hspace="12" vspace="4">
+<img src="assets/manvi-mark.png" alt="MANVI Mark" width="72" align="left" hspace="12" vspace="4">
 
 # MANVI
 
