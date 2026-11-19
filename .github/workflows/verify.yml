@@ -473,7 +473,7 @@ jobs:
             fi
           done
           ls -la crates
-          members="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/Cargo.toml | jq -r '.packages[].name' | sort | tr '\n' ' ')"
+          members="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/Cargo.toml | jq -r '.packages[].name' | tr -d '\r' | sort | tr '\n' ' ')"
           echo "cargo loaded: $members"
           for member in dc-evidence dc-glob dc-grep dc-proc dc-redact dc-store dc-verify; do
             case " $members " in
