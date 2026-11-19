@@ -715,7 +715,17 @@ CONTAIN = (
     "    print('MH_KILL_OK')\n"
     "except OSError as _e:\n"
     "    print('MH_KILL_' + type(_e).__name__)\n"
-) % (os.path.join(BENCH_ROOT, "mh", "bench.py"),)
+    # The harness by its own pid, which is what the claim is about. Under bwrap
+    # --unshare-pid, getppid() is the namespace's init and a signal to it from
+    # inside is dropped without an error, so the line above proves nothing on
+    # Linux; this one asks whether the harness can be reached at all. Signal 0
+    # delivers nothing, so a containment that fails here kills no one.
+    "try:\n"
+    "    os.kill(%d, 0)\n"
+    "    print('MH_HARNESS_SIGNAL_OK')\n"
+    "except OSError as _e:\n"
+    "    print('MH_HARNESS_SIGNAL_' + type(_e).__name__)\n"
+) % (os.path.join(BENCH_ROOT, "mh", "bench.py"), os.getpid())
 sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
 ref = open(os.path.join(task.dir, "reference", "app", "invoice.py")).read()
 open(os.path.join(s_, "app", "invoice.py"), "w").write(CONTAIN + "\n" + ref)
@@ -723,11 +733,24 @@ ok, out = task.verify(s_)
 wout = (task.last_record or {}).get("worker_output", "")
 if containment_backend() in ("sandbox-exec", "bwrap"):
     check("C6 worker cannot read the benchmark tree (hidden tests)",
-          "MH_GUARD_READ_DENIED" in wout, wout[:200])
+          "MH_GUARD_READ_DENIED" in wout, wout[:300])
+    check("C6 the probe reached its fork and signal lines",
+          "MH_FORK_" in wout and "MH_HARNESS_SIGNAL_" in wout, wout[:300])
+    check("C6 worker cannot signal the harness by its pid",
+          "MH_HARNESS_SIGNAL_OK" not in wout, wout[:300])
+if containment_backend() == "sandbox-exec":
     check("C6 worker cannot fork helper processes",
-          "MH_FORK_DENIED" in wout, wout[:200])
+          "MH_FORK_DENIED" in wout, wout[:300])
     check("C6 worker cannot signal the harness (os.kill parent denied)",
-          "MH_KILL_PermissionError" in wout, wout[:200])
+          "MH_KILL_PermissionError" in wout, wout[:300])
+elif containment_backend() == "bwrap":
+    # bwrap here runs no seccomp filter, so nothing denies fork(): the worker can
+    # start helper processes. They stay inside its pid and network namespaces and
+    # die with it (--die-with-parent), and the checks above show they cannot
+    # read the hidden tests or reach the harness, but the claim "cannot fork" is
+    # the macOS profile's alone. verify.sh reports this line as a gate that did
+    # not run; scripts/verify-expected-gaps.json names why.
+    print("NOT COVERED: C6 fork denial — the bwrap profile has no seccomp filter, so a Linux worker can fork (the macOS sandbox-exec profile denies it)")
 else:
     check("C6 containment is explicitly off", containment_backend() == "off")
 

@@ -630,6 +630,7 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `bench/stress_test.py` C6 probes the harness by its own pid as well as `getppid()`. Under bwrap `--unshare-pid` the parent is the namespace's init, which drops a signal from inside without an error, so the old assertion failed on Linux without saying anything about the harness. Fork denial is checked on macOS only and named NOT COVERED under bwrap, which has no seccomp filter. `bench/test_tools.py` L7 finds the backgrounded sleeper by a unique command line in the host's process table instead of the pid echoed from inside the sandbox, which under bwrap named another process and failed with EPERM, and first checks the sleeper was running.
 - `manvi run --approve-fd N` refuses a descriptor that is already close-on-exec when the argv pre-scan first claims it. Such a descriptor cannot have come through exec, so this process opened it itself; on a Linux runner with `--approve-fd 3` left closed, that was the cgroup file the Go runtime opens at startup, a regular file that passed the type and epoll checks, and the run read approvals from it (`TestApproveFDClosedDescriptorIsRefusedAtStartup` failed on every Linux CI leg). The later claims stay idempotent. Security impact: narrows what is accepted as the approval channel; nothing that a host can pass is newly refused.
 - Defects in how the TUI drew a transcript and the dashboard, each now held by
   a test in `manvi/ui/tui/cleanui_defect_test.go` that fails against the

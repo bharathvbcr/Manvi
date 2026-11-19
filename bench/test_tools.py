@@ -209,20 +209,41 @@ def gone_within(pid, seconds=3.0):
     return False
 
 
+# A pid echoed from inside the sandbox is the sandbox's own number: under bwrap
+# --unshare-pid it names some other process on the host, or none, so probing it
+# here proves nothing either way. The sleeper is found by a command line no other
+# process has, read from the host's process table, after the shell inside has
+# shown it was running, so the check cannot pass on a sleeper that never started.
+def host_pids_with_args(args):
+    listing = subprocess.run(["ps", "-A", "-o", "pid=,args="], capture_output=True,
+                             text=True, check=True).stdout
+    return [int(line.split(None, 1)[0]) for line in listing.splitlines()
+            if line.split(None, 1)[1:] == [args]]
+
+
+def sleeper_gone_within(args, seconds=3.0):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not host_pids_with_args(args):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def backgrounded_sleeper_is_reaped(name, launch):
+    marker = f"sleep {random.randint(200, 299)}.{random.randint(1000, 9999)}"
+    out = sb3.run_shell(cmd=launch.format(sleeper=marker) + "; p=$!; kill -0 $p && echo MH_SLEEPER_RAN")
+    check(f"{name}: the sleeper was running inside the sandbox", "MH_SLEEPER_RAN" in out, out[:200])
+    ok = sleeper_gone_within(marker)
+    check(f"{name} is killed when the command returns", ok, marker)
+    for leftover in host_pids_with_args(marker):
+        os.kill(leftover, 9)
+
+
 root3 = tmpdir()
 sb3 = Sandbox(root3)
-out = sb3.run_shell(cmd="nohup sleep 300 >/dev/null 2>&1 & echo $!")
-pid = int(out.split("\n")[1].strip())
-ok = gone_within(pid)
-check("nohup sleep 300 & is killed when the command returns", ok, f"pid {pid}")
-if not ok:
-    os.kill(pid, 9)
-out = sb3.run_shell(cmd="(sleep 300; echo late) >/dev/null 2>&1 & echo $!")
-pid = int(out.split("\n")[1].strip())
-ok = gone_within(pid)
-check("a backgrounded subshell is killed too", ok, f"pid {pid}")
-if not ok:
-    os.kill(pid, 9)
+backgrounded_sleeper_is_reaped("nohup sleep &", "nohup {sleeper} >/dev/null 2>&1 &")
+backgrounded_sleeper_is_reaped("a backgrounded subshell", "({sleeper}; echo late) >/dev/null 2>&1 &")
 rc, o, e = toolmod.run_bounded(["/bin/sh", "-c", "sleep 300 >/dev/null 2>&1 & echo $!"],
                                timeout=30)
 pid = int(o.strip())
