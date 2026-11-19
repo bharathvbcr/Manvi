@@ -436,17 +436,54 @@ const gitTimeout = 10 * time.Second
 // tracked files the additions would hide. A rule that would hide one is
 // withheld rather than written.
 func ensureGitignore(root string, sections []Section) (gitignoreResult, error) {
-	var result gitignoreResult
-	path := filepath.Join(root, gitignoreName)
-
 	// The root is the repository the operator is standing in, and the anchor:
 	// .gitignore is read and replaced through this handle, never by path, so a
 	// link planted at the name cannot send either one elsewhere.
 	dir, err := treefile.Open(root)
 	if err != nil {
-		return result, err
+		return gitignoreResult{}, err
 	}
 	defer func() { _ = dir.Close() }()
+
+	// The file is read, git is consulted (which can take a while), and the new
+	// text is published. If the operator edited the file in between, what was
+	// read is stale, so the whole step is redone on the new content, a bounded
+	// number of times, rather than publishing over their edit.
+	for attempt := 0; ; attempt++ {
+		result, err := ensureGitignoreOnce(dir, root, sections)
+		if !errors.Is(err, errGitignoreChanged) {
+			return result, err
+		}
+		if attempt+1 >= gitignoreAttempts {
+			return result, fmt.Errorf("%w: .gitignore changed while it was being updated; left alone", treefile.ErrRefused)
+		}
+	}
+}
+
+// gitignoreAttempts bounds how often ensureGitignore redoes its step because the
+// file kept changing under it.
+const gitignoreAttempts = 3
+
+// errGitignoreChanged says the file differs from what was read, at the point of
+// publishing. The check and the rename are two steps, so an edit landing between
+// them is still lost; the window is the span of one syscall, down from the span
+// of the git calls.
+var errGitignoreChanged = errors.New(".gitignore changed between the read and the publish")
+
+// sameFileState reports whether the name in dir still holds the file seen
+// before: same inode, size and modification time, or still absent if it was.
+func sameFileState(dir *os.Root, before os.FileInfo, beforeErr error) bool {
+	now, err := dir.Lstat(gitignoreName)
+	if beforeErr != nil || err != nil {
+		return beforeErr != nil && err != nil && errors.Is(beforeErr, fs.ErrNotExist) && errors.Is(err, fs.ErrNotExist)
+	}
+	return os.SameFile(before, now) && before.Size() == now.Size() && before.ModTime().Equal(now.ModTime())
+}
+
+func ensureGitignoreOnce(dir *os.Root, root string, sections []Section) (gitignoreResult, error) {
+	var result gitignoreResult
+	path := filepath.Join(root, gitignoreName)
+	var err error
 
 	var content string
 	// An existing file keeps its mode; the harness only adds to it.
@@ -509,6 +546,9 @@ func ensureGitignore(root string, sections []Section) (gitignoreResult, error) {
 	text, added := render(content, sections, write)
 	if len(added) == 0 {
 		return result, nil
+	}
+	if !sameFileState(dir, info, statErr) {
+		return result, errGitignoreChanged
 	}
 	// An unconfirmed directory sync is not a failed write: the rules are in the
 	// file, so they are reported as added, and the caller is told about the sync.
