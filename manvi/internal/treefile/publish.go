@@ -141,19 +141,39 @@ func Publish(dir *os.Root, name string, data []byte, o PublishOptions) (result e
 // is never consulted. A platform with no cross-process lock returns
 // filelock.ErrUnsupported; the caller refuses rather than write unlocked.
 func Lock(ctx context.Context, dir *os.Root, name string) (unlock func(), err error) {
-	f, err := openLockFile(dir, name)
-	if err != nil {
-		return nil, fmt.Errorf("treefile: opening lock %s: %w", name, err)
-	}
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = refusal(name, "is not a regular file, so it cannot be a lock")
+	for attempt := 0; attempt < lockAttempts; attempt++ {
+		f, err := openLockFile(dir, name)
+		if err != nil {
+			return nil, fmt.Errorf("treefile: opening lock %s: %w", name, err)
 		}
-		return nil, errors.Join(err, f.Close())
+		info, err := f.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			if err == nil {
+				err = refusal(name, "is not a regular file, so it cannot be a lock")
+			}
+			return nil, errors.Join(err, f.Close())
+		}
+		unlock, err := filelock.LockFile(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		// A lock is held on an inode, and the name may have been deleted or
+		// renamed over while this waited: then it excludes nobody who opens the
+		// name now. Held, the handle is compared with the name; if they are not
+		// the same file the lock is released and taken again on the current one.
+		named, lerr := dir.Lstat(name)
+		held, herr := f.Stat()
+		if lerr == nil && herr == nil && os.SameFile(named, held) {
+			return unlock, nil
+		}
+		unlock()
 	}
-	return filelock.LockFile(ctx, f)
+	return nil, fmt.Errorf("treefile: lock %s kept being replaced while it was taken", name)
 }
+
+// lockAttempts bounds how often Lock retakes a lock file that was replaced
+// under it.
+const lockAttempts = 16
 
 // openLockFile opens the lock file, creating it when it is not there. Creation
 // is exclusive and separate from the open: several writers meet at a lock

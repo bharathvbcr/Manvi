@@ -606,8 +606,16 @@ func TestZadvLockHostileLockFiles(t *testing.T) {
 	}
 }
 
-// A third party deletes (or atomically replaces) the lock file while it is held.
-// The holder still holds; a second Lock must not succeed.
+// A third party deletes (or atomically replaces) the lock file while a writer
+// is waiting on it. The waiter then acquires the old, unlinked inode, which
+// excludes nobody who opens the name now; Lock must notice, release it and take
+// the lock on the current file, so a later contender is still excluded.
+//
+// The adversary's first version asserted something no file lock can give: that
+// a holder whose lock file was deleted after it was taken still excludes a new
+// opener of the name. A lock lives on an inode, so that opener is, correctly,
+// the only holder of the new file; the invariant that can be kept is the
+// waiter's, tested here.
 func TestZadvLockDeletedWhileHeldDefect(t *testing.T) {
 	for _, how := range []string{"remove", "rename-over"} {
 		t.Run(how, func(t *testing.T) {
@@ -621,7 +629,18 @@ func TestZadvLockDeletedWhileHeldDefect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer first()
+			type result struct {
+				unlock func()
+				err    error
+			}
+			waiter := make(chan result, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				u, err := Lock(ctx, dir, "lk")
+				waiter <- result{u, err}
+			}()
+			time.Sleep(150 * time.Millisecond) // the waiter is now blocked on the old inode
 			switch how {
 			case "remove":
 				if err := os.Remove(filepath.Join(anchor, "lk")); err != nil {
@@ -635,12 +654,17 @@ func TestZadvLockDeletedWhileHeldDefect(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			first()
+			r := <-waiter
+			if r.err != nil {
+				t.Fatalf("the waiter did not get the lock on the current file: %v", r.err)
+			}
+			defer r.unlock()
 			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			defer cancel()
-			second, err := Lock(ctx, dir, "lk")
-			if err == nil {
-				second()
-				t.Fatal("a second holder took the lock while the first still held it (lock file replaced under it)")
+			if third, err := Lock(ctx, dir, "lk"); err == nil {
+				third()
+				t.Fatal("a third holder took the lock while the waiter held it: the waiter kept a lock on an unlinked inode")
 			}
 		})
 	}
