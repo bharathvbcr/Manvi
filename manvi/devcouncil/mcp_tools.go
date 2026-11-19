@@ -111,15 +111,23 @@ func (r *Registry) mcpListTools(ctx context.Context, call tools.Call) tools.Resu
 		// refused by Client itself without one, and its refusal is the more
 		// useful answer, so it is not hidden behind a policy decision about a
 		// call that was never going to run.
+		//
+		// The survey carries one read of the authorization list to both
+		// questions, and Client is told whether the gate was consulted: a server
+		// that was not startable when asked and is when Client looks (an operator
+		// authorized it between the two) is not started on a gate nobody
+		// consulted.
+		survey := mgr.BeginSurvey()
 		var decision policy.Decision
-		if mgr.CanStart(args.ServerName) {
+		gated := survey.CanStart(args.ServerName)
+		if gated {
 			var refused *tools.Result
 			decision, refused = r.gateMCPAccess(ctx, "listing MCP tools", mcpListToolsTarget(args.ServerName))
 			if refused != nil {
 				return *refused
 			}
 		}
-		client, err := mgr.Client(ctx, args.ServerName)
+		client, err := survey.Client(ctx, args.ServerName, gated)
 		if err != nil {
 			return annotate(tools.Errorf("accessing MCP server %q: %v", args.ServerName, err), decision)
 		}
@@ -146,22 +154,29 @@ func (r *Registry) mcpListTools(ctx context.Context, call tools.Call) tools.Resu
 // cannot start (their own refusal says why) are surveyed as before.
 func (r *Registry) listAllMCPTools(ctx context.Context, mgr *mcp.Manager) tools.Result {
 	names := mgr.ServerNames()
+	// One read of the authorization list for the whole survey: the gate is asked
+	// about the servers this read says would start, and the same read decides
+	// whether each of them may, so a server cannot become startable between the
+	// two and be started without a gate decision.
+	survey := mgr.BeginSurvey()
 	refusedBy := make(map[string]string)
 	surveyed := make([]string, 0, len(names))
+	decided := make(map[string]bool, len(names))
 	var decisions []policy.Decision
 	for _, name := range names {
-		if mgr.CanStart(name) && !mgr.ServesStatically(name) {
+		if survey.NeedsGate(name) {
 			decision, refused := r.gateMCPAccess(ctx, "listing MCP tools", mcpListToolsTarget(name))
 			if refused != nil {
 				refusedBy[name] = refused.Text
 				continue
 			}
+			decided[name] = true
 			decisions = append(decisions, decision)
 		}
 		surveyed = append(surveyed, name)
 	}
 
-	listed, err := mgr.ListServerTools(ctx, surveyed)
+	listed, err := survey.ListTools(ctx, surveyed, decided)
 	if err != nil {
 		return tools.Errorf("listing MCP tools: %v", err)
 	}

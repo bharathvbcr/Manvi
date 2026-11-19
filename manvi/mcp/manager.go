@@ -104,7 +104,16 @@ type TrustEntry struct {
 // operator read it. `node server.js` fingerprints the same however server.js
 // changes. Authorizing a declaration means having reviewed what it will run,
 // not pinning that program's contents.
-func Fingerprint(cfg ServerConfig) string {
+func Fingerprint(cfg ServerConfig) string { return fingerprint(cfg, true) }
+
+// legacyFingerprint is the fingerprint under the rule before it began to cover
+// timeout_seconds and a cwd that decides what runs: the fingerprint an operator
+// who approved a declaration before then has in their authorization list.
+func legacyFingerprint(cfg ServerConfig) string { return fingerprint(cfg, false) }
+
+// fingerprint is Fingerprint under the current rule (current true) or the one
+// before w23 (false).
+func fingerprint(cfg ServerConfig, current bool) string {
 	h := sha256.New()
 	write := func(label, value string) {
 		_, _ = fmt.Fprintf(h, "%s\x00%d\x00%s\x00", label, len(value), value)
@@ -134,7 +143,7 @@ func Fingerprint(cfg ServerConfig) string {
 	// keeps the fingerprint an operator already authorized. A declaration that
 	// raises its own call ceiling is a different declaration: a server a
 	// repository may keep waiting on for an hour is not the one that was reviewed.
-	if cfg.TimeoutSeconds != 0 {
+	if current && cfg.TimeoutSeconds != 0 {
 		write("timeout_seconds", strconv.Itoa(cfg.TimeoutSeconds))
 	}
 	// The cwd is covered where it chooses what runs: when it is relative to the
@@ -142,7 +151,7 @@ func Fingerprint(cfg ServerConfig) string {
 	// anything), and when the command is itself a relative path, where the cwd
 	// decides which ./run.sh it is. An absolute cwd under a bare command name
 	// stays out for the reason given above.
-	if cfg.Cwd != "" && (!filepath.IsAbs(cfg.Cwd) || relativeCommand(cfg.Command)) {
+	if current && cfg.Cwd != "" && (!filepath.IsAbs(cfg.Cwd) || relativeCommand(cfg.Command)) {
 		write("cwd", cfg.Cwd)
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
@@ -461,12 +470,59 @@ func (m *Manager) authorize(cfg ServerConfig) error {
 	if cfg.Origin == OriginProgram {
 		return nil
 	}
+	return m.authorizeWith(cfg, m.readTrust())
+}
 
-	store := loadTrustStore(m.root)
+// readTrust reads the authorization list for this manager's repository. The
+// loader is a field only so that a test can count reads: one survey is one read.
+func (m *Manager) readTrust() trustStore {
+	if m.trustLoader != nil {
+		return m.trustLoader(m.root)
+	}
+	return loadTrustStore(m.root)
+}
+
+// authKind is why authorizeWith refused, for a caller that has to tell the
+// operator what happened to a server that was already running.
+type authKind int
+
+const (
+	// authUnreadable: the authorization list could not be read or was refused.
+	authUnreadable authKind = iota + 1
+	// authChanged: the list holds the fingerprint this declaration had under the
+	// rule before w23, not the one it has now.
+	authChanged
+	// authAbsent: nothing in the list authorizes this declaration.
+	authAbsent
+)
+
+// authorizationError is the refusal authorizeWith returns. Kind says why in a
+// form a caller can act on; the message is the operator's.
+type authorizationError struct {
+	kind  authKind
+	msg   string
+	cause error
+}
+
+func (e *authorizationError) Error() string { return e.msg }
+func (e *authorizationError) Unwrap() error { return e.cause }
+
+// authorizeWith is authorize against a trust list that has already been read, so
+// one survey decides every server it touches from one read of the file rather
+// than one per server per question.
+func (m *Manager) authorizeWith(cfg ServerConfig, store trustStore) error {
+	if cfg.Origin == OriginProgram {
+		return nil
+	}
+
 	fp := Fingerprint(cfg)
 	if store.err != nil {
-		return fmt.Errorf("mcp: server %q was declared by workspace content and its authorization "+
-			"could not be checked, so it was not started: %w", cfg.Name, store.err)
+		return &authorizationError{
+			kind: authUnreadable,
+			msg: fmt.Sprintf("mcp: server %q was declared by workspace content and its authorization "+
+				"could not be checked, so it was not started: %v", cfg.Name, store.err),
+			cause: store.err,
+		}
 	}
 	if _, ok := store.fingerprints[strings.ToLower(fp)]; ok {
 		return nil
@@ -482,15 +538,35 @@ func (m *Manager) authorize(cfg ServerConfig) error {
 	// inside the repository, which is the one place an authorization may not
 	// live.
 	target := store.path
-	return fmt.Errorf("mcp: server %q is declared by workspace content (%s) and no operator has "+
-		"authorized it, so it was not started.\n"+
-		"  it would run: %s\n"+
-		"  fingerprint:  %s\n"+
-		"authorize it by adding that fingerprint to %s, as "+
-		`{"authorized":[{"fingerprint":%q,"name":%q}]}`+"\n"+
-		"or by listing it in %s. Read the command above before you do: authorizing it lets that "+
-		"repository run it with your account's privileges.",
-		cfg.Name, where, describeInvocation(cfg), fp, target, fp, cfg.Name, TrustListEnv)
+	// An approval under the fingerprint rule before w23 is not "nobody authorized
+	// it". The rule has covered timeout_seconds, and a cwd that decides what runs,
+	// since then, so a declaration of either shape fingerprints differently now and
+	// the fingerprint the operator approved is the old one. Saying "no operator has
+	// authorized it" to the person who did is misleading, and re-approval is the
+	// remedy. The test is whether this declaration's own old fingerprint is in the
+	// list, which holds however the approval was given (the file or the
+	// environment, named or not) and says nothing about another repository's
+	// server that merely shares a name.
+	kind := authAbsent
+	why := "no operator has authorized it"
+	if old := legacyFingerprint(cfg); old != fp {
+		if _, ok := store.fingerprints[strings.ToLower(old)]; ok {
+			kind = authChanged
+			why = fmt.Sprintf("it was authorized under the fingerprint rule that applied before it began to cover "+
+				"timeout_seconds and a relative cwd (%s), and the rule has changed, so it needs approving again", old)
+		}
+	}
+	return &authorizationError{
+		kind: kind,
+		msg: fmt.Sprintf("mcp: server %q is declared by workspace content (%s) and %s, so it was not started.\n"+
+			"  it would run: %s\n"+
+			"  fingerprint:  %s\n"+
+			"authorize it by adding that fingerprint to %s, as "+
+			`{"authorized":[{"fingerprint":%q,"name":%q}]}`+"\n"+
+			"or by listing it in %s. Read the command above before you do: authorizing it lets that "+
+			"repository run it with your account's privileges.",
+			cfg.Name, where, why, describeInvocation(cfg), fp, target, fp, cfg.Name, TrustListEnv),
+	}
 }
 
 // describeInvocation renders what a declaration would actually execute.
@@ -531,6 +607,9 @@ func describeInvocation(cfg ServerConfig) string {
 
 // Manager orchestrates multiple MCP 2.0 stateless servers and Open Plugins.
 type Manager struct {
+	// trustLoader replaces loadTrustStore when set; see readTrust.
+	trustLoader func(root string) trustStore
+
 	mu      sync.RWMutex
 	configs map[string]ServerConfig
 	clients map[string]*Client
@@ -1071,6 +1150,32 @@ func (m *Manager) AutoDiscover(ctx context.Context) error {
 // write lock through it serialized every other manager operation behind one
 // slow server's ten-second timeout.
 func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
+	return m.client(ctx, name, access{})
+}
+
+// access says how a caller reaches client: from which read of the authorization
+// list, and whether the caller consults a policy gate before a process is
+// reached.
+type access struct {
+	// trust is the authorization list to decide from; nil reads it now. A survey
+	// reads it once and every server in it is decided from that one read.
+	trust *trustStore
+	// gated is true for a caller that consults a policy gate before a server is
+	// started or reached, and then says so through decided. A caller with no gate
+	// is not gated: it is a program that decided for itself.
+	gated bool
+	// decided is whether such a caller consulted the gate for this server.
+	decided bool
+}
+
+// errGateNotConsulted is the refusal for a gated caller that did not consult its
+// gate for a server that turned out to be startable.
+func errGateNotConsulted(name string) error {
+	return fmt.Errorf("mcp: server %q is startable, and the policy gate was not consulted for it, so it was not "+
+		"started; ask again", name)
+}
+
+func (m *Manager) client(ctx context.Context, name string, via access) (*Client, error) {
 	if !m.Enabled() {
 		return nil, m.unavailable()
 	}
@@ -1101,11 +1206,27 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	// operator's authorization gone, until the process died on its own. A
 	// refusal also closes the process it refused, because a server nobody may
 	// call is a server nobody should leave running.
-	if err := m.authorize(cfg); err != nil {
+	//
+	// That holds for any refusal, not only a revocation: when the authorization
+	// list cannot be read, the running server is closed too. Leaving it running
+	// would turn an unreadable or half-written trust file into permission, which
+	// is fail-open, so the cost of a transient read error is a restart, and it is
+	// paid out loud: the refusal returned says that the server was closed and
+	// whether the list was unreadable, the authorization was removed, or it was
+	// given under the fingerprint rule before w23.
+	if err := m.authorizeFor(cfg, via); err != nil {
 		if hasCached {
 			m.dropClient(name, cachedClient)
+			err = m.closedByAuthorization(name, err)
 		}
 		return nil, err
+	}
+	// Past authorization, so the declaration is startable. A caller with a gate
+	// must have consulted it for exactly this: it asked whether the server could
+	// start, and the answer may have changed since (an operator authorized it in
+	// between), so the gate is not taken to have covered what it was not asked.
+	if via.gated && !via.decided {
+		return nil, errGateNotConsulted(name)
 	}
 	if hasCached && cachedClient.Alive() {
 		return cachedClient, nil
@@ -1154,6 +1275,35 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 		f.client, f.err = m.connect(ctx, name, cfg)
 		return f.client, f.err
 	}
+}
+
+// authorizeFor decides cfg from the read of the authorization list via carries,
+// or from a fresh one.
+func (m *Manager) authorizeFor(cfg ServerConfig, via access) error {
+	if via.trust != nil {
+		return m.authorizeWith(cfg, *via.trust)
+	}
+	return m.authorize(cfg)
+}
+
+// closedByAuthorization words the refusal of a server that was running when its
+// authorization stopped holding. The refusal is what the caller of Client gets, so
+// it reaches the operator through whatever shows that caller's errors: the
+// survey's per-server error, or the tool call's.
+func (m *Manager) closedByAuthorization(name string, err error) error {
+	what := "its authorization was removed or revoked"
+	var refused *authorizationError
+	if errors.As(err, &refused) {
+		switch refused.kind {
+		case authUnreadable:
+			what = "its authorization list could not be read, and an authorization that cannot be checked is " +
+				"treated as withdrawn"
+		case authChanged:
+			what = "it was authorized under the fingerprint rule before w23, and the rule has changed, so it needs " +
+				"approving again"
+		}
+	}
+	return fmt.Errorf("mcp: the running server %q was closed: %s: %w", name, what, err)
 }
 
 // spawnCwd is the directory a server is started in. A workspace declaration's
@@ -1327,22 +1477,111 @@ type ServerTools struct {
 // that cannot tell those apart will report "no MCP tools" for a subsystem that
 // was never asked.
 func (m *Manager) ListAllTools(ctx context.Context) ([]ServerTools, error) {
-	if !m.Enabled() {
-		return nil, m.unavailable()
-	}
 	return m.ListServerTools(ctx, m.ServerNames())
 }
 
-// ListServerTools surveys the tools of the named servers, in the order given.
-// It is ListAllTools for a caller that has already decided which servers it may
-// reach: asking a server is what starts it, so a caller with a gate to consult
-// consults it first and surveys only the servers that passed.
+// ListServerTools surveys the tools of the named servers, in the order given,
+// for a caller with no gate of its own to consult.
 func (m *Manager) ListServerTools(ctx context.Context, names []string) ([]ServerTools, error) {
 	if !m.Enabled() {
 		return nil, m.unavailable()
 	}
+	return m.BeginSurvey().listTools(ctx, names, nil), nil
+}
+
+// Survey is one read of the authorization list, applied to everything a caller
+// asks about a set of servers. Asking a server for its tools is what starts it,
+// so a caller with a policy gate asks the survey which servers the gate is about
+// (NeedsGate), consults the gate for those, and then surveys them saying which it
+// consulted it for. Because every answer comes from one read, a server cannot be
+// startable at the later step and not at the earlier one: the gate decision and
+// the start are decided from the same facts, and the list file is read once per
+// survey instead of two or three times per server.
+type Survey struct {
+	m     *Manager
+	trust trustStore
+}
+
+// BeginSurvey reads the authorization list once and returns the survey that
+// decides from it.
+func (m *Manager) BeginSurvey() *Survey {
+	return &Survey{m: m, trust: m.readTrust()}
+}
+
+// maxConcurrentSurveys bounds how many servers a survey starts at once.
+const maxConcurrentSurveys = 8
+
+// startable reports whether name is registered and passes authorization under
+// this survey's read.
+func (s *Survey) startable(name string) (ServerConfig, bool) {
+	s.m.mu.RLock()
+	cfg, registered := s.m.configs[name]
+	s.m.mu.RUnlock()
+	return cfg, registered && s.m.authorizeWith(cfg, s.trust) == nil
+}
+
+// CanStart reports whether a call to Client for name would start, or reach, a
+// server: the name is registered and its declaration passes authorize. A caller
+// with a gate to consult asks this to know which names the gate is about; a name
+// that cannot start is refused by Client itself, loudly and without a process.
+func (s *Survey) CanStart(name string) bool {
+	if !s.m.Enabled() {
+		return false
+	}
+	_, ok := s.startable(name)
+	return ok
+}
+
+// staticTools is the tool list a plugin manifest declared for name, when a
+// survey may answer from it instead of asking the server.
+func (s *Survey) staticTools(name string) ([]Tool, bool) {
+	s.m.mu.RLock()
+	plugin := s.m.plugins[name]
+	cfg, registered := s.m.configs[name]
+	s.m.mu.RUnlock()
+	if plugin != nil && registered && len(plugin.Tools) > 0 && s.m.authorizeWith(cfg, s.trust) == nil {
+		return plugin.Tools, true
+	}
+	return nil, false
+}
+
+// ServesStatically reports whether a survey of name is answered from its
+// manifest, so that no server is started to answer it.
+func (s *Survey) ServesStatically(name string) bool {
+	_, ok := s.staticTools(name)
+	return ok
+}
+
+// NeedsGate reports whether surveying name would reach a process: it can start
+// and is not answered from its manifest.
+func (s *Survey) NeedsGate(name string) bool {
+	return s.CanStart(name) && !s.ServesStatically(name)
+}
+
+// Client is Manager.Client for a caller that consults a gate: decided says
+// whether it consulted the gate for name. A server that turns out startable
+// without it having been consulted is not started.
+func (s *Survey) Client(ctx context.Context, name string, decided bool) (*Client, error) {
+	return s.m.client(ctx, name, access{trust: &s.trust, gated: true, decided: decided})
+}
+
+// ListTools surveys the tools of the named servers, in the order given, for a
+// caller that consulted its gate for the names in decided. It is ListServerTools
+// for a caller that has already decided which servers it may reach.
+func (s *Survey) ListTools(ctx context.Context, names []string, decided map[string]bool) ([]ServerTools, error) {
+	if !s.m.Enabled() {
+		return nil, s.m.unavailable()
+	}
+	if decided == nil {
+		decided = map[string]bool{}
+	}
+	return s.listTools(ctx, names, decided), nil
+}
+
+// listTools surveys names. decided nil means the caller has no gate.
+func (s *Survey) listTools(ctx context.Context, names []string, decided map[string]bool) []ServerTools {
 	if len(names) == 0 {
-		return nil, nil
+		return nil
 	}
 	// Each server is surveyed independently, so they are surveyed at once: a
 	// cold server costs a spawn and a handshake, and one after another that
@@ -1356,65 +1595,36 @@ func (m *Manager) ListServerTools(ctx context.Context, names []string) ([]Server
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			results[i] = m.surveyTools(ctx, name)
+			results[i] = s.surveyTools(ctx, name, decided)
 		}()
 	}
 	wg.Wait()
-	return results, nil
+	return results
 }
 
-// maxConcurrentSurveys bounds how many servers ListAllTools starts at once.
-const maxConcurrentSurveys = 8
-
-// staticTools is the tool list a plugin manifest declared for name, when a
-// survey may answer from it instead of asking the server.
-func (m *Manager) staticTools(name string) ([]Tool, bool) {
-	m.mu.RLock()
-	plugin := m.plugins[name]
-	cfg, registered := m.configs[name]
-	m.mu.RUnlock()
-	if plugin != nil && registered && len(plugin.Tools) > 0 && m.authorize(cfg) == nil {
-		return plugin.Tools, true
-	}
-	return nil, false
-}
-
-// ServesStatically reports whether a survey of name is answered from its
-// manifest, so that no server is started to answer it.
-func (m *Manager) ServesStatically(name string) bool {
-	_, ok := m.staticTools(name)
-	return ok
-}
-
-// CanStart reports whether a call to Client for name would start, or reach, a
-// server: the name is registered and its declaration passes authorize. A caller
-// with a gate to consult asks this to know which names the gate is about; a name
-// that cannot start is refused by Client itself, loudly and without a process.
-func (m *Manager) CanStart(name string) bool {
-	if !m.Enabled() {
-		return false
-	}
-	m.mu.RLock()
-	cfg, registered := m.configs[name]
-	m.mu.RUnlock()
-	return registered && m.authorize(cfg) == nil
-}
-
-// surveyTools is one server's entry in ListAllTools.
-func (m *Manager) surveyTools(ctx context.Context, name string) ServerTools {
+// surveyTools is one server's entry in a survey.
+func (s *Survey) surveyTools(ctx context.Context, name string, decided map[string]bool) ServerTools {
 	// A manifest's static tool list is served in place of asking the server only
 	// for a declaration that is registered under this name and that passes
 	// authorize, and it is labelled as static. It used to be served for any name
 	// a manifest carried, so a manifest that lost its name to another
 	// declaration, or one nobody had authorized, still advertised tools that the
 	// server of that name would never offer.
-	if tools, ok := m.staticTools(name); ok {
+	if tools, ok := s.staticTools(name); ok {
 		return ServerTools{Server: name, Tools: tools, Static: true}
 	}
 
 	// A failure here does not fail the whole survey — one bad server must
 	// not hide the others — but it is reported rather than skipped past.
-	client, err := m.Client(ctx, name)
+	var (
+		client *Client
+		err    error
+	)
+	if decided == nil {
+		client, err = s.m.client(ctx, name, access{trust: &s.trust})
+	} else {
+		client, err = s.Client(ctx, name, decided[name])
+	}
 	if err != nil {
 		return ServerTools{Server: name, Error: err.Error()}
 	}
