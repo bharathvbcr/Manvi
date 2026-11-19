@@ -17,36 +17,40 @@ func (r *Registry) mcpTools() []tools.Tool {
 			Schema: schema("mcp_list_tools",
 				"List available tools from configured Model Context Protocol (MCP 2.0) servers and Open Plugins.",
 				`{"type":"object","properties":{"server_name":{"type":"string","description":"optional server name to filter by"}},"required":[]}`),
-			Group:    tools.GroupMCP,
-			ReadOnly: true,
-			Handler:  r.mcpListTools,
-			Extended: true,
+			Group:      tools.GroupMCP,
+			ThirdParty: true,
+			ReadOnly:   true,
+			Handler:    r.mcpListTools,
+			Extended:   true,
 		},
 		{
 			Schema: schema("mcp_call_tool",
 				"Call a tool on an external MCP 2.0 server or Open Plugin over stateless JSON-RPC.",
 				`{"type":"object","properties":{"server_name":{"type":"string","description":"target MCP server name"},"tool_name":{"type":"string","description":"tool name to invoke"},"arguments":{"type":"object","description":"tool arguments object"}},"required":["server_name","tool_name","arguments"]}`),
-			Group:    tools.GroupMCP,
-			Handler:  r.mcpCallTool,
-			Extended: true,
+			Group:      tools.GroupMCP,
+			ThirdParty: true,
+			Handler:    r.mcpCallTool,
+			Extended:   true,
 		},
 		{
 			Schema: schema("mcp_list_resources",
 				"List resources exposed by a target MCP server.",
 				`{"type":"object","properties":{"server_name":{"type":"string","description":"target MCP server name"}},"required":["server_name"]}`),
-			Group:    tools.GroupMCP,
-			ReadOnly: true,
-			Handler:  r.mcpListResources,
-			Extended: true,
+			Group:      tools.GroupMCP,
+			ThirdParty: true,
+			ReadOnly:   true,
+			Handler:    r.mcpListResources,
+			Extended:   true,
 		},
 		{
 			Schema: schema("mcp_read_resource",
 				"Read the contents of a resource from a target MCP server by URI.",
 				`{"type":"object","properties":{"server_name":{"type":"string","description":"target MCP server name"},"uri":{"type":"string","description":"resource URI"}},"required":["server_name","uri"]}`),
-			Group:    tools.GroupMCP,
-			ReadOnly: true,
-			Handler:  r.mcpReadResource,
-			Extended: true,
+			Group:      tools.GroupMCP,
+			ThirdParty: true,
+			ReadOnly:   true,
+			Handler:    r.mcpReadResource,
+			Extended:   true,
 		},
 	}
 }
@@ -77,6 +81,13 @@ func (r *Registry) getMCPManager() *mcp.Manager {
 		"this harness was built without an MCP manager (Deps.MCP is nil), so no servers were ever configured")
 }
 
+// mcpListToolsTarget is what the command gate is asked about for listing one
+// server's tools: asking a server for its tools starts it, and it is an
+// operation like the other three MCP tools, so it is judged like them.
+func mcpListToolsTarget(server string) string {
+	return fmt.Sprintf("mcp_list_tools %s", server)
+}
+
 func (r *Registry) mcpListTools(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		ServerName string `json:"server_name,omitempty"`
@@ -87,28 +98,95 @@ func (r *Registry) mcpListTools(ctx context.Context, call tools.Call) tools.Resu
 
 	mgr := r.getMCPManager()
 	if args.ServerName != "" {
+		if err := checkMCPName("server_name", args.ServerName); err != nil {
+			return tools.Errorf("%v", err)
+		}
+		// Asked before the gate, as the other MCP tools do: a missing manager is
+		// a configuration fault, not a policy refusal.
+		if err := mgr.Unavailable(); err != nil {
+			return tools.Errorf("accessing MCP server %q: %v", args.ServerName, err)
+		}
+		// The gate is consulted before Client, which is what starts the process.
+		// A server that cannot start — unregistered, or not authorized — is
+		// refused by Client itself without one, and its refusal is the more
+		// useful answer, so it is not hidden behind a policy decision about a
+		// call that was never going to run.
+		var decision policy.Decision
+		if mgr.CanStart(args.ServerName) {
+			var refused *tools.Result
+			decision, refused = r.gateMCPAccess(ctx, "listing MCP tools", mcpListToolsTarget(args.ServerName))
+			if refused != nil {
+				return *refused
+			}
+		}
 		client, err := mgr.Client(ctx, args.ServerName)
 		if err != nil {
-			return tools.Errorf("accessing MCP server %q: %v", args.ServerName, err)
+			return annotate(tools.Errorf("accessing MCP server %q: %v", args.ServerName, err), decision)
 		}
 		tList, err := client.ListTools(ctx)
 		if err != nil {
-			return tools.Errorf("listing tools from %q: %v", args.ServerName, err)
+			return annotate(tools.Errorf("listing tools from %q: %v", args.ServerName, err), decision)
 		}
-		return ok(map[string]any{
+		return annotate(ok(map[string]any{
 			"server": args.ServerName,
 			"tools":  tList,
-		})
+		}), decision)
 	}
 
-	allTools, err := mgr.ListAllTools(ctx)
+	if err := mgr.Unavailable(); err != nil {
+		return tools.Errorf("listing MCP tools: %v", err)
+	}
+	return r.listAllMCPTools(ctx, mgr)
+}
+
+// listAllMCPTools surveys every server, consulting the gate first for each one
+// the survey would start. A server the gate refuses appears in the survey with
+// the refusal as its Error, so it is not mistaken for a server with no tools;
+// the servers that need no process (a manifest's static list) and the ones that
+// cannot start (their own refusal says why) are surveyed as before.
+func (r *Registry) listAllMCPTools(ctx context.Context, mgr *mcp.Manager) tools.Result {
+	names := mgr.ServerNames()
+	refusedBy := make(map[string]string)
+	surveyed := make([]string, 0, len(names))
+	var decisions []policy.Decision
+	for _, name := range names {
+		if mgr.CanStart(name) && !mgr.ServesStatically(name) {
+			decision, refused := r.gateMCPAccess(ctx, "listing MCP tools", mcpListToolsTarget(name))
+			if refused != nil {
+				refusedBy[name] = refused.Text
+				continue
+			}
+			decisions = append(decisions, decision)
+		}
+		surveyed = append(surveyed, name)
+	}
+
+	listed, err := mgr.ListServerTools(ctx, surveyed)
 	if err != nil {
 		return tools.Errorf("listing MCP tools: %v", err)
 	}
+	byName := make(map[string]mcp.ServerTools, len(listed))
+	for _, entry := range listed {
+		byName[entry.Server] = entry
+	}
+	servers := make([]mcp.ServerTools, 0, len(names))
+	for _, name := range names {
+		if reason, refused := refusedBy[name]; refused {
+			servers = append(servers, mcp.ServerTools{Server: name, Error: reason})
+			continue
+		}
+		servers = append(servers, byName[name])
+	}
 
-	return ok(map[string]any{
-		"servers": allTools,
-	})
+	result := ok(map[string]any{"servers": servers})
+	for _, decision := range decisions {
+		if !decision.Clean() {
+			// One result, several judgements: it carries the first that was not
+			// a plain allow, so a qualified allow still travels to the run report.
+			return annotate(result, decision)
+		}
+	}
+	return result
 }
 
 // Bounds on what one MCP tool call may return into a model's context. The
