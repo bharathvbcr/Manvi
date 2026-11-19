@@ -1,5 +1,5 @@
 {
-  "note": "Every gate verify.sh reports as NOT COVERED on a CI runner, and why. The 'Every gate ran and every gap is named' step in verify.yml fails on any gap or skipped test not listed here for that runner, so a gate that starts skipping for a new reason cannot pass as green. A skip listed here that stops happening is reported, not failed. An entry may carry `modes` (default, race, fuzz) to hold only for that verify.sh invocation; without it the entry holds in all three. Every entry names the `legs` it belongs to (go-test, rust, checks, bench: the verify.sh legs CI runs as separate jobs): a log is compared only against the entries of its own leg, so an entry for one leg cannot excuse the same text from another, and an entry that names no leg excuses nothing in a leg run. `fuzz_floors` holds the --fuzz targets that do not reach MANVI_FUZZMIN inputs inside MANVI_FUZZMAX: verify.sh names each such target with its count, and CI accepts the line only while the count is at or above the target's floor, so a slow target that gets slower still fails and an unlisted one fails at once. Each floor is half the lower of two CI runs (44540872844 and 44571487515, ubuntu-latest, 120s cap).",
+  "note": "Every gate verify.sh reports as NOT COVERED on a CI runner, and why. The 'Every gate ran and every gap is named' step in verify.yml fails on any gap or skipped test not listed here for that runner, so a gate that starts skipping for a new reason cannot pass as green. A skip listed here that stops happening is reported, not failed. An entry may carry `modes` (default, race, fuzz) to hold only for that verify.sh invocation; without it the entry holds in all three. Every entry names the `legs` it belongs to (go-test, rust, checks, bench: the verify.sh legs CI runs as separate jobs): a log is compared only against the entries of its own leg, so an entry for one leg cannot excuse the same text from another, and an entry that names no leg excuses nothing in a leg run. `fuzz_floors` holds the --fuzz targets that do not reach MANVI_FUZZMIN inputs inside MANVI_FUZZMAX: verify.sh names each such target with its count, and CI accepts the line only while the count is at or above the target's floor, so a slow target that gets slower still fails and an unlisted one fails at once. Each floor is a quarter of the lowest count in three CI runs (44540872844, 44571487515, 44589548386; ubuntu-latest, 120s cap). The same target varied up to 4.2x between those runs, so a tighter floor would fail on runner noise.",
   "gaps": [
     {
       "text": "devmap not found — repo navigation is unverified here",
@@ -462,7 +462,7 @@
   "fuzz_floors": [
     {
       "target": "./devcouncil:FuzzVerifierAgreesWithGitAboutWhatADiffTouches",
-      "floor": 15000,
+      "floor": 6300,
       "os": [
         "ubuntu-latest"
       ],
@@ -472,10 +472,80 @@
       "modes": [
         "fuzz"
       ],
-      "why": "Drives git per input, so it runs three orders of magnitude behind the pure targets: measured 33,667 and 31,578 inputs in two CI runs; the floor is half the lower."
+      "why": "Measured 33,667, 31,578, 25,471 inputs in three CI runs (spread 1.3x); the floor is a quarter of the lowest. Drives git per input, three orders of magnitude behind the pure targets."
+    },
+    {
+      "target": "./serve:FuzzServeAnswersEveryRequestItReads",
+      "floor": 36000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 486,642, 418,774, 144,667 inputs in three CI runs (spread 3.4x); the floor is a quarter of the lowest."
+    },
+    {
+      "target": "./devcouncil:FuzzVerifierChildAnswersEveryRequestWithExactlyOneObject",
+      "floor": 36000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 326,457, 263,532, 146,026 inputs in three CI runs (spread 2.2x); the floor is a quarter of the lowest."
     },
     {
       "target": "./serve:FuzzEnhancementOutputCannotSmuggleUnrequestedFields",
+      "floor": 55000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 223,313, 943,874, 585,563 inputs in three CI runs (spread 4.2x); the floor is a quarter of the lowest."
+    },
+    {
+      "target": "./ui/tui:FuzzOpenLineLayout",
+      "floor": 62000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 337,700, 308,132, 249,950 inputs in three CI runs (spread 1.4x); the floor is a quarter of the lowest."
+    },
+    {
+      "target": "./ui:FuzzProject",
+      "floor": 95000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 936,009, 751,458, 381,082 inputs in three CI runs (spread 2.5x); the floor is a quarter of the lowest."
+    },
+    {
+      "target": "./lessons:FuzzAdvRoundTrip",
       "floor": 110000,
       "os": [
         "ubuntu-latest"
@@ -486,10 +556,10 @@
       "modes": [
         "fuzz"
       ],
-      "why": "Measured 223,313 and 943,874 inputs in two CI runs; the floor is half the lower."
+      "why": "Measured 549,500, 473,931, 1,022,759 inputs in three CI runs (spread 2.2x); the floor is a quarter of the lowest."
     },
     {
-      "target": "./devcouncil:FuzzVerifierChildAnswersEveryRequestWithExactlyOneObject",
+      "target": "./lessons:FuzzParse",
       "floor": 130000,
       "os": [
         "ubuntu-latest"
@@ -500,11 +570,11 @@
       "modes": [
         "fuzz"
       ],
-      "why": "Measured 326,457 and 263,532 inputs in two CI runs; the floor is half the lower."
+      "why": "Measured 1,579,794, 1,114,822, 523,769 inputs in three CI runs (spread 3.0x); the floor is a quarter of the lowest."
     },
     {
-      "target": "./ui/tui:FuzzOpenLineLayout",
-      "floor": 150000,
+      "target": "./llm/openaicompat:FuzzRepairNeverRewritesAStringValue",
+      "floor": 130000,
       "os": [
         "ubuntu-latest"
       ],
@@ -514,10 +584,52 @@
       "modes": [
         "fuzz"
       ],
-      "why": "Measured 337,700 and 308,132 inputs in two CI runs; the floor is half the lower."
+      "why": "Measured 1,247,921, 1,694,796, 531,392 inputs in three CI runs (spread 3.2x); the floor is a quarter of the lowest."
     },
     {
-      "target": "./serve:FuzzServeAnswersEveryRequestItReads",
+      "target": "./llm/gemini:FuzzOneDecodeMatchesTwo",
+      "floor": 130000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 746,157, 1,089,565, 550,066 inputs in three CI runs (spread 2.0x); the floor is a quarter of the lowest."
+    },
+    {
+      "target": "./serve:FuzzEnhancementUnwrapKeepsSingleObjectContract",
+      "floor": 140000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 762,843, 907,747, 565,390 inputs in three CI runs (spread 1.6x); the floor is a quarter of the lowest."
+    },
+    {
+      "target": "./ui/input:FuzzPasteReadSplits",
+      "floor": 140000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 788,820, 736,452, 572,292 inputs in three CI runs (spread 1.4x); the floor is a quarter of the lowest."
+    },
+    {
+      "target": "./tools:FuzzMergeWrites",
       "floor": 200000,
       "os": [
         "ubuntu-latest"
@@ -528,10 +640,10 @@
       "modes": [
         "fuzz"
       ],
-      "why": "Measured 486,642 and 418,774 inputs in two CI runs; the floor is half the lower."
+      "why": "Measured 897,527, 1,285,370, 820,588 inputs in three CI runs (spread 1.6x); the floor is a quarter of the lowest."
     },
     {
-      "target": "./lessons:FuzzAdvRoundTrip",
+      "target": "./harness:FuzzDecodeSpec",
       "floor": 230000,
       "os": [
         "ubuntu-latest"
@@ -542,91 +654,7 @@
       "modes": [
         "fuzz"
       ],
-      "why": "Measured 549,500 and 473,931 inputs in two CI runs; the floor is half the lower."
-    },
-    {
-      "target": "./ui/input:FuzzPasteReadSplits",
-      "floor": 360000,
-      "os": [
-        "ubuntu-latest"
-      ],
-      "legs": [
-        "checks"
-      ],
-      "modes": [
-        "fuzz"
-      ],
-      "why": "Measured 788,820 and 736,452 inputs in two CI runs; the floor is half the lower."
-    },
-    {
-      "target": "./llm/gemini:FuzzOneDecodeMatchesTwo",
-      "floor": 370000,
-      "os": [
-        "ubuntu-latest"
-      ],
-      "legs": [
-        "checks"
-      ],
-      "modes": [
-        "fuzz"
-      ],
-      "why": "Measured 746,157 and 1,089,565 inputs in two CI runs; the floor is half the lower."
-    },
-    {
-      "target": "./ui:FuzzProject",
-      "floor": 370000,
-      "os": [
-        "ubuntu-latest"
-      ],
-      "legs": [
-        "checks"
-      ],
-      "modes": [
-        "fuzz"
-      ],
-      "why": "Measured 936,009 and 751,458 inputs in two CI runs; the floor is half the lower."
-    },
-    {
-      "target": "./serve:FuzzEnhancementUnwrapKeepsSingleObjectContract",
-      "floor": 380000,
-      "os": [
-        "ubuntu-latest"
-      ],
-      "legs": [
-        "checks"
-      ],
-      "modes": [
-        "fuzz"
-      ],
-      "why": "Measured 762,843 and 907,747 inputs in two CI runs; the floor is half the lower."
-    },
-    {
-      "target": "./tools:FuzzMergeWrites",
-      "floor": 440000,
-      "os": [
-        "ubuntu-latest"
-      ],
-      "legs": [
-        "checks"
-      ],
-      "modes": [
-        "fuzz"
-      ],
-      "why": "Measured 897,527 and 1,285,370 inputs in two CI runs; the floor is half the lower."
-    },
-    {
-      "target": "./harness:FuzzDecodeSpec",
-      "floor": 460000,
-      "os": [
-        "ubuntu-latest"
-      ],
-      "legs": [
-        "checks"
-      ],
-      "modes": [
-        "fuzz"
-      ],
-      "why": "Measured 938,513 and 1,003,611 inputs in two CI runs; the floor is half the lower."
+      "why": "Measured 938,513, 1,003,611, 1,323,902 inputs in three CI runs (spread 1.4x); the floor is a quarter of the lowest."
     }
   ]
 }

@@ -212,7 +212,7 @@ under **Unreleased** in the same commit as the code.
 ### Changed
 
 - `docs/COMPUTER_USE_FOUNDATIONS.md` gives the four steps for removing or renaming an export Jarvis calls (add the replacement, bump Jarvis's pin and migrate, remove, bump again), and `CONTRIBUTING.md` points at them.
-- `--fuzz` names each target that does not reach `MANVI_FUZZMIN` inputs on a line of its own with its count, and `scripts/verify-expected-gaps.json` holds a floor for each of the twelve that do not (half the lower of two CI runs). CI accepts the line only at or above the target's floor, so a slow target that gets slower, or a new slow one, still fails. A bench suite's `NOT COVERED:` line is carried into the gate list, and the three tests that need an installed agy, Claude Code or devmap binary are listed as expected skips.
+- `--fuzz` names each target that does not reach `MANVI_FUZZMIN` inputs on a line of its own with its count, and `scripts/verify-expected-gaps.json` holds a floor for each of the fourteen that missed it in any of three CI runs (a quarter of the lowest count; one target varied 4.2x between runs). CI accepts the line only at or above the target's floor, so a slow target that gets slower, or a new slow one, still fails. A bench suite's `NOT COVERED:` line is carried into the gate list, and the three tests that need an installed agy, Claude Code or devmap binary are listed as expected skips.
 - **`verify.sh` builds Jarvis against the checkout.** A new `checks`-leg step
   runs `scripts/check-consumers.sh`, so removing or changing an export that
   Jarvis calls in `workflow`, `workflow/catalog`, `computer`, `llm/budget`
