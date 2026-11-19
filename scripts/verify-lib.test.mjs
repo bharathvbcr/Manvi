@@ -465,7 +465,9 @@ test("the deep jobs are guarded with their own mode, and an unlisted gap there f
   const expected = JSON.parse(readFileSync(path.join(HERE, "verify-expected-gaps.json"), "utf8"));
   const fuzzLog = [
     "\x1b[33mPASS\x1b[0m with gates that did not run:",
-    "    - these targets could not reach 1000000 inputs inside 120s, so the sweep sampled them rather than explored them:",
+    // verify.sh names each starved target on its own line; one that has no
+    // floor in fuzz_floors is an unexpected gap in every mode.
+    "    - fuzz target ./nowhere:FuzzUnlisted was sampled, not explored: 12 of 1000000 inputs in 120s",
     "",
   ].join("\n");
   for (const mode of ["race", "fuzz"]) {
