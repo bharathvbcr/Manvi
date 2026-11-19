@@ -98,7 +98,7 @@ func TestAnUnreadablePluginDirectoryIsInSkipped(t *testing.T) {
 	if err := os.Chmod(dir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) //nolint:gosec // a directory must be searchable again for TempDir's own removal
 
 	m := NewManager(root)
 	if err := m.AutoDiscover(context.Background()); err != nil {
@@ -159,7 +159,7 @@ func TestADescendantHoldingTheStdoutDoesNotKeepAServerAlive(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for sleeper == 0 && time.Now().Before(deadline) {
-		if raw, err := os.ReadFile(pidFile); err == nil {
+		if raw, err := os.ReadFile(pidFile); err == nil { //nolint:gosec // a path under t.TempDir()
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
 				sleeper = pid
 			}

@@ -108,7 +108,7 @@ func w23Stub(t *testing.T) string {
 			return
 		}
 		bin := filepath.Join(dir, "w23bin")
-		if out, err := exec.Command("go", "build", "-o", bin, src).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(context.Background(), "go", "build", "-o", bin, src).CombinedOutput(); err != nil { //nolint:gosec // the test builds its own stub source with the toolchain on PATH
 			w23Err = fmt.Errorf("building the w23 stub: %w\n%s", err, out)
 			return
 		}
