@@ -2,13 +2,14 @@
 
 The task's defining constraint is "implement the matcher yourself": no `re`,
 `regex`, `fnmatch` or `pathlib`, and no dynamic-import machinery used to reach
-them. It is enforced two independent ways:
+them. It is enforced by one call, `_mh.enforce_bans`, that does two independent things:
 
-  1. a *static* scan of every Python source file in the sandbox, not just
-     `nfa.py` -- a helper module is still the candidate's own code. The scan
-     runs in the checker, which may read the sandbox but runs nothing in it.
-  2. a *runtime* ban installed in the WORKER (`_mh.forbid_imports`), where the
-     candidate runs, so a lazy or dynamically-spelled import fails when reached.
+  1. a *static* audit of every Python source file in the sandbox, not just
+     `nfa.py` -- a helper module is still the candidate's own code. It runs in
+     the checker, which may read the sandbox but runs nothing in it.
+  2. an audit hook in the WORKER, where the candidate runs: it refuses the import
+     event of every banned module however spelled, and cannot be removed by
+     candidate code (see mh/rpc.py).
 
 Verifier-split note (adapted when the grader became a checker + a worker): the
 candidate is imported by name into the worker, whose interpreter is source-only
@@ -17,10 +18,9 @@ stdlib imports from outside the sandbox and exec'ing the candidate from the
 scanned source -- are now structural. The checker's `sys.path` does not contain
 the sandbox, so a dropped `ast.py`/`re.py` or a stale `.pyc` cannot reach or
 stand in for the checker's imports, and the `re` oracle lives in the checker,
-which never runs candidate code. Residual (paper): already-imported references
-such as `json.decoder.re` are not revoked; the ban is static + import-hook.
+which never runs candidate code. The worker harness loads no banned module, so
+there is no already-imported reference (`json.decoder.re`) left to reach.
 """
-import ast
 import os
 import random
 import re as _re          # the oracle; held in the checker, which runs no candidate code
@@ -30,8 +30,6 @@ import _mh
 
 FORBIDDEN = ("re", "regex", "fnmatch", "pathlib",
              "importlib", "imp", "runpy", "sre_compile", "sre_parse")
-MAX_FILES = 200
-MAX_BYTES = 1 << 20
 
 
 def die(msg):
@@ -50,49 +48,6 @@ for _name in ("sitecustomize.py", "usercustomize.py"):
         die(f"{_name} in the sandbox: the fix belongs in nfa.py, "
             f"not in interpreter startup")
 
-# --- 2. static scan of every Python source in the sandbox ------------------
-sources = []
-for root, dirs, files in os.walk(SANDBOX):
-    dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
-    for f in sorted(files):
-        if f.endswith(".py"):
-            sources.append(os.path.join(root, f))
-sources.sort()
-if len(sources) > MAX_FILES:
-    die(f"{len(sources)} Python files in the sandbox exceeds the {MAX_FILES} "
-        f"the constraint check will read; refusing to report a partial scan")
-
-offenders = []
-for path in sources:
-    rel = os.path.relpath(path, SANDBOX)
-    if os.path.getsize(path) > MAX_BYTES:
-        die(f"{rel} is larger than {MAX_BYTES} bytes; refusing to report a "
-            f"partial scan")
-    try:
-        tree = ast.parse(open(path, encoding="utf-8", errors="replace").read(),
-                         filename=rel)
-    except SyntaxError as e:
-        die(f"{rel} is not parseable Python ({e}); the constraint check "
-            f"cannot run over it")
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                if a.name.split(".")[0] in FORBIDDEN:
-                    offenders.append(f"{rel}: import {a.name}")
-        elif isinstance(node, ast.ImportFrom):
-            top = (node.module or "").split(".")[0]
-            if top in FORBIDDEN:
-                offenders.append(f"{rel}: from {node.module} import ...")
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
-                and node.func.id == "__import__":
-            offenders.append(f"{rel}: __import__(...)")
-        elif isinstance(node, ast.Attribute) and node.attr in (
-                "import_module", "find_spec", "load_module"):
-            offenders.append(f"{rel}: {node.attr}(...)")
-if offenders:
-    die("forbidden module use: " + "; ".join(sorted(set(offenders))))
-
-print(f"scanned {len(sources)}/{len(sources)} Python files in the sandbox")
 
 # --- 3. precompute the oracle while `re` is still importable ---------------
 random.seed(9)
@@ -131,7 +86,7 @@ for _trial in range(250):
         continue
 
 # --- 4. arm the runtime ban in the worker, then import the candidate -------
-_mh.forbid_imports(FORBIDDEN)
+_mh.enforce_bans(FORBIDDEN)
 from nfa import fullmatch  # noqa: E402  -- imported into the worker, under the ban
 
 if not callable(fullmatch):
