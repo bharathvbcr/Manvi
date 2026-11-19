@@ -98,6 +98,54 @@
       "os": ["ubuntu-latest", "macos-latest"],
       "legs": ["go-test"],
       "why": "This action's frame does not draw the field, so there is no frame to assert on."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/artifacts.TestZadvCaseFoldedDirectoryDefect",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "legs": ["go-test"],
+      "why": "Records a known defect rather than asserting it: two directory spellings that differ only in case alias on a case-insensitive volume, and the fix is its own card (ft-8b005379)."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/workflow/catalog.TestZadvCaseFoldedIdentitiesDoNotAliasDefect",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "legs": ["go-test"],
+      "why": "Records a known defect rather than asserting it: two catalog identities that differ only in case alias on a case-insensitive volume, and the fix is its own card (ft-8b005379)."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/artifacts.TestZadvHelperProcess",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "legs": ["go-test"],
+      "why": "A re-exec helper, not a test of its own: the publish tests run it as a child process, and it skips when the suite reaches it directly."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/bootstrap.TestZadvHelperProcess",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "legs": ["go-test"],
+      "why": "A re-exec helper, not a test of its own: the .gitignore tests run it as a child process, and it skips when the suite reaches it directly."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/internal/treefile.TestZadvHelperProcess",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "legs": ["go-test"],
+      "why": "A re-exec helper, not a test of its own: the publish tests run it as a child process, and it skips when the suite reaches it directly."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestZadvW23TimeoutDurationIsInsideTheFingerprint",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "legs": ["go-test"],
+      "why": "The legacy time.Duration `timeout` field is an owner decision (reinterpret, bound or refuse it), so the test stays skipped until it is made (ft-efcc471a)."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestZadvW23TimeoutDurationIsBoundedLikeTimeoutSeconds",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "legs": ["go-test"],
+      "why": "The legacy time.Duration `timeout` field is an owner decision (reinterpret, bound or refuse it), so the test stays skipped until it is made (ft-efcc471a)."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestZadvW23AProgramRegistrationIsNotRefusedBecauseTheTreeDeclaredTheNameFirst",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "legs": ["go-test"],
+      "why": "Unreachable today: Manager.RegisterServer has no production caller, only tests register in-process servers."
     }
   ]
 }
