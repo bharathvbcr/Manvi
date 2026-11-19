@@ -118,8 +118,9 @@ pub struct SettlePolicy {
 /// fingerprint), and that stable read is returned. Tree walks only: no window
 /// enumeration, no image. A tree that is still changing when
 /// [`SettlePolicy::deadline_ms`] passes is reported as `accessibility_pending`
-/// (undelivered, so the host's bounded attach retry applies); a partial tree is
-/// never returned as ready. Every walk re-checks the process and window
+/// (undelivered, so the host's bounded attach retry applies). Completeness is
+/// part of the comparison, not a precondition: two reads cut at the same node
+/// limit compare equal, and that stable read is returned with `complete` false. Every walk re-checks the process and window
 /// identity, so a window that changed identity fails instead of settling.
 /// `focus_raised` only words the refusal; it does not change the reads.
 pub fn settle_attach<S: CaptureSource>(
