@@ -80,8 +80,8 @@ func EscapeLine(s string) string {
 	b.Grow(len(s))
 	for i := 0; i < len(s); {
 		r, w := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == '\n' || r == '\t' || r == '\r':
+		switch r {
+		case '\n', '\t', '\r':
 			fmt.Fprintf(&b, `\x%02x`, r)
 		default:
 			b.WriteString(Escape(s[i : i+w]))
