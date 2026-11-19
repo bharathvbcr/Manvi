@@ -20,12 +20,15 @@ import (
 // them, and so can hide or fake text: control characters other than newline and
 // tab (an escape sequence is executed by the terminal that echoes it), format
 // characters (zero-width joiners, bidi overrides, which split a marker or
-// reorder a line) and private-use characters.
+// reorder a line), private-use characters, the Unicode line and paragraph
+// separators, and the tag block.
 func Invisible(r rune) bool {
 	if r == '\n' || r == '\t' {
 		return false
 	}
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r)
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r) ||
+		r == '\u2028' || r == '\u2029' || // line and paragraph separators: a terminal or renderer breaks the line
+		(r >= 0xE0000 && r <= 0xE007F) // the tag block: renders as nothing, and can carry a hidden message
 }
 
 // Escape renders every Invisible rune in s, and every byte that is not valid
@@ -63,6 +66,25 @@ func Escape(s string) string {
 			fmt.Fprintf(&b, `\u%04x`, r)
 		default:
 			b.WriteString(s[i : i+w])
+		}
+		i += w
+	}
+	return b.String()
+}
+
+// EscapeLine is Escape for text that has to stay on one line: it also renders
+// newline and tab visible, and does not fold CRLF, so the result has no line
+// break in it and cannot forge a line of whatever it is printed into.
+func EscapeLine(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, w := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == '\n' || r == '\t' || r == '\r':
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			b.WriteString(Escape(s[i : i+w]))
 		}
 		i += w
 	}

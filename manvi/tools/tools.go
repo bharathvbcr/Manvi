@@ -819,6 +819,10 @@ func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
 		thirdParty := r.thirdParty(call.Name)
 		if thirdParty {
 			result.Text = hygiene.Escape(result.Text)
+			// The notes a failed stage leaves, which quote what panicked.
+			for i, note := range result.Degraded {
+				result.Degraded[i] = hygiene.Escape(note)
+			}
 		}
 		// Scrubbed last, on the named return, so every way out of this function
 		// is covered: the ordinary path, a listener short-circuit, a refusal, a
