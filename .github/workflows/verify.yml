@@ -451,6 +451,8 @@ jobs:
       - name: Crate symlinks
         shell: bash
         run: |
+          echo "as checked out (core.symlinks=$(git config core.symlinks || echo unset)):"
+          ls -la crates
           git ls-files -s -- crates | while read -r mode hash _ path; do
             [ "$mode" = "120000" ] || continue
             target="$(git cat-file -p "$hash")"
@@ -467,9 +469,10 @@ jobs:
               rm -f "$path"
             fi
             if [ ! -e "$path" ]; then
-              cmd //c mklink /J "$(cygpath -w "$path")" "$dest" >/dev/null
+              pwsh -NoProfile -Command "New-Item -ItemType Junction -Path '$(cygpath -w "$path")' -Target '$dest' | Out-Null"
             fi
           done
+          ls -la crates
           members="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/Cargo.toml | jq -r '.packages[].name' | sort | tr '\n' ' ')"
           echo "cargo loaded: $members"
           for member in dc-evidence dc-glob dc-grep dc-proc dc-redact dc-store dc-verify; do
