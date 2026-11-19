@@ -211,6 +211,7 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- `verify.sh`'s `go test` gives each package's test binary 20 minutes instead of Go's default 10. On macos-latest `./devcouncil` ran 515 s of tests in a passing run and hit the 10-minute bound at 598 s in a failing one, against 189 s on ubuntu-latest, with no single test near the bound; 20 minutes matches the Windows job.
 - `docs/COMPUTER_USE_FOUNDATIONS.md` gives the four steps for removing or renaming an export Jarvis calls (add the replacement, bump Jarvis's pin and migrate, remove, bump again), and `CONTRIBUTING.md` points at them.
 - `--fuzz` names each target that does not reach `MANVI_FUZZMIN` inputs on a line of its own with its count, and `scripts/verify-expected-gaps.json` holds a floor for each of the fourteen that missed it in any of three CI runs (a quarter of the lowest count; one target varied 4.2x between runs). CI accepts the line only at or above the target's floor, so a slow target that gets slower, or a new slow one, still fails. A bench suite's `NOT COVERED:` line is carried into the gate list, and the three tests that need an installed agy, Claude Code or devmap binary are listed as expected skips.
 - **`verify.sh` builds Jarvis against the checkout.** A new `checks`-leg step

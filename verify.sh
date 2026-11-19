@@ -344,7 +344,13 @@ done
 # report and cross-boundary counts below read the same execution. The suite used
 # to run a second time for the skip report, a cache hit its comment claimed and
 # the coverage flags it did not match.
-gate_go_test_json manvi "$GO_TEST_JSON" -coverpkg=./... -coverprofile="$GO_COVER_PROFILE" -covermode=set ./... \
+# -timeout bounds each package's test binary. Go's default is 10 minutes, and
+# on macos-latest ./devcouncil ran 515 s of tests in a passing run and was cut
+# off at 598 s in a failing one (runs 44607379939 and 44604378113, 2026-11-19),
+# against 189 s on ubuntu-latest: most of its tests run 3 to 10 times slower
+# there, none of them alone near the bound. 20 minutes is the bound the Windows
+# job already gives each package; a test that hangs is still cut off, by name.
+gate_go_test_json manvi "$GO_TEST_JSON" -timeout 20m -coverpkg=./... -coverprofile="$GO_COVER_PROFILE" -covermode=set ./... \
   || fail "go test"
 
 # A package whose tests all skip still prints "ok". Count what actually ran in
