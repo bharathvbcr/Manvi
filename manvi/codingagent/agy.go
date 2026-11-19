@@ -633,13 +633,10 @@ func (s *Agy) next(ctx context.Context) (Event, error) {
 			p, err = s.wire.receive(ctx)
 			if err != nil {
 				// The session ended under a pending permission (closed, or the
-				// process went away): tell the host before the error, once.
-				// A caller's own cancellation leaves the session alive, so nothing
-				// is withdrawn for that.
-				if ctx.Err() == nil {
-					if withdrawn := s.withdrawPending(); len(withdrawn) > 0 {
-						return leadWith(&s.deferred, withdrawn), nil
-					}
+				// process went away): tell the host before the error, once, as
+				// every adapter does (withdrawAtEnd).
+				if e, ended, lerr := withdrawAtEnd(ctx, &s.deferred, s.withdrawPending); ended {
+					return e, lerr
 				}
 				return Event{}, err
 			}

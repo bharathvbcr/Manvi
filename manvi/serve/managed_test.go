@@ -57,6 +57,11 @@ type managedTestSession struct {
 	withdraw      bool
 	validateErr   error
 	completeAfter time.Duration
+	// respondErr is what Respond answers instead of delivering, as the adapter's
+	// own preflight does when the turn ended between ValidateResponse and the
+	// write; onNext sees every event Next hands the run, before it does.
+	respondErr error
+	onNext     func(codingagent.Event)
 	// prelude is emitted after the turn id and before the completion, and
 	// leaveOpen withholds that completion so a test can observe the checkpoint.
 	prelude   []codingagent.Tool
@@ -185,6 +190,9 @@ func (s *managedTestSession) offered() []string {
 func (s *managedTestSession) Next(ctx context.Context) (codingagent.Event, error) {
 	select {
 	case e := <-s.events:
+		if s.onNext != nil {
+			s.onNext(e)
+		}
 		return e, nil
 	case <-ctx.Done():
 		return codingagent.Event{}, ctx.Err()
@@ -196,6 +204,9 @@ func (s *managedTestSession) ValidateResponse(_ codingagent.Request, _ codingage
 	return s.validateErr
 }
 func (s *managedTestSession) Respond(_ context.Context, request codingagent.Request, response codingagent.Response) error {
+	if s.respondErr != nil {
+		return s.respondErr
+	}
 	s.replies.Add(1)
 	if s.claudeLike {
 		time.AfterFunc(s.finishAfter, func() {
