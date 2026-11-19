@@ -356,15 +356,24 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 	return c, nil
 }
 
-// reap is the one goroutine that waits on the child. It reaps the process, and
-// then holds the stream to waitDelay: a descendant that inherited the pipes can
-// keep them open long after the server itself is gone, and a client that waited
-// for end-of-stream alone would report that server as alive for as long as the
-// descendant lived. Past waitDelay the pipes are closed, which ends the read
-// loops and so the client's life, and the process group is killed, which is what
-// the descendant was holding the pipes with.
+// reap is the one goroutine that waits on the child. When the child is gone it
+// kills the process group it led, and then holds the stream to waitDelay.
+//
+// The group is killed here, in the instant after Wait, and not later in Close:
+// a process group is named by the leader's pid, and once the leader has been
+// reaped that pid is free to be given to an unrelated process, so a kill(-pid)
+// issued at some arbitrary later time could land on a stranger. Straight after
+// Wait the group, if it has any member left, still holds the pid, so this is the
+// last moment the number is certain to mean this server's descendants. They are
+// the ones that inherited the pipes and would keep the stream open for as long as
+// they lived, which is what made a server that had exited look alive.
+//
+// A process that left the group (setsid) can still hold the pipes; for that,
+// past waitDelay they are closed, which ends the read loops and so the client's
+// life.
 func (c *Client) reap() {
 	_ = c.cmd.Wait()
+	proc.KillGroup(c.cmd.Process.Pid)
 	close(c.exited)
 
 	timer := time.NewTimer(waitDelay)
@@ -372,7 +381,6 @@ func (c *Client) reap() {
 	select {
 	case <-c.doneCh:
 	case <-timer.C:
-		proc.KillGroup(c.cmd.Process.Pid)
 		_ = c.stdout.Close()
 		_ = c.stderr.Close()
 	}
@@ -1741,15 +1749,19 @@ func (c *Client) Close() error {
 		case <-c.exited:
 		case <-time.After(1500 * time.Millisecond):
 		}
-		// The group is killed whether or not the leader went quietly. A server
-		// that exits on its own can leave behind what it spawned — a proxy, a
-		// language runtime, a watcher — still holding the pipes it inherited, and
-		// a Close that only waited for the leader let those outlive the session
-		// that started them. The group is the server's own (ConfigureOwnGroup), so
-		// this cannot reach anything else this harness is running; killing a group
-		// that is already empty is a no-op.
-		proc.KillGroup(c.cmd.Process.Pid)
-		_ = c.cmd.Process.Kill()
+		// A leader that has not exited by now is killed with its group: whatever it
+		// spawned — a proxy, a language runtime, a watcher — holds the pipes it
+		// inherited and would outlive the session that started it. The group is the
+		// server's own (ConfigureOwnGroup), so this cannot reach anything else this
+		// harness is running. A leader that has exited was already reaped, and its
+		// group killed with it, by reap — the one moment its pid still certainly
+		// names that group, so Close does not address a pid that may be reused.
+		select {
+		case <-c.exited:
+		default:
+			proc.KillGroup(c.cmd.Process.Pid)
+			_ = c.cmd.Process.Kill()
+		}
 		// A kill without a reap leaves a zombie on the table; give reap a bounded
 		// chance to collect it.
 		select {
