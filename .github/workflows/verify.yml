@@ -441,28 +441,42 @@ jobs:
         shell: bash
         run: bash scripts/fetch-modules.sh
       # checkout on Windows can materialise a git symlink (mode 120000) as a
-      # text file. cargo then has no crate to build, and every Go test that
-      # execs dcverify fails closed. Recreate any member that is not a directory
-      # after the pin it points at has been fetched.
+      # text file, or, when its target is not there yet, as a *file* symlink to
+      # what is really a directory. Git-Bash's own tests follow either, but
+      # cargo.exe sees no directory and loads the workspace without that member,
+      # which it then reports as "package ID specification ... did not match any
+      # packages". So every member link is recreated as a native directory
+      # junction once fetch-modules.sh has placed its target, and cargo itself is
+      # asked which members it loaded.
       - name: Crate symlinks
         shell: bash
         run: |
           git ls-files -s -- crates | while read -r mode hash _ path; do
             [ "$mode" = "120000" ] || continue
-            if [ -d "$path" ]; then
-              continue
-            fi
             target="$(git cat-file -p "$hash")"
             target="${target//$'\r'/}"
             target="${target//$'\n'/}"
-            rm -f "$path"
-            ln -s "$target" "$path"
-          done
-          for member in dc-glob dc-grep dc-store dc-verify dc-evidence dc-proc dc-redact; do
-            if [ ! -f "crates/$member/Cargo.toml" ]; then
-              echo "crates/$member is not a crate checkout (Cargo.toml missing)" >&2
+            dest="$(cd "$(dirname "$path")" && cd "$target" && pwd -W)" || {
+              echo "$path -> $target: the target is not a directory here" >&2
               exit 1
+            }
+            # A file, a file symlink or a text stand-in is removed with rm -f; a
+            # directory (a copy, or a junction from an earlier run) is left as is
+            # rather than recursed into, since its contents are the sibling's.
+            if [ -L "$path" ] || [ -f "$path" ]; then
+              rm -f "$path"
             fi
+            if [ ! -e "$path" ]; then
+              cmd //c mklink /J "$(cygpath -w "$path")" "$dest" >/dev/null
+            fi
+          done
+          members="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/Cargo.toml | jq -r '.packages[].name' | sort | tr '\n' ' ')"
+          echo "cargo loaded: $members"
+          for member in dc-evidence dc-glob dc-grep dc-proc dc-redact dc-store dc-verify; do
+            case " $members " in
+              *" $member "*) ;;
+              *) echo "cargo does not see crates/$member as a workspace member" >&2; exit 1 ;;
+            esac
           done
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
