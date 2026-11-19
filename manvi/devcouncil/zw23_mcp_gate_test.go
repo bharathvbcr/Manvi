@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/Manvi/manvi/fetch"
 )
 
 // mcp_list_tools records a gate decision before it starts a server.
@@ -63,5 +64,32 @@ func TestAPermittedMCPListToolsStillRunsAndCarriesItsQualification(t *testing.T)
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("the permitted listing never reached the server: %v", err)
+	}
+}
+
+// Every tool whose result is somebody else's words is marked as such, so that
+// tools.Registry.Run makes the invisible characters in it visible. The seam is
+// tested in package tools with a synthetic tool; this is what binds it to the
+// real ones, so dropping the flag from any of them fails here.
+func TestEveryThirdPartyResultToolIsMarkedForTheHygieneSeam(t *testing.T) {
+	f := newFixtureRunner(t, &recordingRunner{})
+	f.reg.deps.Fetch = fetch.New([]string{"example.com"}, fetch.Limits{})
+
+	var seen []string
+	for _, tool := range append(f.reg.mcpTools(), f.reg.webTools()...) {
+		seen = append(seen, tool.Schema.Name)
+		if !tool.ThirdParty {
+			t.Errorf("%s returns third-party text and is not marked ThirdParty", tool.Schema.Name)
+		}
+	}
+	for _, want := range []string{"mcp_list_tools", "mcp_call_tool", "mcp_list_resources",
+		"mcp_read_resource", "devcouncil_fetch_url"} {
+		found := false
+		for _, name := range seen {
+			found = found || name == want
+		}
+		if !found {
+			t.Errorf("%s was not among the tools checked: %v", want, seen)
+		}
 	}
 }
