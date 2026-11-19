@@ -851,7 +851,7 @@ func leadWith(deferred *[]Event, events []Event) Event {
 // deferred empty, so the refusal cannot happen there by construction.
 func withdrawAtEnd(ctx context.Context, deferred *[]Event, withdraw func() []Event) (e Event, ended bool, err error) {
 	if ctx.Err() != nil {
-		return Event{}, false, nil
+		return Event{}, false, nil //nolint:nilerr // the caller's own context is done: that leaves the session alive and withdraws nothing, and the caller reads ctx.Err itself
 	}
 	if len(*deferred)+maxPendingCallbacks > maxDeferredBacklog {
 		return Event{}, true, errDeferredBacklog

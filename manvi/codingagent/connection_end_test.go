@@ -54,7 +54,7 @@ func TestReadReportsARecordedFailureAheadOfEOF(t *testing.T) {
 		c.fail(errEndBoom)
 		finished := make(chan struct{})
 		go func() { c.read(); close(finished) }()
-		in.Close()
+		_ = in.Close()
 		// The reader has ended before anyone reads: both the frames channel and the
 		// connection's context are ready, the case the race is about.
 		<-finished

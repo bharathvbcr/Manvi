@@ -14,7 +14,7 @@ func TestAdvW23PreferFailureOnlyReplacesAPlainEnd(t *testing.T) {
 		t.Fatalf("io.ErrUnexpectedEOF became %v", got)
 	}
 	other := errors.New("a real read error")
-	if got := c.preferFailure(other); got != other {
+	if got := c.preferFailure(other); got != other { //nolint:errorlint // identity is the point: errors.Is would also match a wrapped or joined error
 		t.Fatalf("a real error became %v", got)
 	}
 	if got := c.preferFailure(nil); got != nil {
@@ -32,7 +32,7 @@ func TestAdvW23PreferFailureOnlyReplacesAPlainEnd(t *testing.T) {
 	// A plain cancel records no failure, so EOF stays EOF.
 	plain := advWire(t, 1)
 	plain.cancel()
-	if got := plain.preferFailure(io.EOF); got != io.EOF {
+	if got := plain.preferFailure(io.EOF); got != io.EOF { //nolint:errorlint // identity is the point: errors.Is would also match a wrapped or joined error
 		t.Fatalf("EOF behind a plain cancel became %v", got)
 	}
 }
