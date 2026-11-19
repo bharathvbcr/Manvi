@@ -243,11 +243,6 @@ func TestStateDirAnchoredToProjectRoot(t *testing.T) {
 	if sp := sessionsDir(); sp != expectedSessions {
 		t.Errorf("sessionsDir() = %q; want %q", sp, expectedSessions)
 	}
-
-	expectedArtifacts := filepath.Join(expectedDC, "artifacts")
-	if ap := artifactsDir(); ap != expectedArtifacts {
-		t.Errorf("artifactsDir() = %q; want %q", ap, expectedArtifacts)
-	}
 }
 
 func TestScaffoldFromSubdirectory(t *testing.T) {

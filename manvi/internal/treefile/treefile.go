@@ -98,11 +98,11 @@ func Child(parent *os.Root, name string, create fs.FileMode) (*os.Root, error) {
 	return child, nil
 }
 
-// Descend opens the directory rel below root, one verified Child at a time. rel
+// descend opens the directory rel below root, one verified Child at a time. rel
 // is relative and local ("." is root itself, as a handle of its own); create is
 // the mode for directories that do not exist yet, or zero to require them. The
 // returned root is the caller's to close; root is left open.
-func Descend(root *os.Root, rel string, create fs.FileMode) (*os.Root, error) {
+func descend(root *os.Root, rel string, create fs.FileMode) (*os.Root, error) {
 	rel = filepath.Clean(rel)
 	if rel == "." {
 		return root.OpenRoot(".")
@@ -124,14 +124,14 @@ func Descend(root *os.Root, rel string, create fs.FileMode) (*os.Root, error) {
 	return current, nil
 }
 
-// OpenDir opens the trusted anchor and descends rel below it (see Descend).
+// OpenDir opens the trusted anchor and descends rel below it (see descend).
 func OpenDir(anchor, rel string, create fs.FileMode) (*os.Root, error) {
 	root, err := Open(anchor)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	return Descend(root, rel, create)
+	return descend(root, rel, create)
 }
 
 // ReadOptions bound one read. Limit must be positive: a read with no bound is

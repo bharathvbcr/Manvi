@@ -320,11 +320,6 @@ func sessionsDir() string {
 	return filepath.Join(stateDir(), "sessions")
 }
 
-// artifactsDir is where DevCouncil artifacts persist.
-func artifactsDir() string {
-	return filepath.Join(stateDir(), "artifacts")
-}
-
 // resolveCLIPath resolves a file or path argument passed on the CLI.
 //
 // When an operator is standing in a subdirectory of the project (e.g. `src/`)

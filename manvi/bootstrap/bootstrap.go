@@ -212,14 +212,15 @@ func Ensure(root string, opts Options) Report {
 	report := Report{Root: root}
 
 	for _, dir := range directories(root, opts) {
-		if _, err := os.Stat(dir); err == nil {
-			continue
-		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		_, statErr := os.Lstat(dir)
+		existed := statErr == nil
+		if err := ensureDir(root, dir); err != nil {
 			report.Failures = append(report.Failures, Failure{"the state directory could not be created", err})
 			continue
 		}
-		report.CreatedDirs = append(report.CreatedDirs, display(root, dir))
+		if !existed {
+			report.CreatedDirs = append(report.CreatedDirs, display(root, dir))
+		}
 	}
 
 	if opts.Gitignore {
@@ -232,6 +233,25 @@ func Ensure(root string, opts Options) Report {
 		report.Untracked = result.untracked
 	}
 	return report
+}
+
+// ensureDir makes dir and its missing parents, and checks the ones that were
+// there. Below root every component is opened and made through a handle, one
+// verified step at a time (treefile), so a component that is a symbolic link out
+// of the tree is refused and not written through. A directory outside root is one
+// the operator named on purpose (MANVI_STORE_DB or MANVI_GRAPH pointed there): it
+// is the anchor itself, as artifacts.ensureAnchor treats an absolute state
+// directory, made by path as the caller's to vouch for, links and all.
+func ensureDir(root, dir string) error {
+	rel, below := under(root, dir)
+	if !below {
+		return os.MkdirAll(dir, 0o755)
+	}
+	d, err := treefile.OpenDir(root, rel, 0o755)
+	if err != nil {
+		return err
+	}
+	return d.Close()
 }
 
 // gitignoreFailure says what became of .gitignore, so that a file left alone
