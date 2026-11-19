@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -131,6 +132,14 @@ func (r *Registry) authoriseArtifactWrite(ctx context.Context, verb string) (pol
 func (r *Registry) getArtifactStore() (*artifacts.Store, error) {
 	if r.deps.Artifacts != nil {
 		return r.deps.Artifacts, nil
+	}
+	if r.deps.ArtifactsErr != nil {
+		return nil, fmt.Errorf("the artifact store is unavailable: %w", r.deps.ArtifactsErr)
+	}
+	// No store was handed in. MANVI_STATE_DIR names where state lives, and a
+	// store built under the project root would ignore it.
+	if dir := os.Getenv("MANVI_STATE_DIR"); dir != "" {
+		return nil, errors.New("the artifact store is unavailable: none was configured for MANVI_STATE_DIR=" + dir)
 	}
 	return artifacts.NewStoreUnder(r.deps.Root, filepath.Join(".devcouncil", "artifacts"))
 }

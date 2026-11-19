@@ -330,8 +330,14 @@ func (s Store) Get(id, revision string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	if hasCurrent && current.Revision == revision && !matched {
-		return Entry{}, errors.New("promotion does not match an immutable artifact")
+	if hasCurrent && !matched {
+		// List skips an identity whose pointer names no readable revision with its
+		// digest, so Get must not serve a row List omits: the pointer's own
+		// revision is checked too. That is the one other revision it compiles.
+		_, pointed, perr := s.revisionEntry(dir, id, current.Revision+".json", current, hasCurrent)
+		if perr != nil || !pointed {
+			return Entry{}, errors.New("promotion does not match an immutable artifact")
+		}
 	}
 	return entry, nil
 }

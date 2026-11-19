@@ -221,14 +221,17 @@ func stateDirParts() (anchor, rel string) {
 	return projectRoot(), raw
 }
 
-// errStateDirOutside is what start-up answers when the state directory, read
-// through the links below the project root, is not inside the project root.
-var errStateDirOutside = errors.New("the state directory resolves outside the project root")
+// errStateDirOutside is what start-up answers when the state directory leaves
+// the project root or passes through a symbolic link below it. The artifact
+// store refuses the same layouts with treefile.ErrRefused, so the two judge a
+// state directory alike and the failure is at start-up, not at the first write.
+var errStateDirOutside = errors.New("the state directory is outside the project root or passes through a symbolic link")
 
 // verifyStateDir refuses a state directory that a repository has pointed out of
-// itself. It runs before anything is created, because the scaffolding that
-// follows makes directories and writes files through whatever the path names.
-// An absolute MANVI_STATE_DIR is the operator's choice and is not examined.
+// itself, or through a link. It runs before anything is created, because the
+// scaffolding that follows makes directories and writes files through whatever
+// the path names. An absolute MANVI_STATE_DIR is the operator's choice and is
+// not examined.
 func verifyStateDir() error {
 	anchor, rel := stateDirParts()
 	if rel == "." {
@@ -237,43 +240,31 @@ func verifyStateDir() error {
 	return checkStateDirBelow(anchor, rel)
 }
 
-// checkStateDirBelow resolves rel below root one component at a time and fails
-// with errStateDirOutside when the result is not inside root. Both sides are
-// resolved first, so a root that is itself reached through a link (a temporary
-// directory on macOS) is compared with what the links below it lead to.
-// Components that do not exist yet are not links and are taken as written. A
-// link that cannot be resolved is refused, never read as absent.
+// checkStateDirBelow walks rel below root one component at a time and fails
+// with errStateDirOutside when rel climbs out of root or any existing component
+// is a symbolic link, whatever it points at: the artifact store does not walk
+// through links, so a link that stays inside the project would pass start-up
+// and fail at the first write. The root is the caller's anchor and is not
+// examined, so a project root reached through a link is fine. Components that
+// do not exist yet are not links.
 func checkStateDirBelow(root, rel string) error {
 	clean := filepath.Clean(rel)
 	if !filepath.IsLocal(clean) {
 		return fmt.Errorf("%w: %q climbs out of %s; set MANVI_STATE_DIR to an absolute path to put state elsewhere on purpose", errStateDirOutside, rel, root)
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return fmt.Errorf("resolving the project root %s: %w", root, err)
-	}
-	current := resolvedRoot
+	current := root
 	for _, part := range strings.Split(clean, string(filepath.Separator)) {
-		next := filepath.Join(current, part)
-		info, err := os.Lstat(next)
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
 		if errors.Is(err, fs.ErrNotExist) {
-			current = next
-			continue
+			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("inspecting the state directory %s: %w", next, err)
+			return fmt.Errorf("inspecting the state directory %s: %w", current, err)
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(next)
-			if err != nil {
-				return fmt.Errorf("%w: %s is a link that cannot be resolved: %w", errStateDirOutside, next, err)
-			}
-			next = resolved
+			return fmt.Errorf("%w: %s is a symbolic link; set MANVI_STATE_DIR to an absolute path to put state elsewhere on purpose", errStateDirOutside, current)
 		}
-		if within, err := filepath.Rel(resolvedRoot, next); err != nil || !filepath.IsLocal(within) && within != "." {
-			return fmt.Errorf("%w: %s leads to %s, which is not inside %s; set MANVI_STATE_DIR to an absolute path to put state elsewhere on purpose", errStateDirOutside, filepath.Join(root, clean), next, resolvedRoot)
-		}
-		current = next
 	}
 	return nil
 }

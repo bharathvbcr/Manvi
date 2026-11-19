@@ -139,10 +139,16 @@ type ReadOptions struct {
 	Limit int64
 	// SingleLink refuses a file with more than one hard link. O_NOFOLLOW does not
 	// see a hard link to a file outside the tree, so a store whose entries have
-	// exactly one name asks for it. A store that publishes by link and then
-	// removes its stage must not, or a read racing that window is refused.
+	// one name asks for it. A count of zero is not a refusal: the file was
+	// replaced by rename after it was opened, and the handle is a consistent
+	// snapshot of the previous version. A store that publishes by link and then
+	// removes its stage must not ask for it at all, or a read racing that window
+	// is refused.
 	SingleLink bool
 }
+
+// openRetries bounds the retries of an open that raced a rename-replace.
+const openRetries = 3
 
 // openRegular opens name below root without following any link, FIFO-safe
 // (O_NONBLOCK) and checks the handle, not a separate lstat: it must be a
@@ -151,14 +157,25 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 	if o.Limit <= 0 {
 		return nil, errors.New("treefile: a read needs a positive size limit")
 	}
-	f, err := safefile.OpenNoFollow(root, filepath.FromSlash(name), os.O_RDONLY, 0)
-	if err != nil {
+	var f *os.File
+	for attempt := 0; ; attempt++ {
+		var err error
+		f, err = safefile.OpenNoFollow(root, filepath.FromSlash(name), os.O_RDONLY, 0)
+		if err == nil {
+			break
+		}
 		// os.Root answers "does not exist" for a dangling link it resolved
-		// itself. A name present as anything is a refusal, not an absence, so
-		// that case must not wrap fs.ErrNotExist.
+		// itself. A name present as a link is a refusal, not an absence, so that
+		// case must not wrap fs.ErrNotExist. A name that is a regular file when
+		// looked at again was replaced by rename between the open and the look:
+		// that is a race, not a refusal, and the open is retried.
 		if errors.Is(err, fs.ErrNotExist) {
-			if _, lerr := root.Lstat(filepath.FromSlash(name)); errors.Is(lerr, fs.ErrNotExist) {
+			info, lerr := root.Lstat(filepath.FromSlash(name))
+			switch {
+			case errors.Is(lerr, fs.ErrNotExist):
 				return nil, err
+			case lerr == nil && info.Mode().IsRegular() && attempt < openRetries:
+				continue
 			}
 			return nil, refusal(name, "(a dangling symbolic link): "+err.Error())
 		}
@@ -176,7 +193,7 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
 		}
-		if links != 1 {
+		if links > 1 {
 			return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", links)), f.Close())
 		}
 	}
