@@ -116,7 +116,7 @@ func newStore(anchor, rel string) (*Store, error) {
 	// points at. The walk at every operation repeats this for each component.
 	if info, err := os.Lstat(dir); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("artifacts: store dir %s is a symbolic link; refusing to write through it", dir)
+			return nil, fmt.Errorf("%w: artifacts: store dir %s is a symbolic link; refusing to write through it", treefile.ErrRefused, dir)
 		}
 		if !info.IsDir() {
 			return nil, fmt.Errorf("artifacts: store dir %s is not a directory", dir)
@@ -754,7 +754,18 @@ func (s *Store) dirFor(full string, create bool) (dir *os.Root, leaf string, err
 		dir, err = treefile.OpenDir(filepath.Dir(full), ".", mode)
 		return dir, filepath.Base(full), err
 	}
-	rel, err := filepath.Rel(s.dir, full)
+	// Both sides absolute: a relative store dir (the default is one) and the
+	// absolute path containedPath builds from it are the same place, and Rel
+	// refuses to compare a relative path with an absolute one.
+	absDir, err := filepath.Abs(s.dir)
+	if err != nil {
+		return nil, "", fmt.Errorf("artifacts: resolving store dir %s: %w", s.dir, err)
+	}
+	absFull, err := filepath.Abs(full)
+	if err != nil {
+		return nil, "", fmt.Errorf("artifacts: resolving %s: %w", full, err)
+	}
+	rel, err := filepath.Rel(absDir, absFull)
 	if err != nil || !filepath.IsLocal(rel) {
 		return nil, "", fmt.Errorf("artifacts: %q is not inside the store", full)
 	}

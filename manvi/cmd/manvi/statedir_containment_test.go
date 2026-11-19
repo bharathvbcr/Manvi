@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -111,5 +112,25 @@ func TestNewArtifactStoreRefusesALinkedStateDirAndWritesNothingThroughIt(t *test
 	entries, _ := os.ReadDir(outside)
 	if len(entries) != 0 {
 		t.Fatalf("the link's target was written to: %v", entries)
+	}
+}
+
+// The check is wired into start-up, ahead of the scaffolding that would create
+// the state directory through the link: a command that prepares the repository
+// is refused by name and nothing is created outside the project.
+func TestStartUpRefusesALinkedStateDirBeforeScaffolding(t *testing.T) {
+	root, outside := stateTree(t)
+	defer setProjectRootForTest(root)()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks are not available: %v", err)
+	}
+	t.Setenv("MANVI_STATE_DIR", "link/state")
+
+	err := run(io.Discard, io.Discard, []string{"doctor"})
+	if !errors.Is(err, errStateDirOutside) {
+		t.Fatalf("run(doctor) = %v, want errStateDirOutside", err)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("scaffolding created %v outside the project", entries)
 	}
 }

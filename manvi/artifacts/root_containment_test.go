@@ -1,10 +1,23 @@
 package artifacts
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/treefile"
 )
+
+// refused asserts err is a containment refusal, not some other failure that
+// happens to stop the write: a refusal test that accepts any error also passes
+// when the store is simply broken.
+func refused(t *testing.T, what string, err error) {
+	t.Helper()
+	if !errors.Is(err, treefile.ErrRefused) {
+		t.Errorf("%s: got %v, want a treefile refusal", what, err)
+	}
+}
 
 // A repository can commit its artifact directory as a symlink to anywhere. The
 // store's own checks start below the root, so a root that is itself a link used
@@ -27,6 +40,7 @@ func TestAStoreRootThatIsASymlinkIsRefusedAndTheTargetStaysEmpty(t *testing.T) {
 	if err == nil {
 		t.Fatal("Create through a store root that is a symlink succeeded")
 	}
+	refused(t, "Create over a linked root", err)
 	entries, readErr := os.ReadDir(outside)
 	if readErr != nil {
 		t.Fatal(readErr)
@@ -56,17 +70,39 @@ func TestAStoreUnderAnAnchorRefusesALinkAtAnyComponent(t *testing.T) {
 			if err := os.Symlink(outside, filepath.Join(anchor, filepath.FromSlash(tc.plant))); err != nil {
 				t.Skipf("symlinks are not available: %v", err)
 			}
+			// The same layout without the link is a working store, so a refusal
+			// below is the link's and not a broken store's.
+			control := filepath.Join(base, "control")
+			if err := os.MkdirAll(filepath.Join(control, "state"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			good, err := NewStoreUnder(control, tc.rel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := good.Create("a/b.md", "fine", Metadata{}); err != nil {
+				t.Fatalf("the control store, with no link, cannot write: %v", err)
+			}
+
 			store, err := NewStoreUnder(anchor, tc.rel)
-			if err == nil {
-				if _, err = store.Create("a/b.md", "planted", Metadata{}); err == nil {
+			if err != nil {
+				refused(t, "NewStoreUnder", err)
+			} else {
+				_, err = store.Create("a/b.md", "planted", Metadata{})
+				if err == nil {
 					t.Fatal("Create passed through a symbolic link")
 				}
-				if _, err := store.Get("a/b.md"); err == nil {
+				refused(t, "Create", err)
+				_, err = store.Get("a/b.md")
+				if err == nil {
 					t.Error("Get passed through a symbolic link")
 				}
-				if _, err := store.List(); err == nil {
+				refused(t, "Get", err)
+				_, err = store.List()
+				if err == nil {
 					t.Error("List passed through a symbolic link")
 				}
+				refused(t, "List", err)
 			}
 			entries, _ := os.ReadDir(outside)
 			if len(entries) != 0 {
@@ -98,15 +134,20 @@ func TestARootSwappedForALinkAfterTheStoreWasBuiltIsRefused(t *testing.T) {
 	if err := os.Symlink(outside, dir); err != nil {
 		t.Skipf("symlinks are not available: %v", err)
 	}
-	if _, err := store.Create("second.md", "planted", Metadata{}); err == nil {
+	_, err = store.Create("second.md", "planted", Metadata{})
+	if err == nil {
 		t.Error("Create followed a link swapped in after construction")
 	}
-	if _, err := store.Update("first.md", "planted", nil); err == nil {
+	refused(t, "Create", err)
+	_, err = store.Update("first.md", "planted", nil)
+	if err == nil {
 		t.Error("Update followed a link swapped in after construction")
 	}
-	if _, err := store.Get("first.md"); err == nil {
+	_, err = store.Get("first.md")
+	if err == nil {
 		t.Error("Get followed a link swapped in after construction")
 	}
+	refused(t, "Get", err)
 	entries, _ := os.ReadDir(outside)
 	if len(entries) != 0 {
 		t.Fatalf("the link's target was written to: %v", entries)
@@ -134,6 +175,7 @@ func TestARelativeStoreDirRefusesALinkedParent(t *testing.T) {
 	if err == nil {
 		t.Fatal("the default store directory passed through a linked .devcouncil")
 	}
+	refused(t, "Create under a linked .devcouncil", err)
 	entries, _ := os.ReadDir(outside)
 	if len(entries) != 0 {
 		t.Fatalf("the link's target was written to: %v", entries)
@@ -143,5 +185,39 @@ func TestARelativeStoreDirRefusesALinkedParent(t *testing.T) {
 func TestNewStoreUnderRefusesAPathThatClimbsOut(t *testing.T) {
 	if _, err := NewStoreUnder(t.TempDir(), "../x"); err == nil {
 		t.Fatal("a store directory outside its anchor was accepted")
+	}
+}
+
+// A relative store directory (the default, ".devcouncil/artifacts", is one) is
+// the common case, and must work end to end when nothing is linked: the
+// refusals above mean something only beside this.
+func TestARelativeStoreDirWorksEndToEnd(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, dir := range []string{"", "plain", filepath.Join("a", "b")} {
+		store, err := NewStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Create("sub/x.md", "one", Metadata{Summary: "s"}); err != nil {
+			t.Fatalf("NewStore(%q).Create: %v", dir, err)
+		}
+		if _, err := store.Update("sub/x.md", "two", nil); err != nil {
+			t.Fatalf("NewStore(%q).Update: %v", dir, err)
+		}
+		got, err := store.Get("sub/x.md")
+		if err != nil || got.Content != "two" || got.Revision != 2 {
+			t.Fatalf("NewStore(%q).Get = %+v, %v", dir, got, err)
+		}
+		arts, err := store.List()
+		if err != nil || len(arts) != 1 {
+			t.Fatalf("NewStore(%q).List = %v, %v", dir, arts, err)
+		}
+	}
+	under, err := NewStoreUnder(".", filepath.Join("rel", "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := under.Create("y.md", "x", Metadata{}); err != nil {
+		t.Fatalf("NewStoreUnder with a relative anchor: %v", err)
 	}
 }
