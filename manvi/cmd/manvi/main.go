@@ -375,19 +375,29 @@ func run(out, notes io.Writer, args []string) error {
 	// It reports rather than returns: scaffolding is not a gate, and a harness
 	// that refused to run 'manvi doctor' because it could not write .gitignore
 	// would be failing at the diagnosis the operator asked for.
+	//
+	// The same holds for a refused state directory, and only for doctor: every
+	// other command that keeps state is refused by name here, while doctor skips
+	// the scaffolding that would write through the link, goes on to diagnose, and
+	// reports the refusal as a finding (see doctorWithState).
+	var stateRefusal error
 	if preparesRepository(args) {
 		// Before scaffolding, which creates directories and writes files through
 		// whatever the state path names: a repository that commits it as a link
 		// out of the tree is refused here, by name, not discovered afterwards.
 		if err := verifyStateDir(); err != nil {
-			return err
-		}
-		report, err := scaffold(reg)
-		if err != nil {
-			return err
-		}
-		for _, line := range report.Lines() {
-			_, _ = fmt.Fprintf(notes, "manvi: %s\n", line)
+			if len(args) == 0 || args[0] != "doctor" {
+				return err
+			}
+			stateRefusal = err
+		} else {
+			report, err := scaffold(reg)
+			if err != nil {
+				return err
+			}
+			for _, line := range report.Lines() {
+				_, _ = fmt.Fprintf(notes, "manvi: %s\n", line)
+			}
 		}
 	}
 
@@ -397,7 +407,7 @@ func run(out, notes io.Writer, args []string) error {
 
 	switch args[0] {
 	case "doctor":
-		return doctor(out, reg)
+		return doctorWithState(out, reg, stateRefusal)
 	case "gusset-check":
 		return gussetCheck(out)
 	case "flags":

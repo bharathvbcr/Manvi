@@ -117,7 +117,9 @@ func TestNewArtifactStoreRefusesALinkedStateDirAndWritesNothingThroughIt(t *test
 
 // The check is wired into start-up, ahead of the scaffolding that would create
 // the state directory through the link: a command that prepares the repository
-// is refused by name and nothing is created outside the project.
+// is refused by name and nothing is created outside the project. Doctor is the
+// one command that reports the refusal instead (TestDoctorReportsALinkedStateDir
+// InsteadOfAborting), so this uses another command that keeps state.
 func TestStartUpRefusesALinkedStateDirBeforeScaffolding(t *testing.T) {
 	root, outside := stateTree(t)
 	defer setProjectRootForTest(root)()
@@ -126,9 +128,9 @@ func TestStartUpRefusesALinkedStateDirBeforeScaffolding(t *testing.T) {
 	}
 	t.Setenv("MANVI_STATE_DIR", "link/state")
 
-	err := run(io.Discard, io.Discard, []string{"doctor"})
+	err := run(io.Discard, io.Discard, []string{"lease", "list"})
 	if !errors.Is(err, errStateDirOutside) {
-		t.Fatalf("run(doctor) = %v, want errStateDirOutside", err)
+		t.Fatalf("run(lease list) = %v, want errStateDirOutside", err)
 	}
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
 		t.Fatalf("scaffolding created %v outside the project", entries)

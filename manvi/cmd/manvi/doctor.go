@@ -11,6 +11,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/internal/hygiene"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
@@ -22,6 +23,17 @@ import (
 // not established. A check that could not run is printed as such rather than
 // omitted, because an omitted check reads as a passing one.
 func doctor(out io.Writer, reg *flags.Registry) error {
+	return doctorWithState(out, reg, nil)
+}
+
+// doctorWithState is doctor for a run whose state directory was refused (see
+// verifyStateDir): stateRefusal is that refusal, or nil. Doctor is the command an
+// operator reaches for when something is wrong, so a refused state directory is
+// reported as the finding it is rather than aborting before anything is
+// diagnosed, and every probe that would open, create or write through that
+// directory is skipped and said to be skipped. Like every other UNAVAILABLE row
+// it does not change doctor's exit status: the report is the answer.
+func doctorWithState(out io.Writer, reg *flags.Registry, stateRefusal error) error {
 	_, _ = fmt.Fprintln(out, "manvi doctor")
 	_, _ = fmt.Fprintln(out)
 
@@ -151,19 +163,32 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 		_, _ = fmt.Fprintln(out, "                  reachable — devcouncil_grep will search, honouring ignore rules")
 	}
 
-	client := storeClient()
-	_, _ = fmt.Fprintf(out, "  store           %s -> %s\n", client.Binary, client.DB)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := client.Available(ctx); err != nil {
-		_, _ = fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
-		_, _ = fmt.Fprintln(out, "                  lease checks cannot run; writes that need one will be refused")
+	if stateRefusal != nil {
+		// Nothing below this point is allowed to open, create or write a file
+		// through the refused directory: the store binary would create its
+		// database there and the index reads from it.
+		_, _ = fmt.Fprintf(out, "  state dir       REFUSED: %s\n", hygiene.EscapeLine(stateRefusal.Error()))
+		_, _ = fmt.Fprintln(out, "                  the store, the index and the code graph were not probed, and nothing was")
+		_, _ = fmt.Fprintln(out, "                  created or written through it; commands that keep state will refuse")
 	} else {
-		leases, _ := client.ActiveLeases(ctx)
-		_, _ = fmt.Fprintf(out, "                  reachable, %d active lease(s)\n", len(leases))
-	}
+		client := storeClient()
+		// Closed when the probe is done: doctor is a command, not a long-lived
+		// process, but the client's child outlives it for a minute otherwise, and
+		// a test binary that runs doctor sees it as a leak.
+		defer client.Close()
+		_, _ = fmt.Fprintf(out, "  store           %s -> %s\n", client.Binary, client.DB)
+		if err := client.Available(ctx); err != nil {
+			_, _ = fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
+			_, _ = fmt.Fprintln(out, "                  lease checks cannot run; writes that need one will be refused")
+		} else {
+			leases, _ := client.ActiveLeases(ctx)
+			_, _ = fmt.Fprintf(out, "                  reachable, %d active lease(s)\n", len(leases))
+		}
 
-	reportDevMap(out, ctx, mapClient(projectRoot()))
+		reportDevMap(out, ctx, mapClient(projectRoot()))
+	}
 
 	_, _ = fmt.Fprintln(out)
 	statuses := credentials.NewResolver().Statuses()
