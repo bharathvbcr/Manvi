@@ -7,14 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/treefile"
 )
 
 // ConfigFile represents the standard MCP multi-server configuration file.
@@ -121,6 +125,13 @@ func Fingerprint(cfg ServerConfig) string {
 	_, _ = fmt.Fprintf(h, "passthrough\x00%d\x00", len(pass))
 	for _, p := range pass {
 		write("passthrough", p)
+	}
+	// Written only when set, so a declaration that never mentioned a timeout
+	// keeps the fingerprint an operator already authorized. A declaration that
+	// raises its own call ceiling is a different declaration: a server a
+	// repository may keep waiting on for an hour is not the one that was reviewed.
+	if cfg.TimeoutSeconds != 0 {
+		write("timeout_seconds", strconv.Itoa(cfg.TimeoutSeconds))
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
@@ -442,7 +453,7 @@ func (m *Manager) authorize(cfg ServerConfig) error {
 		return nil
 	}
 
-	where := cfg.Source
+	where := truncateForMessage(cfg.Source)
 	if where == "" {
 		where = "the working tree"
 	}
@@ -474,19 +485,25 @@ func describeInvocation(cfg ServerConfig) string {
 		parts[i] = strconv.Quote(truncateForMessage(p))
 	}
 	line := truncateTo(strings.Join(parts, " "), 4*unroutablePreview)
+	// Every field below came out of the tree as well, and this text is a
+	// multi-line refusal an operator reads: a newline in a cwd or a variable
+	// name would forge a line of it, so each is quoted the way the command is.
 	if cfg.Cwd != "" {
-		line += " (in " + cfg.Cwd + ")"
+		line += " (in " + strconv.Quote(truncateForMessage(cfg.Cwd)) + ")"
 	}
 	if len(cfg.Env) > 0 {
 		keys := make([]string, 0, len(cfg.Env))
 		for k := range cfg.Env {
-			keys = append(keys, k)
+			keys = append(keys, strconv.Quote(truncateForMessage(k)))
 		}
 		sort.Strings(keys)
 		line += " with env " + strings.Join(keys, ",")
 	}
 	if len(cfg.EnvPassthrough) > 0 {
-		pass := append([]string(nil), cfg.EnvPassthrough...)
+		pass := make([]string, 0, len(cfg.EnvPassthrough))
+		for _, p := range cfg.EnvPassthrough {
+			pass = append(pass, strconv.Quote(truncateForMessage(p)))
+		}
 		sort.Strings(pass)
 		line += " forwarding this process's " + strings.Join(pass, ",")
 	}
@@ -508,6 +525,10 @@ type Manager struct {
 	// plugin that failed to load must not be indistinguishable from one that
 	// was never installed, which is what dropping them silently made it.
 	skipped []SkippedManifest
+	// closed is set by CloseAll and never cleared. A closed manager starts
+	// nothing: a Client call that was already handshaking when CloseAll ran must
+	// not store its process in a map nobody will close again.
+	closed bool
 }
 
 // NewManager creates a new MCP & Open Plugin manager.
@@ -560,6 +581,111 @@ func (m *Manager) RegisterServer(cfg ServerConfig) error {
 	return m.register(cfg, OriginProgram, "")
 }
 
+// declarationRefused is a declaration this manager declined to register. It is
+// recorded in Skipped before it is returned, so discovery can carry on past it
+// and an operator can still see which declaration was set aside and why.
+type declarationRefused struct{ reason string }
+
+func (e *declarationRefused) Error() string { return "mcp: " + e.reason }
+
+// maxEnvKeyLen and maxTimeoutSeconds bound what a declaration may name.
+const (
+	maxEnvKeyLen = 256
+	// maxTimeoutSeconds is the ceiling on a declaration's own call timeout: an
+	// hour. A repository that may set it to a year has set it to "never".
+	maxTimeoutSeconds = 3600
+)
+
+// validName reports whether s is usable as a server name: the same set the
+// command gate accepts for a server in a target (devcouncil.checkMCPName), so a
+// name that registers is a name that can be gated.
+func validName(s string) bool {
+	if s == "" || len(s) > maxToolNameLen {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_' || r == '-' || r == '.' || r == ':':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validEnvKey reports whether s is an environment variable name: a letter or
+// underscore, then letters, digits and underscores.
+func validEnvKey(s string) bool {
+	if s == "" || len(s) > maxEnvKeyLen {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validateDeclaration is the one place a declaration is checked, once, at
+// registration. Everything after this point — the fingerprint, the refusal an
+// operator reads, the environment handed to the child — may assume a name and
+// an environment that are plain identifiers and a cwd that is a path, not a
+// paragraph. The strings are the tree's to choose, and several of them used to
+// be printed or exec'd as they came.
+func (m *Manager) validateDeclaration(cfg ServerConfig) error {
+	if !validName(cfg.Name) {
+		return fmt.Errorf("server name %q is not usable: names are limited to letters, digits and _-.:, "+
+			"at most %d bytes", truncateForMessage(cfg.Name), maxToolNameLen)
+	}
+	for k := range cfg.Env {
+		if !validEnvKey(k) {
+			return fmt.Errorf("server %q declares the environment variable name %q, which is not an identifier",
+				cfg.Name, truncateForMessage(k))
+		}
+	}
+	for _, k := range cfg.EnvPassthrough {
+		if !validEnvKey(k) {
+			return fmt.Errorf("server %q forwards the environment variable name %q, which is not an identifier",
+				cfg.Name, truncateForMessage(k))
+		}
+	}
+	if cfg.TimeoutSeconds < 0 || cfg.TimeoutSeconds > maxTimeoutSeconds {
+		return fmt.Errorf("server %q declares timeout_seconds %d; it must be between 0 and %d",
+			cfg.Name, cfg.TimeoutSeconds, maxTimeoutSeconds)
+	}
+	if hasControlChars(cfg.Cwd) {
+		return fmt.Errorf("server %q declares a cwd containing control characters: %q",
+			cfg.Name, truncateForMessage(cfg.Cwd))
+	}
+	if cfg.Origin == OriginWorkspace && cfg.Cwd != "" && m.root != "" {
+		inside, err := PathIsInside(m.root, m.workspaceCwd(cfg.Cwd))
+		switch {
+		case err != nil:
+			return fmt.Errorf("server %q declares the cwd %q and whether it lies inside %s could not be "+
+				"established: %v", cfg.Name, truncateForMessage(cfg.Cwd), m.root, err)
+		case !inside:
+			return fmt.Errorf("server %q declares the cwd %q, which is outside the repository %s; "+
+				"a declaration read from the tree may only run inside it",
+				cfg.Name, truncateForMessage(cfg.Cwd), m.root)
+		}
+	}
+	return nil
+}
+
+// workspaceCwd is the directory a workspace declaration's cwd names: a relative
+// one is relative to the repository, not to wherever this process was started.
+func (m *Manager) workspaceCwd(cwd string) string {
+	if filepath.IsAbs(cwd) || m.root == "" {
+		return cwd
+	}
+	return filepath.Join(m.root, cwd)
+}
+
 func (m *Manager) register(cfg ServerConfig, origin Origin, source string) error {
 	if !m.Enabled() {
 		return m.unavailable()
@@ -569,10 +695,58 @@ func (m *Manager) register(cfg ServerConfig, origin Origin, source string) error
 	}
 	cfg.Origin = origin
 	cfg.Source = source
+	where := source
+	if where == "" {
+		where = "the program"
+	}
+	if err := m.validateDeclaration(cfg); err != nil {
+		return m.refuse(cfg, err.Error())
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if prior, declared := m.configs[cfg.Name]; declared {
+		if reflect.DeepEqual(prior, cfg) {
+			// The same declaration made again, from the same place. Nothing
+			// changed, so nothing is refused: discovery run twice is not a
+			// second declaration.
+			return nil
+		}
+		priorWhere := prior.Source
+		if priorWhere == "" {
+			priorWhere = "the program"
+		}
+		reason := fmt.Sprintf("server %q is already declared by %s; the second declaration, by %s, was refused "+
+			"so that a name keeps one meaning", cfg.Name, truncateForMessage(priorWhere), truncateForMessage(where))
+		m.skipped = append(m.skipped, SkippedManifest{Path: skippedPath(cfg), Reason: reason})
+		return &declarationRefused{reason: reason}
+	}
 	m.configs[cfg.Name] = cfg
 	return nil
+}
+
+// refuse records a declaration that failed validation and returns the refusal.
+func (m *Manager) refuse(cfg ServerConfig, reason string) error {
+	m.mu.Lock()
+	m.skipped = append(m.skipped, SkippedManifest{Path: skippedPath(cfg), Reason: reason})
+	m.mu.Unlock()
+	return &declarationRefused{reason: reason}
+}
+
+// skippedPath is what a refused declaration is filed under: the file it came
+// from, or its name when the program declared it.
+func skippedPath(cfg ServerConfig) string {
+	if cfg.Source != "" {
+		return cfg.Source
+	}
+	return truncateForMessage(cfg.Name)
+}
+
+// isRefusal reports whether err is a declaration refused on its merits, which
+// discovery records and goes on past, as opposed to a fault in the discovery
+// itself, which stops it.
+func isRefusal(err error) bool {
+	var refused *declarationRefused
+	return errors.As(err, &refused)
 }
 
 // RegisterPlugin registers an Open Plugin 1.0 standard manifest.
@@ -593,8 +767,6 @@ func (m *Manager) RegisterPlugin(p *PluginManifest) error {
 	if p.ManifestPath != "" {
 		origin, source = OriginWorkspace, p.ManifestPath
 	}
-	m.mu.Lock()
-	m.plugins[p.Name] = p
 	cfg, err := p.ToServerConfig()
 	if err != nil {
 		// The manifest parsed, so DiscoverPlugins had no reason to skip it, but
@@ -613,15 +785,24 @@ func (m *Manager) RegisterPlugin(p *PluginManifest) error {
 		if where == "" {
 			where = p.Name
 		}
+		m.mu.Lock()
 		m.skipped = append(m.skipped, SkippedManifest{Path: where, Reason: err.Error()})
 		m.mu.Unlock()
 		return nil
 	}
-	m.mu.Unlock()
 	// Through register, not a bare m.configs write: register is what records
 	// origin and source, and a plugin config filed without them is a server
 	// whose provenance the trust rules can no longer ask about.
-	return m.register(cfg, origin, source)
+	if err := m.register(cfg, origin, source); err != nil {
+		return err
+	}
+	// Remembered only once its declaration was accepted, and only then is its
+	// static tool list ever served (see surveyTools). A manifest whose server
+	// name was already taken, or that declares no way to run, advertises nothing.
+	m.mu.Lock()
+	m.plugins[p.Name] = p
+	m.mu.Unlock()
+	return nil
 }
 
 // LoadConfigFile parses an MCP server configuration file (e.g. .devcouncil/mcp.json).
@@ -645,19 +826,20 @@ func (m *Manager) loadConfigFile(path string) (found bool, err error) {
 	if !m.Enabled() {
 		return false, m.unavailable()
 	}
-	resolved := m.resolve(path)
-	// The file comes out of the checked-out tree, so its size is chosen by
-	// whoever wrote the repository. Bounded before it is read, not after.
-	if info, statErr := os.Stat(resolved); statErr == nil && info.Size() > maxManifestBytes {
-		return true, fmt.Errorf("mcp: %s is %d bytes, past the %d cap",
-			path, info.Size(), maxManifestBytes)
-	}
-	data, err := os.ReadFile(resolved)
+	// The file comes out of the checked-out tree, so what it is and how big it
+	// is are chosen by whoever wrote the repository. It is read through
+	// treefile: no link is followed, only a regular file is read, and the size
+	// is bounded by what was read rather than by a stat that a device file
+	// answers with zero.
+	data, err := m.readDeclaration(path, maxManifestBytes)
 	if err != nil {
-		if os.IsNotExist(err) {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
 			return false, nil
+		case errors.Is(err, treefile.ErrTooLarge):
+			return true, fmt.Errorf("mcp: %s is past the %d-byte cap: %w", path, maxManifestBytes, err)
 		}
-		return false, fmt.Errorf("mcp: reading config %s: %w", path, err)
+		return true, fmt.Errorf("mcp: reading config %s: %w", path, err)
 	}
 
 	var cf ConfigFile
@@ -676,10 +858,33 @@ func (m *Manager) loadConfigFile(path string) (found bool, err error) {
 		// about Origin is not consulted — the field is json:"-" precisely so
 		// that a declaration cannot promote itself.
 		if err := m.register(cfg, OriginWorkspace, m.resolve(path)); err != nil {
+			if isRefusal(err) {
+				// Recorded in Skipped by register; one bad declaration does not
+				// stop the others in the file from being offered.
+				continue
+			}
 			return true, err
 		}
 	}
 	return true, nil
+}
+
+// readDeclaration reads one declaration file, below the manager's root when the
+// path is relative: the directories down to it are opened one verified step at
+// a time, so a repository cannot point a directory it controls at somewhere
+// else. An absolute path is one an operator typed, and its directory is the
+// anchor.
+func (m *Manager) readDeclaration(path string, limit int64) ([]byte, error) {
+	if filepath.IsAbs(path) || m.root == "" {
+		return readTreeFile(m.resolve(path), limit)
+	}
+	rel := filepath.Clean(path)
+	dir, err := treefile.OpenDir(m.root, filepath.Dir(rel), 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = dir.Close() }()
+	return treefile.ReadFile(dir, filepath.Base(rel), treefile.ReadOptions{Limit: limit})
 }
 
 // resolve turns a declaration path into one this process can open.
@@ -776,7 +981,7 @@ func (m *Manager) Discover(ctx context.Context, src ConfigSource) error {
 	m.skipped = append(m.skipped, skipped...)
 	m.mu.Unlock()
 	for _, p := range plugins {
-		if err := m.RegisterPlugin(p); err != nil {
+		if err := m.RegisterPlugin(p); err != nil && !isRefusal(err) {
 			return err
 		}
 	}
@@ -808,28 +1013,48 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	}
 
 	m.mu.RLock()
+	closed := m.closed
 	cachedClient, hasCached := m.clients[name]
 	cfg, registered := m.configs[name]
 	m.mu.RUnlock()
 
-	if hasCached && cachedClient.Alive() {
-		return cachedClient, nil
+	if closed {
+		return nil, errManagerClosed
 	}
 	if !registered {
 		return nil, fmt.Errorf("mcp: server %q is not registered", name)
 	}
 
-	// The one place a process is spawned, and so the one place authorization
+	// The one place a process is reached, and so the one place authorization
 	// is decided. Every route to a server — ListAllTools, CallTool,
 	// ReadResource, the tool surface's per-server listing — arrives here, so a
 	// declaration that no operator authorized cannot be executed by any of
 	// them. See Origin.
+	//
+	// It is decided on the cached client's path as well as the cold one. The
+	// authorization list is read fresh on every check precisely so that a
+	// revocation takes effect when it is written, and that promise meant nothing
+	// for a server that was already running: it kept answering, with the
+	// operator's authorization gone, until the process died on its own. A
+	// refusal also closes the process it refused, because a server nobody may
+	// call is a server nobody should leave running.
 	if err := m.authorize(cfg); err != nil {
+		if hasCached {
+			m.dropClient(name, cachedClient)
+		}
 		return nil, err
 	}
+	if hasCached && cachedClient.Alive() {
+		return cachedClient, nil
+	}
 
-	if cfg.Cwd == "" && m.root != "" {
+	switch {
+	case cfg.Cwd == "" && m.root != "":
 		cfg.Cwd = m.root
+	case cfg.Origin == OriginWorkspace:
+		// Validated against the repository at registration as a path relative to
+		// it, so it is started there too.
+		cfg.Cwd = m.workspaceCwd(cfg.Cwd)
 	}
 
 	client, err := NewClient(cfg)
@@ -845,6 +1070,13 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	}
 
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		// CloseAll ran while this connection was handshaking. Storing it would
+		// put a live process in a map nobody will close again.
+		_ = client.Close()
+		return nil, errManagerClosed
+	}
 	previous, hadPrevious := m.clients[name]
 	if hadPrevious && previous.Alive() {
 		m.mu.Unlock()
@@ -869,6 +1101,22 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 		_ = previous.Close()
 	}
 	return client, nil
+}
+
+// errManagerClosed is what every entry point that would reach a server returns
+// once CloseAll has run.
+var errManagerClosed = errors.New("mcp: the manager is closed; no server will be started")
+
+// dropClient closes a client the manager no longer permits and forgets it, if it
+// is still the one on file. Close waits on a child process, so it runs outside
+// the lock.
+func (m *Manager) dropClient(name string, c *Client) {
+	m.mu.Lock()
+	if m.clients[name] == c {
+		delete(m.clients, name)
+	}
+	m.mu.Unlock()
+	_ = c.Close()
 }
 
 // ServerNames returns all registered server names in sorted order.
@@ -927,6 +1175,10 @@ type ServerTools struct {
 	// in the result as simply absent — and an absent server is exactly what a
 	// server with no tools looks like.
 	Error string `json:"error,omitempty"`
+	// Static is set when Tools is the list a plugin manifest declared, read
+	// from the manifest and not from the server: no server was asked, so the
+	// list is what the declaration claims and not what the server serves.
+	Static bool `json:"static,omitempty"`
 }
 
 // ListAllTools surveys tools across all registered servers.
@@ -939,7 +1191,17 @@ func (m *Manager) ListAllTools(ctx context.Context) ([]ServerTools, error) {
 	if !m.Enabled() {
 		return nil, m.unavailable()
 	}
-	names := m.ServerNames()
+	return m.ListServerTools(ctx, m.ServerNames())
+}
+
+// ListServerTools surveys the tools of the named servers, in the order given.
+// It is ListAllTools for a caller that has already decided which servers it may
+// reach: asking a server is what starts it, so a caller with a gate to consult
+// consults it first and surveys only the servers that passed.
+func (m *Manager) ListServerTools(ctx context.Context, names []string) ([]ServerTools, error) {
+	if !m.Enabled() {
+		return nil, m.unavailable()
+	}
 	if len(names) == 0 {
 		return nil, nil
 	}
@@ -965,14 +1227,50 @@ func (m *Manager) ListAllTools(ctx context.Context) ([]ServerTools, error) {
 // maxConcurrentSurveys bounds how many servers ListAllTools starts at once.
 const maxConcurrentSurveys = 8
 
-// surveyTools is one server's entry in ListAllTools.
-func (m *Manager) surveyTools(ctx context.Context, name string) ServerTools {
-	// First check if static tools were declared in Open Plugin manifest
+// staticTools is the tool list a plugin manifest declared for name, when a
+// survey may answer from it instead of asking the server.
+func (m *Manager) staticTools(name string) ([]Tool, bool) {
 	m.mu.RLock()
 	plugin := m.plugins[name]
+	cfg, registered := m.configs[name]
 	m.mu.RUnlock()
-	if plugin != nil && len(plugin.Tools) > 0 {
-		return ServerTools{Server: name, Tools: plugin.Tools}
+	if plugin != nil && registered && len(plugin.Tools) > 0 && m.authorize(cfg) == nil {
+		return plugin.Tools, true
+	}
+	return nil, false
+}
+
+// ServesStatically reports whether a survey of name is answered from its
+// manifest, so that no server is started to answer it.
+func (m *Manager) ServesStatically(name string) bool {
+	_, ok := m.staticTools(name)
+	return ok
+}
+
+// CanStart reports whether a call to Client for name would start, or reach, a
+// server: the name is registered and its declaration passes authorize. A caller
+// with a gate to consult asks this to know which names the gate is about; a name
+// that cannot start is refused by Client itself, loudly and without a process.
+func (m *Manager) CanStart(name string) bool {
+	if !m.Enabled() {
+		return false
+	}
+	m.mu.RLock()
+	cfg, registered := m.configs[name]
+	m.mu.RUnlock()
+	return registered && m.authorize(cfg) == nil
+}
+
+// surveyTools is one server's entry in ListAllTools.
+func (m *Manager) surveyTools(ctx context.Context, name string) ServerTools {
+	// A manifest's static tool list is served in place of asking the server only
+	// for a declaration that is registered under this name and that passes
+	// authorize, and it is labelled as static. It used to be served for any name
+	// a manifest carried, so a manifest that lost its name to another
+	// declaration, or one nobody had authorized, still advertised tools that the
+	// server of that name would never offer.
+	if tools, ok := m.staticTools(name); ok {
+		return ServerTools{Server: name, Tools: tools, Static: true}
 	}
 
 	// A failure here does not fail the whole survey — one bad server must
@@ -1030,14 +1328,21 @@ func (m *Manager) ReadResource(ctx context.Context, serverName, uri string) ([]R
 }
 
 // CloseAll closes all active MCP client processes.
+//
+// The manager is closed for good: it starts no further server, and a connection
+// that was still handshaking is closed by the Client call that made it.
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.closed = true
+	clients := m.clients
+	m.clients = make(map[string]*Client)
+	m.mu.Unlock()
 
-	for _, client := range m.clients {
+	// Outside the lock: Close waits on a child process, and every other manager
+	// operation queues behind this mutex.
+	for _, client := range clients {
 		_ = client.Close()
 	}
-	m.clients = make(map[string]*Client)
 }
 
 // Skipped lists manifests discovery found and could not read.

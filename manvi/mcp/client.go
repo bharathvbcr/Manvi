@@ -21,6 +21,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
+	"github.com/bharathvbcr/Manvi/manvi/internal/hygiene"
 )
 
 // serverError is a JSON-RPC error a server answered a call with. It unwraps to
@@ -44,7 +45,15 @@ type ServerConfig struct {
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 	Cwd     string            `json:"cwd,omitempty"`
-	Timeout time.Duration     `json:"timeout,omitempty"`
+	// Timeout is how long a call with no deadline of its own may wait. It
+	// decodes as a time.Duration, which is nanoseconds, so `"timeout": 30` is
+	// thirty nanoseconds; that contract is the owner's to change, and
+	// TimeoutSeconds is the field that says what it means.
+	Timeout time.Duration `json:"timeout,omitempty"`
+	// TimeoutSeconds is Timeout in whole seconds, bounded by maxTimeoutSeconds
+	// and covered by the authorization fingerprint. It applies when Timeout is
+	// unset.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 	// EnvPassthrough names variables to forward from this process's own
 	// environment, for a declaration that needs a secret it must not carry in
 	// plaintext.
@@ -100,9 +109,13 @@ type Client struct {
 	// Initialize.
 	initFatal error
 	// initFlight is the handshake in progress, nil when none is.
-	initFlight   *initFlight
-	closed       atomic.Bool
-	doneCh       chan struct{}
+	initFlight *initFlight
+	closed     atomic.Bool
+	doneCh     chan struct{}
+	// exited is closed once the child has been reaped. One goroutine, reap,
+	// owns cmd.Wait; nothing else waits on the process. Nil on a Client built
+	// without a process, which is only ever a test's.
+	exited       chan struct{}
 	stderrDone   chan struct{}
 	serverErrors []string
 	// droppedErrors counts the oldest entries pushed out of serverErrors.
@@ -288,29 +301,40 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 	// The child's environment is constructed, never inherited. See buildEnv.
 	cmd.Env = buildEnv(cfg, cmd.Dir)
 	proc.ConfigureOwnGroup(cmd)
-	cmd.WaitDelay = waitDelay
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("mcp: creating stdin pipe for %s: %w", cfg.Name, err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	// The child's output goes to pipes this client made, not to cmd.StdoutPipe.
+	// Wait closes the read end of a StdoutPipe as soon as the child exits, which
+	// discards whatever the child wrote last and this client had not read yet; a
+	// pipe of our own is read until it ends, and closed by us when whatever kept
+	// it open has had waitDelay to finish (see reap).
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
-		stdin.Close()
+		_ = stdin.Close()
 		return nil, fmt.Errorf("mcp: creating stdout pipe for %s: %w", cfg.Name, err)
 	}
-	stderr, err := cmd.StderrPipe()
+	stderr, stderrW, err := os.Pipe()
 	if err != nil {
-		stdin.Close()
-		stdout.Close()
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stdoutW.Close()
 		return nil, fmt.Errorf("mcp: creating stderr pipe for %s: %w", cfg.Name, err)
 	}
+	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
-		stderr.Close()
-		return nil, fmt.Errorf("mcp: starting process %s (%s): %w", cfg.Name, cfg.Command, err)
+	startErr := cmd.Start()
+	// The child holds its own copies. Ours must go, or the read ends never see
+	// the end of the stream.
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	if startErr != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		return nil, fmt.Errorf("mcp: starting process %s (%s): %w", cfg.Name, cfg.Command, startErr)
 	}
 
 	c := &Client{
@@ -321,13 +345,37 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 		stderr:     stderr,
 		pending:    make(map[int64]chan *Response),
 		doneCh:     make(chan struct{}),
+		exited:     make(chan struct{}),
 		stderrDone: make(chan struct{}),
 	}
 
 	go c.readLoop()
 	go c.stderrLoop()
+	go c.reap()
 
 	return c, nil
+}
+
+// reap is the one goroutine that waits on the child. It reaps the process, and
+// then holds the stream to waitDelay: a descendant that inherited the pipes can
+// keep them open long after the server itself is gone, and a client that waited
+// for end-of-stream alone would report that server as alive for as long as the
+// descendant lived. Past waitDelay the pipes are closed, which ends the read
+// loops and so the client's life, and the process group is killed, which is what
+// the descendant was holding the pipes with.
+func (c *Client) reap() {
+	_ = c.cmd.Wait()
+	close(c.exited)
+
+	timer := time.NewTimer(waitDelay)
+	defer timer.Stop()
+	select {
+	case <-c.doneCh:
+	case <-timer.C:
+		proc.KillGroup(c.cmd.Process.Pid)
+		_ = c.stdout.Close()
+		_ = c.stderr.Close()
+	}
 }
 
 // stderrLoop records stderr diagnostics from the MCP server.
@@ -354,7 +402,7 @@ func (c *Client) stderrLoop() {
 		case errors.As(err, new(errLineTooLarge)):
 			c.recordError(fmt.Sprintf("stderr line skipped: %v", err))
 			continue
-		case errors.Is(err, io.EOF):
+		case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed):
 		default:
 			c.recordError(fmt.Sprintf("stderr reader failed: %v", err))
 		}
@@ -636,6 +684,9 @@ func (c *Client) readLoop() {
 			}
 			continue
 		case errors.Is(err, io.EOF):
+		case errors.Is(err, os.ErrClosed):
+			// Closed by reap or Close, which is how a stream that a descendant
+			// was holding open is ended; not a fault to report.
 		default:
 			c.recordError(fmt.Sprintf("stdout reader failed: %v", err))
 		}
@@ -972,8 +1023,11 @@ func (c *Client) claimedReply(method string, respCh chan *Response, result any) 
 
 // callCeiling is the bound on a wait whose caller set none.
 func (c *Client) callCeiling() time.Duration {
-	if c.cfg.Timeout > 0 {
+	switch {
+	case c.cfg.Timeout > 0:
 		return c.cfg.Timeout
+	case c.cfg.TimeoutSeconds > 0:
+		return time.Duration(c.cfg.TimeoutSeconds) * time.Second
 	}
 	return defaultCallTimeout
 }
@@ -1463,14 +1517,85 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 		return nil, err
 	}
 
-	var res ListToolsResult
-	if err := c.Call(ctx, "tools/list", map[string]any{}, &res); err != nil {
+	var all []Tool
+	err := c.paginate(ctx, "tools/list", "tools", func(raw json.RawMessage) (string, error) {
+		var page ListToolsResult
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return "", fmt.Errorf("mcp: unmarshaling tools/list result from %s: %w", c.cfg.Name, err)
+		}
+		all = append(all, page.Tools...)
+		// Checked as the pages arrive, so a server that never stops is refused at
+		// the cap and not after it has been read to the end.
+		if err := c.checkToolListing(all); err != nil {
+			return "", err
+		}
+		return page.NextCursor, nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	if err := c.checkToolListing(res.Tools); err != nil {
-		return nil, err
+	for i := range all {
+		// Third-party text that is shown to a model and a terminal; see hygiene.
+		all[i].Description = hygiene.Escape(all[i].Description)
 	}
-	return res.Tools, nil
+	return all, nil
+}
+
+const (
+	// maxListPages bounds how many pages one listing follows.
+	maxListPages = 32
+	// maxCursorLen bounds one cursor a server hands back.
+	maxCursorLen = 4 << 10
+)
+
+// ErrPartialListing marks a listing the server did not finish: it still offered
+// another page when this client stopped following them. The listing is refused
+// whole and not returned short, for the reason the other caps refuse whole: a
+// capped sample reads like complete coverage.
+var ErrPartialListing = errors.New("the server's listing is partial")
+
+// paginate issues method until the server stops handing back a cursor, giving
+// each page to take, which returns the next cursor. It follows at most
+// maxListPages pages and refuses a cursor it was already given, a cursor over
+// maxCursorLen, or a listing that is still going when the pages run out, all as
+// ErrPartialListing. The caps on what a listing may hold stay in take.
+func (c *Client) paginate(ctx context.Context, method, what string, take func(json.RawMessage) (string, error)) error {
+	cursor := ""
+	seen := map[string]struct{}{}
+	for page := 1; ; page++ {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		var raw json.RawMessage
+		if err := c.Call(ctx, method, params, &raw); err != nil {
+			return err
+		}
+		if len(raw) == 0 {
+			raw = json.RawMessage("{}")
+		}
+		next, err := take(raw)
+		if err != nil {
+			return err
+		}
+		if next == "" {
+			return nil
+		}
+		_, repeated := seen[next]
+		switch {
+		case repeated:
+			return fmt.Errorf("mcp: server %s repeated a %s cursor after %d page(s): %w",
+				c.Name(), what, page, ErrPartialListing)
+		case len(next) > maxCursorLen:
+			return fmt.Errorf("mcp: server %s sent a %s cursor of %d bytes, past the %d cap, after %d page(s): %w",
+				c.Name(), what, len(next), maxCursorLen, page, ErrPartialListing)
+		case page >= maxListPages:
+			return fmt.Errorf("mcp: server %s still offers more %s after %d pages: %w",
+				c.Name(), what, page, ErrPartialListing)
+		}
+		seen[next] = struct{}{}
+		cursor = next
+	}
 }
 
 // checkToolListing bounds an attacker-controlled tools/list reply.
@@ -1536,16 +1661,24 @@ func (c *Client) ListResources(ctx context.Context) ([]Resource, error) {
 		return nil, err
 	}
 
-	var res ListResourcesResult
-	if err := c.Call(ctx, "resources/list", map[string]any{}, &res); err != nil {
+	var all []Resource
+	err := c.paginate(ctx, "resources/list", "resources", func(raw json.RawMessage) (string, error) {
+		var page ListResourcesResult
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return "", fmt.Errorf("mcp: unmarshaling resources/list result from %s: %w", c.cfg.Name, err)
+		}
+		all = append(all, page.Resources...)
+		if len(all) > maxResourcesPerServer {
+			return "", fmt.Errorf("mcp: server %s advertised %d resources, past the %d cap; "+
+				"the listing was refused rather than truncated",
+				c.Name(), len(all), maxResourcesPerServer)
+		}
+		return page.NextCursor, nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	if len(res.Resources) > maxResourcesPerServer {
-		return nil, fmt.Errorf("mcp: server %s advertised %d resources, past the %d cap; "+
-			"the listing was refused rather than truncated",
-			c.Name(), len(res.Resources), maxResourcesPerServer)
-	}
-	for i, r := range res.Resources {
+	for i, r := range all {
 		if len(r.URI) > maxResourceFieldLen || len(r.Name) > maxResourceFieldLen {
 			return nil, fmt.Errorf("mcp: server %s advertised a resource at index %d whose uri or name "+
 				"is past the %d-byte cap", c.Name(), i, maxResourceFieldLen)
@@ -1554,8 +1687,9 @@ func (c *Client) ListResources(ctx context.Context) ([]Resource, error) {
 			return nil, fmt.Errorf("mcp: server %s advertised a resource at index %d whose uri or name "+
 				"contains control characters", c.Name(), i)
 		}
+		all[i].Description = hygiene.Escape(r.Description)
 	}
-	return res.Resources, nil
+	return all, nil
 }
 
 // ReadResource reads content of an MCP resource by URI.
@@ -1601,31 +1735,25 @@ func (c *Client) Close() error {
 		_ = c.stdin.Close()
 	}
 
-	// Wait briefly for clean exit
-	done := make(chan struct{})
-	go func() {
-		if c.cmd != nil && c.cmd.Process != nil {
-			_, _ = c.cmd.Process.Wait()
-		}
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(1500 * time.Millisecond):
-		if c.cmd != nil && c.cmd.Process != nil {
-			// The group first, then the leader. Killing only the leader left
-			// whatever it had spawned running — a proxy, a language runtime, a
-			// watcher — holding the pipes it inherited and outliving the
-			// session that started it. The group is the server's own, so this
-			// cannot reach anything else this harness is running.
-			proc.KillGroup(c.cmd.Process.Pid)
-			_ = c.cmd.Process.Kill()
-		}
-		// A kill without a reap leaves the wait-goroutine running and a
-		// zombie on the table; give it a bounded second chance.
+	if c.cmd != nil && c.cmd.Process != nil && c.exited != nil {
+		// Wait briefly for a clean exit. reap owns the wait; this only watches it.
 		select {
-		case <-done:
+		case <-c.exited:
+		case <-time.After(1500 * time.Millisecond):
+		}
+		// The group is killed whether or not the leader went quietly. A server
+		// that exits on its own can leave behind what it spawned — a proxy, a
+		// language runtime, a watcher — still holding the pipes it inherited, and
+		// a Close that only waited for the leader let those outlive the session
+		// that started them. The group is the server's own (ConfigureOwnGroup), so
+		// this cannot reach anything else this harness is running; killing a group
+		// that is already empty is a no-op.
+		proc.KillGroup(c.cmd.Process.Pid)
+		_ = c.cmd.Process.Kill()
+		// A kill without a reap leaves a zombie on the table; give reap a bounded
+		// chance to collect it.
+		select {
+		case <-c.exited:
 		case <-time.After(time.Second):
 		}
 	}

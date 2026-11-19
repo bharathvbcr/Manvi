@@ -2,10 +2,14 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/hygiene"
+	"github.com/bharathvbcr/Manvi/manvi/internal/treefile"
 )
 
 // PluginRuntime specifies how an Open Plugin 1.0 is executed.
@@ -59,6 +63,12 @@ const (
 	// contribute, so a repository cannot make discovery itself the denial of
 	// service.
 	maxManifestsPerDir = 256
+	// maxDiscoveryBytes bounds what one discovery reads across every manifest it
+	// opens. The per-file and per-directory caps multiply: 256 manifests of
+	// 1 MiB under each of three directories is three quarters of a gigabyte read
+	// and parsed before anyone is asked, and every byte of it is chosen by whoever
+	// wrote the repository.
+	maxDiscoveryBytes = 32 << 20
 )
 
 // ParsePluginManifest decodes an Open Plugin 1.0 JSON manifest.
@@ -99,6 +109,11 @@ func ParsePluginManifest(data []byte) (*PluginManifest, error) {
 				"past the %d cap", m.Name, len(tool.InputSchema), tool.Name, maxToolSchemaBytes)
 		}
 	}
+	// Third-party text, shown to a model and to a terminal. See hygiene.
+	m.Description = hygiene.Escape(m.Description)
+	for i := range m.Tools {
+		m.Tools[i].Description = hygiene.Escape(m.Tools[i].Description)
+	}
 	if m.SchemaVersion == "" {
 		m.SchemaVersion = OpenPluginStandardVersion
 	}
@@ -119,24 +134,42 @@ func ParsePluginManifest(data []byte) (*PluginManifest, error) {
 // only thing that sets that field, and Manager.RegisterPlugin reads it to
 // decide whether spawning the declaration needs an operator's authorization.
 func LoadPluginFile(path string) (*PluginManifest, error) {
-	info, err := os.Stat(path)
+	manifest, _, err := loadPluginFile(path, maxManifestBytes)
+	return manifest, err
+}
+
+// loadPluginFile reads and parses one manifest through readTreeFile, within
+// limit bytes, and says how many bytes it read so that discovery can keep a
+// running total. A read that failed, or was refused, read none.
+func loadPluginFile(path string, limit int64) (*PluginManifest, int64, error) {
+	data, err := readTreeFile(path, limit)
 	if err != nil {
-		return nil, fmt.Errorf("openplugin: reading %s: %w", path, err)
-	}
-	if info.Size() > maxManifestBytes {
-		return nil, fmt.Errorf("openplugin: %s is %d bytes, past the %d cap",
-			path, info.Size(), maxManifestBytes)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("openplugin: reading %s: %w", path, err)
+		return nil, 0, fmt.Errorf("openplugin: reading %s: %w", path, err)
 	}
 	manifest, err := ParsePluginManifest(data)
 	if err != nil {
-		return nil, fmt.Errorf("openplugin in %s: %w", path, err)
+		return nil, int64(len(data)), fmt.Errorf("openplugin in %s: %w", path, err)
 	}
 	manifest.ManifestPath = path
-	return manifest, nil
+	return manifest, int64(len(data)), nil
+}
+
+// readTreeFile reads one declaration file whose name a repository chose: no
+// symbolic link is followed, only a regular file is read, and no more than
+// limit bytes are taken from it. The file's directory is the trust anchor, so
+// the file is the last thing checked; a caller that must also refuse a link in
+// the directories above it descends from its root (see Manager.readDeclaration).
+//
+// os.ReadFile was here, behind an os.Stat size check. A link to /dev/zero
+// reports no size and never ends, so the size check let it through and the read
+// filled memory.
+func readTreeFile(path string, limit int64) ([]byte, error) {
+	dir, err := treefile.Open(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = dir.Close() }()
+	return treefile.ReadFile(dir, filepath.Base(path), treefile.ReadOptions{Limit: limit})
 }
 
 // SkippedManifest is a file that looked like a plugin manifest and could not be
@@ -168,6 +201,8 @@ func (s SkippedManifest) String() string { return s.Path + ": " + s.Reason }
 func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, error) {
 	var plugins []*PluginManifest
 	var skipped []SkippedManifest
+	// read is the running total of manifest bytes opened across every directory.
+	var read int64
 
 	for _, dir := range dirs {
 		if dir == "" {
@@ -181,6 +216,10 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 		found := 0
 		err = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
+				// A directory or entry that could not be read is not a directory
+				// with nothing in it. The walk carries on past it, and says so.
+				skipped = append(skipped, SkippedManifest{Path: p,
+					Reason: "could not be read, so nothing under it was searched: " + err.Error()})
 				return nil
 			}
 			if d.IsDir() {
@@ -190,8 +229,12 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 				}
 				// The walk descends the whole subtree, so how deep it goes is
 				// chosen by whoever wrote the repository. Bounding it costs a
-				// manifest nobody would bury that deep on purpose.
+				// manifest nobody would bury that deep on purpose, and the
+				// subtree it prunes is reported rather than forgotten.
 				if depthUnder(dir, p) > maxManifestDepth {
+					skipped = append(skipped, SkippedManifest{Path: p,
+						Reason: fmt.Sprintf("deeper than %d levels under %s; nothing under it was searched",
+							maxManifestDepth, dir)})
 					return filepath.SkipDir
 				}
 				return nil
@@ -206,8 +249,17 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 					return filepath.SkipAll
 				}
 				found++
-				manifest, err := LoadPluginFile(p)
+				remaining := int64(maxDiscoveryBytes) - read
+				if remaining <= 0 {
+					skipped = append(skipped, SkippedManifest{Path: p, Reason: budgetSpent()})
+					return filepath.SkipAll
+				}
+				manifest, n, err := loadPluginFile(p, min(int64(maxManifestBytes), remaining))
+				read += n
 				switch {
+				case err != nil && remaining < maxManifestBytes && errors.Is(err, treefile.ErrTooLarge):
+					skipped = append(skipped, SkippedManifest{Path: p, Reason: budgetSpent()})
+					return filepath.SkipAll
 				case err != nil:
 					skipped = append(skipped, SkippedManifest{Path: p, Reason: err.Error()})
 				case manifest == nil:
@@ -228,6 +280,13 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 	}
 
 	return plugins, skipped, nil
+}
+
+// budgetSpent is the reason given for the manifests discovery did not read once
+// it had read maxDiscoveryBytes of them.
+func budgetSpent() string {
+	return fmt.Sprintf("the discovery byte budget (%d bytes across all manifests) was spent; "+
+		"this and every later manifest were not read", maxDiscoveryBytes)
 }
 
 // depthUnder counts path separators between a root and a path beneath it.
