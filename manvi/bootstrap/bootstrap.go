@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,6 +46,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
 	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
+	"github.com/bharathvbcr/Manvi/manvi/internal/treefile"
 )
 
 // Section is one heading in the managed part of .gitignore, with the rules
@@ -223,13 +225,26 @@ func Ensure(root string, opts Options) Report {
 	if opts.Gitignore {
 		result, err := ensureGitignore(root, sectionsFor(root, opts))
 		if err != nil {
-			report.Failures = append(report.Failures, Failure{".gitignore could not be updated", err})
+			report.Failures = append(report.Failures, Failure{gitignoreFailure(err), err})
 		}
 		report.AddedRules = result.added
 		report.Withheld = result.withheld
 		report.Untracked = result.untracked
 	}
 	return report
+}
+
+// gitignoreFailure says what became of .gitignore, so that a file left alone
+// and a write that landed without a confirmed sync are not both reported as
+// "could not be updated".
+func gitignoreFailure(err error) string {
+	switch {
+	case errors.Is(err, treefile.ErrPublishedUnsynced):
+		return ".gitignore was updated, but its directory sync was not confirmed"
+	case errors.Is(err, treefile.ErrRefused):
+		return ".gitignore was left alone"
+	}
+	return ".gitignore could not be updated"
 }
 
 // sectionsFor is the managed rule set for one repository: the fixed sections,
@@ -385,6 +400,17 @@ func display(root, path string) string {
 	return rel
 }
 
+// syncDir flushes the root after .gitignore is published. It is a variable so a
+// test can make the flush fail, which no real filesystem will do on demand.
+var syncDir = syncdir.Root
+
+// gitignoreName is the file the harness adds its rules to, in the root.
+const gitignoreName = ".gitignore"
+
+// maxGitignoreBytes bounds the .gitignore read. A real one is a few kilobytes;
+// anything near this size is not an ignore file the harness should rewrite.
+const maxGitignoreBytes = 4 << 20
+
 // gitignoreResult is what ensureGitignore did.
 type gitignoreResult struct {
 	added     []string
@@ -411,23 +437,36 @@ const gitTimeout = 10 * time.Second
 // withheld rather than written.
 func ensureGitignore(root string, sections []Section) (gitignoreResult, error) {
 	var result gitignoreResult
-	path := filepath.Join(root, ".gitignore")
+	path := filepath.Join(root, gitignoreName)
+
+	// The root is the repository the operator is standing in, and the anchor:
+	// .gitignore is read and replaced through this handle, never by path, so a
+	// link planted at the name cannot send either one elsewhere.
+	dir, err := treefile.Open(root)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = dir.Close() }()
 
 	var content string
 	// An existing file keeps its mode; the harness only adds to it.
 	mode := os.FileMode(0o644)
-	info, statErr := os.Stat(path)
+	info, statErr := dir.Lstat(gitignoreName)
 	if statErr == nil {
-		if info.IsDir() {
-			return result, fmt.Errorf("%s is a directory", path)
+		// The file is the operator's. One that is a link, a directory or any
+		// other non-regular file is left exactly as found and reported: reading
+		// through a link copies its target into the repository, and replacing it
+		// drops the link.
+		if !info.Mode().IsRegular() {
+			return result, fmt.Errorf("%w: %s is not a regular file (%s)", treefile.ErrRefused, path, info.Mode().Type())
 		}
 		mode = info.Mode().Perm()
-		data, err := os.ReadFile(path)
+		data, err := treefile.ReadFile(dir, gitignoreName, treefile.ReadOptions{Limit: maxGitignoreBytes})
 		if err != nil {
 			return result, err
 		}
 		content = string(data)
-	} else if !os.IsNotExist(statErr) {
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
 		return result, statErr
 	}
 
@@ -471,11 +510,14 @@ func ensureGitignore(root string, sections []Section) (gitignoreResult, error) {
 	if len(added) == 0 {
 		return result, nil
 	}
-	if err := writeAtomic(path, text, mode); err != nil {
+	// An unconfirmed directory sync is not a failed write: the rules are in the
+	// file, so they are reported as added, and the caller is told about the sync.
+	err = treefile.Publish(dir, gitignoreName, []byte(text), treefile.PublishOptions{Perm: mode, ExactPerm: true, Replace: true, SyncDir: syncDir})
+	if err != nil && !errors.Is(err, treefile.ErrPublishedUnsynced) {
 		return result, err
 	}
 	result.added = added
-	return result, nil
+	return result, err
 }
 
 // render is content with the rules in write appended under their headings, and
@@ -709,54 +751,4 @@ func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
 	}
 	return out, err
-}
-
-// writeAtomic replaces path in one step.
-//
-// The file being replaced is the operator's, and it is usually longer than what
-// the harness contributes to it. A truncating write that fails halfway — a full
-// disk, a signal — would leave them with a .gitignore that is neither the old
-// one nor the new one, and the harness would have destroyed content it did not
-// author to add three lines it did.
-func writeAtomic(path, content string, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".gitignore-*.tmp")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-
-	// On each failure below, the step that failed is the error worth
-	// returning; the close that follows it is cleanup, and the deferred
-	// remove takes the half-written file either way.
-	if _, err := tmp.WriteString(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	// Sync before publish: without this a crash right after the rename can
-	// leave the file present but empty — the exact truncated-.gitignore state
-	// that silently disables the rules it carries. The session store's
-	// link-and-sync protocol is the reference here.
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		return err
-	}
-	// And sync the directory: syncing the file puts its bytes on disk; only
-	// the directory sync guarantees the NAME is there after a crash.
-	// The error is dropped on purpose: the rename above already published the
-	// file, so a failed flush is not a failed write, and returning it would tell
-	// the caller a published .gitignore was not written.
-	_ = syncdir.Dir(dir)
-	return nil
 }
