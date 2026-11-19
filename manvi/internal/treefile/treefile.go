@@ -25,6 +25,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 )
@@ -36,11 +38,11 @@ var (
 	ErrRefused = errors.New("refused")
 	// ErrTooLarge marks a file over the caller's limit. It is also a refusal.
 	ErrTooLarge = errors.New("over the size limit")
-	// ErrPublishedUnsynced reports a write that is committed whose durability is
-	// not confirmed: the name was published and the sync of its directory
-	// failed. It is not a failure and must not be retried as one; the caller
-	// that reads it as "not written" gets ErrExist on the retry or a second
-	// revision.
+	// ErrPublishedUnsynced reports a write that is committed whose settling is
+	// not confirmed: the name was published and either the sync of its directory
+	// failed or the temporary file the link left behind could not be removed. It
+	// is not a failure and must not be retried as one; the caller that reads it
+	// as "not written" gets ErrExist on the retry or a second revision.
 	ErrPublishedUnsynced = errors.New("published, durability unconfirmed")
 )
 
@@ -141,14 +143,56 @@ type ReadOptions struct {
 	// see a hard link to a file outside the tree, so a store whose entries have
 	// one name asks for it. A count of zero is not a refusal: the file was
 	// replaced by rename after it was opened, and the handle is a consistent
-	// snapshot of the previous version. A store that publishes by link and then
-	// removes its stage must not ask for it at all, or a read racing that window
-	// is refused.
+	// snapshot of the previous version. A store that publishes by link has two
+	// links to a file for the moment between linking the name and removing the
+	// stage, so a second link is waited on (see linkSettleAttempts) before it is
+	// refused; a link that is still there then is not a publish in progress.
 	SingleLink bool
 }
 
 // openRetries bounds the retries of an open that raced a rename-replace.
 const openRetries = 3
+
+// linkSettleAttempts bounds how often a read that found a second hard link waits
+// for it to go. A store that publishes by link makes the link count of a file 2
+// for the moment between linking the name and removing the stage, and a read
+// that lands there is not looking at a file outside the tree. The wait is
+// 1, 2, 4 and 8 milliseconds, so a link that is still there afterwards, which is
+// what a planted one is, costs a reader at most 15 ms before it is refused.
+const linkSettleAttempts = 5
+
+// settle waits out one step of a link settling. It is a variable so a test can
+// act at that moment instead of racing a clock; nothing else assigns it.
+var settle = time.Sleep
+
+// ErrUnstable marks a name that kept being replaced while it was being opened,
+// so no handle that was the name's current file could be taken. It is neither a
+// refusal of what the entry is nor an absence: a caller may try again.
+var ErrUnstable = errors.New("changed while it was being opened")
+
+// unstableOpenError is the answer for a regular file that was replaced under
+// every attempt to open it.
+func unstableOpenError(name string) error {
+	return fmt.Errorf("treefile: %q was replaced %d times while it was being opened, so it was not read: %w",
+		name, openRetries+1, ErrUnstable)
+}
+
+// openFailure classifies a failure of the no-follow open that is not an absence.
+// A permission failure and an exhausted descriptor table are facts about this
+// process and this host, not about what the entry is, and calling them refusals
+// told an operator the repository was hostile when it was the host that was
+// short of descriptors. Everything else the open refuses (a link met on the way,
+// an entry that changed identity, a parent that is not a directory) is the
+// entry's own doing.
+func openFailure(name string, err error) error {
+	switch {
+	case errors.Is(err, fs.ErrPermission),
+		errors.Is(err, syscall.EMFILE), errors.Is(err, syscall.ENFILE),
+		errors.Is(err, syscall.ENOMEM), errors.Is(err, syscall.EIO):
+		return fmt.Errorf("treefile: opening %q: %w", name, err)
+	}
+	return fmt.Errorf("%w: %q (a symbolic link, or not an ordinary path): %w", ErrRefused, name, err)
+}
 
 // openRegular opens name below root without following any link, FIFO-safe
 // (O_NONBLOCK) and checks the handle, not a separate lstat: it must be a
@@ -157,50 +201,63 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 	if o.Limit <= 0 {
 		return nil, errors.New("treefile: a read needs a positive size limit")
 	}
-	var f *os.File
-	for attempt := 0; ; attempt++ {
-		var err error
-		f, err = safefile.OpenNoFollow(root, filepath.FromSlash(name), os.O_RDONLY, 0)
-		if err == nil {
-			break
-		}
-		// os.Root answers "does not exist" for a dangling link it resolved
-		// itself. A name present as a link is a refusal, not an absence, so that
-		// case must not wrap fs.ErrNotExist. A name that is a regular file when
-		// looked at again was replaced by rename between the open and the look:
-		// that is a race, not a refusal, and the open is retried.
-		if errors.Is(err, fs.ErrNotExist) {
+	for attempt, links := 0, 0; ; {
+		f, err := safefile.OpenNoFollow(root, filepath.FromSlash(name), os.O_RDONLY, 0)
+		if err != nil {
+			// os.Root answers "does not exist" for a dangling link it resolved
+			// itself. A name present as a link is a refusal, not an absence, so
+			// that case must not wrap fs.ErrNotExist. A name that is a regular
+			// file when looked at again was replaced by rename between the open
+			// and the look: that is a race, not a refusal, and the open is
+			// retried, and reported as a race if it keeps losing.
+			if !errors.Is(err, fs.ErrNotExist) {
+				return nil, openFailure(name, err)
+			}
 			info, lerr := root.Lstat(filepath.FromSlash(name))
 			switch {
 			case errors.Is(lerr, fs.ErrNotExist):
 				return nil, err
-			case lerr == nil && info.Mode().IsRegular() && attempt < openRetries:
-				continue
+			case lerr == nil && info.Mode().IsRegular():
+				if attempt < openRetries {
+					attempt++
+					continue
+				}
+				return nil, unstableOpenError(name)
+			case lerr == nil && info.Mode()&fs.ModeSymlink != 0:
+				return nil, refusal(name, "(a dangling symbolic link): "+err.Error())
+			case lerr == nil:
+				return nil, refusal(name, "is not a regular file or a link it can follow: "+err.Error())
 			}
-			return nil, refusal(name, "(a dangling symbolic link): "+err.Error())
+			return nil, openFailure(name, errors.Join(err, lerr))
 		}
-		return nil, fmt.Errorf("%w: %q (a symbolic link, or not an ordinary path): %w", ErrRefused, name, err)
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("treefile: inspecting %q: %w", name, err), f.Close())
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.Join(refusal(name, "is not a regular file"), f.Close())
-	}
-	if o.SingleLink {
-		links, err := safefile.LinkCount(f)
+		info, err := f.Stat()
 		if err != nil {
-			return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
+			return nil, errors.Join(fmt.Errorf("treefile: inspecting %q: %w", name, err), f.Close())
 		}
-		if links > 1 {
-			return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", links)), f.Close())
+		if !info.Mode().IsRegular() {
+			return nil, errors.Join(refusal(name, "is not a regular file"), f.Close())
 		}
+		if o.SingleLink {
+			n, err := safefile.LinkCount(f)
+			if err != nil {
+				return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
+			}
+			if n > 1 {
+				if err := f.Close(); err != nil {
+					return nil, fmt.Errorf("treefile: closing %q: %w", name, err)
+				}
+				if links++; links < linkSettleAttempts {
+					settle(time.Millisecond << (links - 1))
+					continue
+				}
+				return nil, refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n))
+			}
+		}
+		if info.Size() > o.Limit {
+			return nil, errors.Join(fmt.Errorf("%w: %q is %d bytes, over the %d-byte limit: %w", ErrRefused, name, info.Size(), o.Limit, ErrTooLarge), f.Close())
+		}
+		return f, nil
 	}
-	if info.Size() > o.Limit {
-		return nil, errors.Join(fmt.Errorf("%w: %q is %d bytes, over the %d-byte limit: %w", ErrRefused, name, info.Size(), o.Limit, ErrTooLarge), f.Close())
-	}
-	return f, nil
 }
 
 // Check opens name as ReadFile would and applies every refusal, without reading

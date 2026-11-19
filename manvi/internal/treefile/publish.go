@@ -93,9 +93,17 @@ func Publish(dir *os.Root, name string, data []byte, o PublishOptions) (result e
 	if open != nil {
 		return fmt.Errorf("treefile: creating a temporary file for %s: %w", name, open)
 	}
+	landed := false
 	defer func() {
 		// A rename consumed the stage; after a link it is still there.
 		if err := dir.Remove(stage); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if landed {
+				// The name is already published: failing to tidy the stage up
+				// does not undo that, and reporting it as a plain failure would
+				// have a caller retry a write that took effect.
+				err = fmt.Errorf("treefile: %s is published but its temporary file %s could not be removed: %w: %w",
+					name, stage, ErrPublishedUnsynced, err)
+			}
 			result = errors.Join(result, err)
 		}
 	}()
@@ -125,6 +133,7 @@ func Publish(dir *os.Root, name string, data []byte, o PublishOptions) (result e
 	} else if err := dir.Link(stage, name); err != nil {
 		return fmt.Errorf("treefile: publishing %s: %w", name, err)
 	}
+	landed = true
 
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("treefile: %s is published but syncing its directory failed, so it may not survive a crash: %w: %w",
