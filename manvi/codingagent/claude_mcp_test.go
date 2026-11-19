@@ -113,6 +113,43 @@ func TestClaudeMcpStartPassesConfigFlagAndKeepsSettingSourcesUser(t *testing.T) 
 	if mcpIdx < 0 || mcpIdx+1 >= len(argv) || !strings.Contains(argv[mcpIdx+1], `"gitpulse"`) {
 		t.Fatalf("expected --mcp-config with gitpulse entry in %v", argv)
 	}
+	if !slices.Contains(argv, "--strict-mcp-config") {
+		t.Fatalf("expected --strict-mcp-config, so the operator's own MCP servers do not load beside Manvi's, in %v", argv)
+	}
+}
+
+// With no server attached (every opt-out set, or none resolved), the session
+// still ignores the operator's user-level MCP servers and plugins.
+func TestClaudeStartWithoutServersStillIgnoresUserMcpServers(t *testing.T) {
+	argsOut := filepath.Join(t.TempDir(), "claude-args.json")
+	t.Setenv("CLAUDE_ARGS_CAPTURE_OUT", argsOut)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := startClaude(t.Context(), Options{Program: bin, Cwd: root, Mode: "inspect"}, func(mode, session string) []string {
+		return append([]string{"-test.run=^TestClaudeMcpArgsChild$", "--", "claude-args-fixture"}, claudeArgs(mode, session)...)
+	})
+	if err != nil {
+		t.Fatalf("startClaude without McpServers: %v", err)
+	}
+	defer func() { _, _ = s.Close() }()
+	<-s.Done()
+	raw, err := os.ReadFile(argsOut) //nolint:gosec // G304: reads path created by this test
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	var argv []string
+	if err := json.Unmarshal(raw, &argv); err != nil {
+		t.Fatalf("decode captured argv (%q): %v", string(raw), err)
+	}
+	if !slices.Contains(argv, "--strict-mcp-config") || slices.Contains(argv, "--mcp-config") {
+		t.Fatalf("want --strict-mcp-config and no --mcp-config, got %v", argv)
+	}
 }
 
 func TestClaudeMcpArgsChild(t *testing.T) {

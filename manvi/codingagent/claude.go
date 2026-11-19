@@ -249,6 +249,14 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 		}
 		args = append(args, "--mcp-config", mcpConfig)
 	}
+	// Only the servers Manvi attached, always (owner decision, 2026-11-19).
+	// --setting-sources user keeps the operator's user settings, and with them
+	// their user-level MCP servers and plugins; those loaded beside Manvi's, so
+	// the MANVI_*_MCP_BINARY opt-outs removed Manvi's gitpulse while the
+	// operator's own gitpulse plugin (worktree_merge, terminal_spawn, …) stayed
+	// in every managed session, inspect included. With no server attached the
+	// session runs with no MCP server at all.
+	args = append(args, "--strict-mcp-config")
 	wire, err := startConnectionOverrides(ctx, program, args, cwd, childenv.Inherit(), seatOverrides, validateClaudeFrame)
 	if err != nil {
 		return nil, err
