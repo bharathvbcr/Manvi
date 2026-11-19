@@ -92,6 +92,10 @@ func (s Store) Put(p *workflow.Program) (Entry, error) {
 	name := c.Revision + ".json"
 	entry := draftEntry(c.ID, c.Revision, p.Digest(), c.Description, filepath.Join(s.Root, c.ID, name))
 	if err := publish(dir, name, p.Bytes(), false); err != nil {
+		if errors.Is(err, ErrPublishedUnsynced) {
+			// Published: the entry is real and comes back beside the error.
+			return entry, err
+		}
 		if !errors.Is(err, os.ErrExist) {
 			return Entry{}, err
 		}
@@ -105,6 +109,51 @@ func (s Store) Put(p *workflow.Program) (Entry, error) {
 	}
 	return entry, nil
 }
+
+// EntryError names one catalog entry List could not return and why. Name is the
+// file inside the identity directory, empty when the whole identity is skipped.
+type EntryError struct {
+	ID   string
+	Name string
+	Err  error
+}
+
+func (e EntryError) String() string {
+	if e.Name == "" {
+		return e.ID + ": " + e.Err.Error()
+	}
+	return e.ID + "/" + e.Name + ": " + e.Err.Error()
+}
+
+// PartialListError is what List returns beside the rows it could read when it
+// had to leave entries out: an identity that is a link, a pointer that cannot be
+// trusted, a revision that does not compile. One bad entry must not hide every
+// good one, and must not be hidden either, so each skipped entry is carried here
+// with its reason. A failure on the catalog root itself returns no rows and a
+// plain error. An identity whose pointer cannot be trusted is skipped whole: its
+// revisions' status is not known, and listing them as drafts would be a guess.
+type PartialListError struct{ Skipped []EntryError }
+
+func (e *PartialListError) Error() string {
+	parts := make([]string, len(e.Skipped))
+	for i, s := range e.Skipped {
+		parts[i] = s.String()
+	}
+	return fmt.Sprintf("catalog: %d entries could not be listed: %s", len(e.Skipped), strings.Join(parts, "; "))
+}
+
+// Unwrap exposes each skipped entry's cause to errors.Is and errors.As.
+func (e *PartialListError) Unwrap() []error {
+	errs := make([]error, len(e.Skipped))
+	for i, s := range e.Skipped {
+		errs[i] = s.Err
+	}
+	return errs
+}
+
+// List returns every readable catalog revision, sorted by identity and
+// revision. Entries that cannot be returned do not hide the rest: the rows come
+// back with a *PartialListError naming each one (see there).
 func (s Store) List() ([]Entry, error) {
 	out := []Entry{}
 	root, err := s.open(false)
@@ -119,19 +168,23 @@ func (s Store) List() ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	var skipped []EntryError
 	for _, entry := range dirs {
 		if !segment.MatchString(entry.Name()) {
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return nil, errors.New("catalog identity is a symlink")
+			skipped = append(skipped, EntryError{ID: entry.Name(), Err: errors.New("catalog identity is a symlink")})
+			continue
 		}
 		if !entry.IsDir() {
 			continue
 		}
-		rows, err := s.listIdentity(root, entry.Name())
+		rows, bad, err := s.listIdentity(root, entry.Name())
+		skipped = append(skipped, bad...)
 		if err != nil {
-			return nil, err
+			skipped = append(skipped, EntryError{ID: entry.Name(), Err: err})
+			continue
 		}
 		out = append(out, rows...)
 	}
@@ -141,90 +194,146 @@ func (s Store) List() ([]Entry, error) {
 		}
 		return out[i].ID < out[j].ID
 	})
+	if len(skipped) > 0 {
+		sort.Slice(skipped, func(i, j int) bool { return skipped[i].String() < skipped[j].String() })
+		return out, &PartialListError{Skipped: skipped}
+	}
 	return out, nil
 }
-func (s Store) listIdentity(root *os.Root, id string) ([]Entry, error) {
+
+// readPointer reads and validates an identity's current.json. has is false when
+// there is none. A pointer that is present but cannot be trusted is an error:
+// it decides what every revision's status is.
+func readPointer(dir *os.Root, id string) (current Entry, has bool, err error) {
+	raw, err := readRegular(dir, "current.json")
+	if errors.Is(err, os.ErrNotExist) {
+		return Entry{}, false, nil
+	}
+	if err != nil {
+		return Entry{}, false, err
+	}
+	if err := json.Unmarshal(raw, &current); err != nil {
+		return Entry{}, false, err
+	}
+	if current.ID != id || !segment.MatchString(current.Revision) || current.Revision == "current" {
+		return Entry{}, false, errors.New("invalid promotion identity")
+	}
+	normalizeStatus(&current)
+	switch current.Status {
+	case StatusDraft, StatusApproved, StatusRevoked:
+	default:
+		return Entry{}, false, errors.New("invalid catalog status")
+	}
+	return current, true, nil
+}
+
+// revisionEntry compiles one revision file of identity id and joins it with the
+// pointer: the entry carries the pointer's status only when id, revision and
+// digest all match it, and is a draft otherwise. matched reports that join.
+func (s Store) revisionEntry(dir *os.Root, id, name string, current Entry, hasCurrent bool) (entry Entry, matched bool, err error) {
+	revision := strings.TrimSuffix(name, ".json")
+	if !segment.MatchString(revision) {
+		return Entry{}, false, errors.New("invalid catalog revision filename")
+	}
+	raw, err := readRegular(dir, name)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	p, err := workflow.Compile(raw)
+	if err != nil {
+		return Entry{}, false, fmt.Errorf("catalog artifact %s: %w", name, err)
+	}
+	c := p.Capability()
+	if c.ID != id || c.Revision != revision {
+		return Entry{}, false, errors.New("catalog identity does not match artifact path")
+	}
+	entry = draftEntry(id, revision, p.Digest(), c.Description, filepath.Join(s.Root, id, name))
+	if hasCurrent && current.ID == id && current.Revision == revision && current.SHA256 == p.Digest() {
+		entry.Status = current.Status
+		entry.Promoted = current.Status == StatusApproved
+		entry.Stability = current.Stability
+		matched = true
+	}
+	return entry, matched, nil
+}
+
+// listIdentity returns the rows of one identity. bad names the revision files
+// that were left out; err is set when the identity as a whole cannot be
+// trusted (its pointer is invalid, or names no revision that is readable).
+func (s Store) listIdentity(root *os.Root, id string) (rows []Entry, bad []EntryError, err error) {
 	dir, err := openChild(root, id, false)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer dir.Close()
 	files, err := directoryEntries(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var current Entry
-	hasCurrent := false
-	if raw, err := readRegular(dir, "current.json"); err == nil {
-		if err := json.Unmarshal(raw, &current); err != nil {
-			return nil, err
-		}
-		if current.ID != id || !segment.MatchString(current.Revision) || current.Revision == "current" {
-			return nil, errors.New("invalid promotion identity")
-		}
-		normalizeStatus(&current)
-		switch current.Status {
-		case StatusDraft, StatusApproved, StatusRevoked:
-		default:
-			return nil, errors.New("invalid catalog status")
-		}
-		hasCurrent = true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	current, hasCurrent, err := readPointer(dir, id)
+	if err != nil {
+		return nil, nil, err
 	}
-	out := []Entry{}
 	pointerFound := !hasCurrent
 	for _, file := range files {
 		if file.Name() == "current.json" || !strings.HasSuffix(file.Name(), ".json") {
 			continue
 		}
-		name := file.Name()
-		revision := strings.TrimSuffix(name, ".json")
-		if !segment.MatchString(revision) {
-			return nil, errors.New("invalid catalog revision filename")
-		}
-		raw, err := readRegular(dir, name)
+		entry, matched, err := s.revisionEntry(dir, id, file.Name(), current, hasCurrent)
 		if err != nil {
-			return nil, err
+			bad = append(bad, EntryError{ID: id, Name: file.Name(), Err: err})
+			continue
 		}
-		p, err := workflow.Compile(raw)
-		if err != nil {
-			return nil, fmt.Errorf("catalog artifact %s: %w", name, err)
-		}
-		c := p.Capability()
-		if c.ID != id || c.Revision != revision {
-			return nil, errors.New("catalog identity does not match artifact path")
-		}
-		entry := draftEntry(id, revision, p.Digest(), c.Description, filepath.Join(s.Root, id, name))
-		if hasCurrent && current.ID == id && current.Revision == revision && current.SHA256 == p.Digest() {
-			entry.Status = current.Status
-			entry.Promoted = current.Status == StatusApproved
-			entry.Stability = current.Stability
-			pointerFound = true
-		}
-		out = append(out, entry)
+		pointerFound = pointerFound || matched
+		rows = append(rows, entry)
 	}
 	if !pointerFound {
-		return nil, errors.New("promotion does not match an immutable artifact")
+		return nil, bad, errors.New("promotion does not match an immutable artifact")
 	}
-	return out, nil
+	return rows, bad, nil
 }
 
-// Get returns one catalog entry by identity and revision.
+// Get returns one catalog entry by identity and revision. It opens that
+// identity and compiles that revision only, so another identity's junk, or
+// another revision's, cannot make it fail. It is as strict about its own entry
+// as List is: a pointer that is invalid, or that names this revision under a
+// different digest, is an error and never a draft.
 func (s Store) Get(id, revision string) (Entry, error) {
 	if !segment.MatchString(id) || !segment.MatchString(revision) || revision == "current" {
 		return Entry{}, errors.New("invalid catalog identity")
 	}
-	rows, err := s.List()
+	unknown := errors.New("unknown catalog revision")
+	root, err := s.open(false)
+	if errors.Is(err, os.ErrNotExist) {
+		return Entry{}, unknown
+	}
 	if err != nil {
 		return Entry{}, err
 	}
-	for _, e := range rows {
-		if e.ID == id && e.Revision == revision {
-			return e, nil
-		}
+	defer root.Close()
+	dir, err := openChild(root, id, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return Entry{}, unknown
 	}
-	return Entry{}, errors.New("unknown catalog revision")
+	if err != nil {
+		return Entry{}, err
+	}
+	defer dir.Close()
+	current, hasCurrent, err := readPointer(dir, id)
+	if err != nil {
+		return Entry{}, err
+	}
+	entry, matched, err := s.revisionEntry(dir, id, revision+".json", current, hasCurrent)
+	if errors.Is(err, os.ErrNotExist) {
+		return Entry{}, unknown
+	}
+	if err != nil {
+		return Entry{}, err
+	}
+	if hasCurrent && current.Revision == revision && !matched {
+		return Entry{}, errors.New("promotion does not match an immutable artifact")
+	}
+	return entry, nil
 }
 
 // Promote marks a revision approved (current pointer). Existing stability is
