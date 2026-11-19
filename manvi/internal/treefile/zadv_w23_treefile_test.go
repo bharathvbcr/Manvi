@@ -736,8 +736,8 @@ func zadvChild(t *testing.T, mode, dir, log string, extra ...string) *exec.Cmd {
 func TestZadvLockAcrossProcesses(t *testing.T) {
 	anchor, _ := zadvDirs(t)
 	log := filepath.Join(anchor, "log")
-	var cmds []*exec.Cmd
-	var outs []*strings.Builder
+	cmds := make([]*exec.Cmd, 0, 8)
+	outs := make([]*strings.Builder, 0, 8)
 	for i := 0; i < 8; i++ {
 		c := zadvChild(t, "contend", anchor, log, "ZADV_N=25")
 		var sb strings.Builder

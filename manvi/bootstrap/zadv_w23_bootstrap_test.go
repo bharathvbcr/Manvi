@@ -208,8 +208,8 @@ func TestZadvConcurrentEnsureAcrossProcesses(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# mine\nlocal.txt\n"), 0o644); err != nil { // #nosec G306 -- an operator .gitignore under t.TempDir, written in the usual world-readable mode
 		t.Fatal(err)
 	}
-	var cmds []*exec.Cmd
-	var outs []*strings.Builder
+	cmds := make([]*exec.Cmd, 0, 6)
+	outs := make([]*strings.Builder, 0, 6)
 	for i := 0; i < 6; i++ {
 		c := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestZadvHelperProcess$") // #nosec G204 G702 -- re-execs this test binary as its own helper; the environment selects the role
 		c.Env = append(os.Environ(), zadvEnv+"="+root)

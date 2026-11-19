@@ -251,7 +251,7 @@ func TestPublishedButUnsyncedIsASentinelWithTheNameInPlace(t *testing.T) {
 		fail.Replace = replace
 		name := map[bool]string{false: "link", true: "rename"}[replace]
 		err := Publish(root, name, []byte("x"), fail)
-		if !errors.Is(err, ErrPublishedUnsynced) || !strings.Contains(err.Error(), "disk gone") {
+		if err == nil || !errors.Is(err, ErrPublishedUnsynced) || !strings.Contains(err.Error(), "disk gone") {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if _, statErr := os.Stat(filepath.Join(anchor, name)); statErr != nil {

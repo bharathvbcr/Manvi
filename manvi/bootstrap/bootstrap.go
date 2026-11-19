@@ -477,6 +477,9 @@ func sameFileState(dir *os.Root, before os.FileInfo, beforeErr error) bool {
 	if beforeErr != nil || err != nil {
 		return beforeErr != nil && err != nil && errors.Is(beforeErr, fs.ErrNotExist) && errors.Is(err, fs.ErrNotExist)
 	}
+	if before == nil {
+		return false
+	}
 	return os.SameFile(before, now) && before.Size() == now.Size() && before.ModTime().Equal(now.ModTime())
 }
 
