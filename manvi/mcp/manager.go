@@ -90,10 +90,14 @@ type TrustEntry struct {
 // again — a repository cannot get a declaration approved and then quietly add
 // ANTHROPIC_API_KEY to its passthrough list.
 //
-// Cwd is deliberately not covered. It is an absolute path that differs between
-// clones and worktrees of the same repository, so including it would expire
-// every authorization on every re-checkout while adding no capability the
-// command and arguments do not already carry.
+// Cwd is covered only where it decides what runs: when it is spelled relative to
+// the repository, and when the command is a relative path. An absolute cwd
+// differs between clones and worktrees of the same repository, so including it
+// everywhere would expire every authorization on every re-checkout while adding
+// no capability the command and arguments do not already carry. Covering it
+// where it is relative or the command is a path means authorizations given
+// before this was so, for declarations of those shapes, no longer match and need
+// approving again.
 //
 // What this does NOT establish, and no fingerprint of a declaration can: that
 // the program named by Command still contains what it contained when the
@@ -133,7 +137,22 @@ func Fingerprint(cfg ServerConfig) string {
 	if cfg.TimeoutSeconds != 0 {
 		write("timeout_seconds", strconv.Itoa(cfg.TimeoutSeconds))
 	}
+	// The cwd is covered where it chooses what runs: when it is relative to the
+	// repository (a clone-independent spelling, so re-checkout does not expire
+	// anything), and when the command is itself a relative path, where the cwd
+	// decides which ./run.sh it is. An absolute cwd under a bare command name
+	// stays out for the reason given above.
+	if cfg.Cwd != "" && (!filepath.IsAbs(cfg.Cwd) || relativeCommand(cfg.Command)) {
+		write("cwd", cfg.Cwd)
+	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// relativeCommand reports whether command is a path resolved against the
+// working directory: it names a directory component and is not absolute. A bare
+// name is looked up on PATH instead.
+func relativeCommand(command string) bool {
+	return !filepath.IsAbs(command) && strings.ContainsAny(command, "/\\")
 }
 
 // trustStore is the set of fingerprints an operator has authorized, plus where
@@ -529,6 +548,17 @@ type Manager struct {
 	// nothing: a Client call that was already handshaking when CloseAll ran must
 	// not store its process in a map nobody will close again.
 	closed bool
+	// flights is the connection in progress for each server name. See Client.
+	flights map[string]*flight
+}
+
+// flight is one connection being made. Callers that arrive while it is in
+// progress wait for it and share its outcome, so a name is started once however
+// many callers ask at once.
+type flight struct {
+	done   chan struct{}
+	client *Client
+	err    error
 }
 
 // NewManager creates a new MCP & Open Plugin manager.
@@ -537,6 +567,7 @@ func NewManager(root string) *Manager {
 		configs: make(map[string]ServerConfig),
 		clients: make(map[string]*Client),
 		plugins: make(map[string]*PluginManifest),
+		flights: make(map[string]*flight),
 		root:    root,
 	}
 }
@@ -662,7 +693,14 @@ func (m *Manager) validateDeclaration(cfg ServerConfig) error {
 		return fmt.Errorf("server %q declares a cwd containing control characters: %q",
 			cfg.Name, truncateForMessage(cfg.Cwd))
 	}
-	if cfg.Origin == OriginWorkspace && cfg.Cwd != "" && m.root != "" {
+	if cfg.Origin == OriginWorkspace && cfg.Cwd != "" && m.root == "" {
+		// Containment is a question about a root, and with none there is nothing
+		// the cwd could be shown to lie inside. A declaration read from a tree is
+		// refused rather than left unchecked.
+		return fmt.Errorf("server %q declares the cwd %q and this manager has no repository root to hold it",
+			cfg.Name, truncateForMessage(cfg.Cwd))
+	}
+	if cfg.Origin == OriginWorkspace && cfg.Cwd != "" {
 		inside, err := PathIsInside(m.root, m.workspaceCwd(cfg.Cwd))
 		switch {
 		case err != nil:
@@ -690,9 +728,6 @@ func (m *Manager) register(cfg ServerConfig, origin Origin, source string) error
 	if !m.Enabled() {
 		return m.unavailable()
 	}
-	if cfg.Name == "" {
-		return errors.New("mcp: server name is required")
-	}
 	cfg.Origin = origin
 	cfg.Source = source
 	where := source
@@ -717,7 +752,7 @@ func (m *Manager) register(cfg ServerConfig, origin Origin, source string) error
 		}
 		reason := fmt.Sprintf("server %q is already declared by %s; the second declaration, by %s, was refused "+
 			"so that a name keeps one meaning", cfg.Name, truncateForMessage(priorWhere), truncateForMessage(where))
-		m.skipped = append(m.skipped, SkippedManifest{Path: skippedPath(cfg), Reason: reason})
+		m.skipped = append(m.skipped, newSkipped(skippedPath(cfg), reason))
 		return &declarationRefused{reason: reason}
 	}
 	m.configs[cfg.Name] = cfg
@@ -727,7 +762,7 @@ func (m *Manager) register(cfg ServerConfig, origin Origin, source string) error
 // refuse records a declaration that failed validation and returns the refusal.
 func (m *Manager) refuse(cfg ServerConfig, reason string) error {
 	m.mu.Lock()
-	m.skipped = append(m.skipped, SkippedManifest{Path: skippedPath(cfg), Reason: reason})
+	m.skipped = append(m.skipped, newSkipped(skippedPath(cfg), reason))
 	m.mu.Unlock()
 	return &declarationRefused{reason: reason}
 }
@@ -738,7 +773,10 @@ func skippedPath(cfg ServerConfig) string {
 	if cfg.Source != "" {
 		return cfg.Source
 	}
-	return truncateForMessage(cfg.Name)
+	if cfg.Name == "" {
+		return "(a declaration with no name)"
+	}
+	return cfg.Name
 }
 
 // isRefusal reports whether err is a declaration refused on its merits, which
@@ -786,7 +824,7 @@ func (m *Manager) RegisterPlugin(p *PluginManifest) error {
 			where = p.Name
 		}
 		m.mu.Lock()
-		m.skipped = append(m.skipped, SkippedManifest{Path: where, Reason: err.Error()})
+		m.skipped = append(m.skipped, newSkipped(where, err.Error()))
 		m.mu.Unlock()
 		return nil
 	}
@@ -965,8 +1003,7 @@ func (m *Manager) Discover(ctx context.Context, src ConfigSource) error {
 	// Open Plugins. The walk's own failure is returned rather than dropped, for
 	// the reason above: a directory that could not be read is not a directory
 	// with no plugins in it.
-	plugins, skipped, err := DiscoverPlugins(m.resolve(".devcouncil/plugins"),
-		m.resolve(".mcp/plugins"), m.resolve("plugins"))
+	plugins, skipped, err := DiscoverPlugins(m.pluginDirs()...)
 	if err != nil {
 		return err
 	}
@@ -987,6 +1024,32 @@ func (m *Manager) Discover(ctx context.Context, src ConfigSource) error {
 	}
 
 	return nil
+}
+
+// pluginDirs are the plugin directories discovery will search. Each is opened
+// from the root one verified directory at a time, as the config files are, so a
+// link standing in for one of its parents is refused and recorded in Skipped
+// instead of followed to somewhere outside the repository. A directory that is
+// not there is simply not searched.
+func (m *Manager) pluginDirs() []string {
+	var dirs []string
+	for _, rel := range []string{".devcouncil/plugins", ".mcp/plugins", "plugins"} {
+		if m.root != "" {
+			dir, err := treefile.OpenDir(m.root, rel, 0)
+			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					m.mu.Lock()
+					m.skipped = append(m.skipped, newSkipped(m.resolve(rel),
+						"is not searched for plugins: "+err.Error()))
+					m.mu.Unlock()
+				}
+				continue
+			}
+			_ = dir.Close()
+		}
+		dirs = append(dirs, m.resolve(rel))
+	}
+	return dirs
 }
 
 // AutoDiscover scans the conventional workspace locations, with no configured
@@ -1048,14 +1111,90 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 		return cachedClient, nil
 	}
 
-	switch {
-	case cfg.Cwd == "" && m.root != "":
-		cfg.Cwd = m.root
-	case cfg.Origin == OriginWorkspace:
-		// Validated against the repository at registration as a path relative to
-		// it, so it is started there too.
-		cfg.Cwd = m.workspaceCwd(cfg.Cwd)
+	// One connection per name at a time. Callers that arrive while one is being
+	// made wait for it and share it: each used to start its own process, run a
+	// declaration to completion, and close it again when another caller's won,
+	// which is a program an operator authorized once running several times.
+	for {
+		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			return nil, errManagerClosed
+		}
+		if current := m.clients[name]; current != nil && current.Alive() {
+			m.mu.Unlock()
+			return current, nil
+		}
+		if f := m.flights[name]; f != nil {
+			m.mu.Unlock()
+			select {
+			case <-f.done:
+			case <-ctx.Done():
+				return nil, fmt.Errorf("mcp: waiting for %s to connect: %w", name, ctx.Err())
+			}
+			if f.err == nil {
+				return f.client, nil
+			}
+			if ctx.Err() == nil && (errors.Is(f.err, context.Canceled) || errors.Is(f.err, context.DeadlineExceeded)) {
+				// The caller that was connecting gave up; this one did not.
+				continue
+			}
+			return nil, f.err
+		}
+		f := &flight{done: make(chan struct{})}
+		m.flights[name] = f
+		m.mu.Unlock()
+
+		defer func() {
+			m.mu.Lock()
+			delete(m.flights, name)
+			m.mu.Unlock()
+			close(f.done)
+		}()
+		f.client, f.err = m.connect(ctx, name, cfg)
+		return f.client, f.err
 	}
+}
+
+// spawnCwd is the directory a server is started in. A workspace declaration's
+// cwd was checked against the repository when it was registered, and a link in
+// it can be retargeted afterwards, so it is resolved and checked again here, and
+// the server is started at the resolved directory rather than at the spelling
+// that was checked.
+func (m *Manager) spawnCwd(cfg ServerConfig) (string, error) {
+	if cfg.Cwd == "" {
+		return m.root, nil
+	}
+	if cfg.Origin != OriginWorkspace {
+		return cfg.Cwd, nil
+	}
+	if m.root == "" {
+		return "", fmt.Errorf("mcp: server %q declares a cwd and this manager has no repository root to hold it", cfg.Name)
+	}
+	resolved, err := resolveExisting(m.workspaceCwd(cfg.Cwd))
+	if err != nil {
+		return "", fmt.Errorf("mcp: resolving the cwd of %q: %w", cfg.Name, err)
+	}
+	inside, err := PathIsInside(m.root, resolved)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("mcp: whether the cwd of %q lies inside %s could not be established: %w", cfg.Name, m.root, err)
+	case !inside:
+		return "", fmt.Errorf("mcp: the cwd of %q now resolves to %s, outside the repository %s; it was not started",
+			cfg.Name, truncateForMessage(resolved), m.root)
+	}
+	return resolved, nil
+}
+
+// connect starts the server named by cfg, completes its handshake and files the
+// client. It is Client's body past the authorization and the cache, run by the
+// one caller that holds the name's flight.
+func (m *Manager) connect(ctx context.Context, name string, cfg ServerConfig) (*Client, error) {
+	cwd, err := m.spawnCwd(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Cwd = cwd
 
 	client, err := NewClient(cfg)
 	if err != nil {

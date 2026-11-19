@@ -179,7 +179,17 @@ type SkippedManifest struct {
 	Reason string
 }
 
-func (s SkippedManifest) String() string { return s.Path + ": " + s.Reason }
+func (s SkippedManifest) String() string {
+	return hygiene.EscapeLine(s.Path) + ": " + hygiene.EscapeLine(s.Reason)
+}
+
+// newSkipped builds an entry whose text is safe to print. Paths and reasons are
+// the tree's words — file names are its to choose, and the reasons quote them —
+// so they pass hygiene on the way in and a caller that prints Path or Reason
+// rather than String is covered too.
+func newSkipped(path, reason string) SkippedManifest {
+	return SkippedManifest{Path: hygiene.EscapeLine(path), Reason: hygiene.EscapeLine(reason)}
+}
 
 // DiscoverPlugins searches target directories for Open Plugin manifests
 // (plugin.json, openplugin.json, mcp.json), returning what it loaded and what
@@ -218,8 +228,7 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 			if err != nil {
 				// A directory or entry that could not be read is not a directory
 				// with nothing in it. The walk carries on past it, and says so.
-				skipped = append(skipped, SkippedManifest{Path: p,
-					Reason: "could not be read, so nothing under it was searched: " + err.Error()})
+				skipped = append(skipped, newSkipped(p, "could not be read, so nothing under it was searched: "+err.Error()))
 				return nil
 			}
 			if d.IsDir() {
@@ -232,9 +241,8 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 				// manifest nobody would bury that deep on purpose, and the
 				// subtree it prunes is reported rather than forgotten.
 				if depthUnder(dir, p) > maxManifestDepth {
-					skipped = append(skipped, SkippedManifest{Path: p,
-						Reason: fmt.Sprintf("deeper than %d levels under %s; nothing under it was searched",
-							maxManifestDepth, dir)})
+					skipped = append(skipped, newSkipped(p, fmt.Sprintf("deeper than %d levels under %s; nothing under it was searched",
+						maxManifestDepth, dir)))
 					return filepath.SkipDir
 				}
 				return nil
@@ -243,31 +251,36 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 			name := strings.ToLower(d.Name())
 			if name == "plugin.json" || name == "openplugin.json" || name == "mcp.json" {
 				if found >= maxManifestsPerDir {
-					skipped = append(skipped, SkippedManifest{Path: p,
-						Reason: fmt.Sprintf("more than %d manifests under %s; the rest were not read",
-							maxManifestsPerDir, dir)})
+					skipped = append(skipped, newSkipped(p, fmt.Sprintf("more than %d manifests under %s; the rest were not read",
+						maxManifestsPerDir, dir)))
 					return filepath.SkipAll
 				}
 				found++
 				remaining := int64(maxDiscoveryBytes) - read
 				if remaining <= 0 {
-					skipped = append(skipped, SkippedManifest{Path: p, Reason: budgetSpent()})
+					skipped = append(skipped, newSkipped(p, budgetSpent()))
 					return filepath.SkipAll
 				}
 				manifest, n, err := loadPluginFile(p, min(int64(maxManifestBytes), remaining))
 				read += n
 				switch {
 				case err != nil && remaining < maxManifestBytes && errors.Is(err, treefile.ErrTooLarge):
-					skipped = append(skipped, SkippedManifest{Path: p, Reason: budgetSpent()})
+					skipped = append(skipped, newSkipped(p, budgetSpent()))
 					return filepath.SkipAll
 				case err != nil:
-					skipped = append(skipped, SkippedManifest{Path: p, Reason: err.Error()})
+					if errors.Is(err, treefile.ErrTooLarge) {
+						// Refused for its size, and so never read, but a manifest
+						// that was opened and measured is work the walk did on the
+						// repository's behalf: charged at the most one could have
+						// been, so a tree of oversize files runs the budget out.
+						read += maxManifestBytes
+					}
+					skipped = append(skipped, newSkipped(p, err.Error()))
 				case manifest == nil:
 					// Parsed to nothing. Not an error from the decoder, and
 					// still not a plugin, so it is reported for the same
 					// reason a parse failure is.
-					skipped = append(skipped, SkippedManifest{
-						Path: p, Reason: "the file parsed to an empty manifest"})
+					skipped = append(skipped, newSkipped(p, "the file parsed to an empty manifest"))
 				default:
 					plugins = append(plugins, manifest)
 				}

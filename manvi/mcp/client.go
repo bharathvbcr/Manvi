@@ -16,7 +16,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
@@ -431,7 +430,7 @@ const maxServerErrors = 100
 // the one owner every record passes through, so a stderr line or a frame
 // snippet cannot carry raw newlines or terminal escapes into an error message.
 func (c *Client) recordError(msg string) {
-	msg = escapeControl(msg)
+	msg = hygiene.EscapeLine(msg)
 	c.errMu.Lock()
 	c.appendErrorLocked(msg)
 	c.coalesceKey = ""
@@ -441,7 +440,7 @@ func (c *Client) recordError(msg string) {
 // recordCoalesced records msg under key, folding a run of consecutive records
 // with the same key into one entry that carries the latest text and a count.
 func (c *Client) recordCoalesced(key, msg string) {
-	msg = escapeControl(msg)
+	msg = hygiene.EscapeLine(msg)
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
 	if c.coalesceKey == key && len(c.serverErrors) > 0 {
@@ -460,38 +459,6 @@ func (c *Client) appendErrorLocked(msg string) {
 		c.droppedErrors++
 	}
 	c.serverErrors = append(c.serverErrors, msg)
-}
-
-// escapeControl renders control characters and invalid UTF-8 bytes in s as
-// visible \xNN / \uNNNN escapes. Backslashes and quotes are left alone, so
-// escaping is idempotent and nothing is double-quoted.
-func escapeControl(s string) string {
-	clean := true
-	for i, r := range s {
-		if unicode.IsControl(r) || (r == utf8.RuneError && !utf8.ValidString(s[i:i+1])) {
-			clean = false
-			break
-		}
-	}
-	if clean {
-		return s
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		r, w := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == utf8.RuneError && w == 1:
-			fmt.Fprintf(&b, `\x%02x`, s[i])
-		case unicode.IsControl(r) && r < 0x100:
-			fmt.Fprintf(&b, `\x%02x`, r)
-		case unicode.IsControl(r):
-			fmt.Fprintf(&b, `\u%04x`, r)
-		default:
-			b.WriteString(s[i : i+w])
-		}
-		i += w
-	}
-	return b.String()
 }
 
 // Diagnostics returns what the server said about itself on stderr, plus the
@@ -565,7 +532,7 @@ func (c *Client) diagnosticsSuffix() string {
 // terminal. The cut is made on the raw text, so the preview bound holds in
 // source bytes.
 func truncateForMessage(s string) string {
-	return escapeControl(truncateTo(strings.TrimSpace(s), unroutablePreview))
+	return hygiene.EscapeLine(truncateTo(strings.TrimSpace(s), unroutablePreview))
 }
 
 // truncateTo cuts s to at most n bytes without leaving a partial rune behind.
@@ -1635,7 +1602,10 @@ func (c *Client) checkToolListing(list []Tool) error {
 	return nil
 }
 
-// hasControlChars reports whether s carries a C0 control character or DEL.
+// hasControlChars reports whether s carries a C0 control character or DEL. It
+// is a refusal predicate for names and paths; text that is only displayed goes
+// through hygiene instead, which also covers the invisible and structural runes
+// a file name may legitimately hold.
 func hasControlChars(s string) bool {
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f {
@@ -1690,6 +1660,10 @@ func (c *Client) ListResources(ctx context.Context) ([]Resource, error) {
 		if len(r.URI) > maxResourceFieldLen || len(r.Name) > maxResourceFieldLen {
 			return nil, fmt.Errorf("mcp: server %s advertised a resource at index %d whose uri or name "+
 				"is past the %d-byte cap", c.Name(), i, maxResourceFieldLen)
+		}
+		if len(r.Description) > maxToolDescLen {
+			return nil, fmt.Errorf("mcp: server %s advertised a %d-byte description for resource %q, past the %d cap",
+				c.Name(), len(r.Description), truncateForMessage(r.URI), maxToolDescLen)
 		}
 		if hasControlChars(r.URI) || hasControlChars(r.Name) {
 			return nil, fmt.Errorf("mcp: server %s advertised a resource at index %d whose uri or name "+
