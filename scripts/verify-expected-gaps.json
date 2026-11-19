@@ -217,6 +217,246 @@
         "go-test"
       ],
       "why": "Needs DevCouncil's devmap binary (built under ../DevCouncil/rust/target or on PATH); this repository does not build it, the same reason the checks leg names devmap not found."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAdvW16CaseVariantCwdDoesNotReadAMarkerInHome",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAdvW16SeatDirEqualToDefaultUnderAnotherSpelling/case_variant",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAdvW16SeatDirEqualToDefaultUnderAnotherSpelling/case_variant_shares_a_dir_with_another_seat",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAZombieOnlyGroupAnswersKillWithEPERMOnDarwin",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "EPERM for a zombie-only process group is Darwin behaviour, so the test skips on Linux; macos-latest runs it. Unmasked 2026-11-19."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAgentWritableSeesACaseVariantSpellingOfTheProjectRoot",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAdvFixaCaseVariantMiddleComponent",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAdvFixaCaseVariantLastComponentViaCwd",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAdvFixaSymlinkToCaseVariantPath",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAdvFixaUnicodeNormalisationNFCvsNFD",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts that NFC and NFD spellings name one file. The Linux runner's filesystem keeps them distinct, so the test skips; macos-latest runs it. Unmasked 2026-11-19."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAdvW16ReleaseCaseVariantOfRepoPATHEntryIsStillAgentWritable/claude",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAdvW16ReleaseCaseVariantOfRepoPATHEntryIsStillAgentWritable/agy",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAdvW16ReleaseCaseVariantHomeInsideRepoIsStillAgentWritable/claude",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestAdvW16ReleaseCaseVariantHomeInsideRepoIsStillAgentWritable/agy",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestZAdvUserConfigCaseVariantOfRepo",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestPathIsInsideCaseVariantSpelling",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestATrustFileThroughACaseVariantOfTheRepositoryIsNotHonoured",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestZAdvW9FirmlinkSpellingIsInside",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "A firmlink spelling is Darwin behaviour, so the test skips on Linux; macos-latest runs it. Unmasked 2026-11-19."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestZAdvW9UnicodeNormalizationVariantIsInside",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts that NFC and NFD spellings name one file. The Linux runner's filesystem keeps them distinct, so the test skips; macos-latest runs it. Unmasked 2026-11-19."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestZAdvW9CaseVariantAcrossSymlinks",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/mcp.TestZAdvW9CaseVariantSiblingPrefixesStayOutside",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/serve.TestCheckoutsOverlapRefusesACaseVariantSpellingOfAHeldCheckout",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/serve.TestACaseAliasOfALiveCheckoutIsTheSameCheckout",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/serve.TestZadvW17CaseVariantOuterIsNotSteppedPast",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/serve.TestZadvW17CaseVariantLinkedWorktreeStaysSeparate",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
     }
   ],
   "fuzz_floors": [
