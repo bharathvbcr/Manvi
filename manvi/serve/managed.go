@@ -1407,7 +1407,11 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 				err = errors.New("provider resolved a request absent from durable capture")
 				break
 			}
-			err = r.resolve(ctx, job, callback, "resolved", "Provider confirmed callback resolution")
+			// Kept on failure: the run is ending, and the final settle still owes
+			// the row a receipt.
+			if err = r.resolve(ctx, job, callback, "resolved", "Provider confirmed callback resolution"); err != nil {
+				break
+			}
 			delete(job.callbacks, e.ResolvedID)
 		}
 		if e.CancelledID != "" {
@@ -1415,7 +1419,9 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 			// already delivered has nothing to withdraw, and one never captured
 			// is not ours to resolve.
 			if callback := job.callbacks[e.CancelledID]; callback != nil && !callback.delivered {
-				err = r.resolve(ctx, job, callback, "cancelled", withdrawnReason)
+				if err = r.resolve(ctx, job, callback, "cancelled", withdrawnReason); err != nil {
+					break
+				}
 				delete(job.callbacks, e.CancelledID)
 			}
 		}
@@ -1944,24 +1950,15 @@ func (r *ManagedRunner) decisions(ctx context.Context, job *managedJob) error {
 				return errors.New("multiple questions require answers keyed by question identity")
 			}
 		}
-		id, err := generationID()
-		if err != nil {
-			return err
-		}
-		if err = job.provider.ValidateResponse(callback.request, response); err != nil {
-			if errors.Is(err, codingagent.ErrCallbackWithdrawn) {
-				if err = r.resolve(ctx, job, callback, "cancelled", withdrawnReason); err != nil {
-					return err
-				}
-				delete(job.callbacks, item.Request)
-				continue
+		withdrawn, err := r.answer(ctx, job, callback, response, item.Revision)
+		if withdrawn {
+			if err = r.resolve(ctx, job, callback, "cancelled", withdrawnReason); err != nil {
+				return err
 			}
-			return err
+			delete(job.callbacks, item.Request)
+			continue
 		}
-		if _, err = r.client.ClaimDecision(ctx, callback.captured, id, item.Revision); err != nil {
-			return err
-		}
-		if err = job.provider.Respond(ctx, callback.request, response); err != nil {
+		if err != nil {
 			return err
 		}
 		// Respond succeeded, so the decision is delivered. Recorded now rather
@@ -1974,6 +1971,29 @@ func (r *ManagedRunner) decisions(ctx context.Context, job *managedJob) error {
 		}
 	}
 	return nil
+}
+
+// answer delivers one saved decision: the adapter's check, the durable claim,
+// then the write. The provider can withdraw the callback at either end of that
+// (the turn finishing between the check and the write is the second), and both
+// are the same benign outcome: withdrawn is true and err is the adapter's
+// ErrCallbackWithdrawn, which the caller records as a cancelled decision and
+// carries on. Any other error is returned with withdrawn false.
+func (r *ManagedRunner) answer(ctx context.Context, job *managedJob, callback *managedCallback, response codingagent.Response, revision int64) (withdrawn bool, err error) {
+	id, err := generationID()
+	if err != nil {
+		return false, err
+	}
+	if err = job.provider.ValidateResponse(callback.request, response); err != nil {
+		return errors.Is(err, codingagent.ErrCallbackWithdrawn), err
+	}
+	if _, err = r.client.ClaimDecision(ctx, callback.captured, id, revision); err != nil {
+		return false, err
+	}
+	if err = job.provider.Respond(ctx, callback.request, response); err != nil {
+		return errors.Is(err, codingagent.ErrCallbackWithdrawn), err
+	}
+	return false, nil
 }
 
 // deliveredReason is the receipt for a decision written to the provider.
