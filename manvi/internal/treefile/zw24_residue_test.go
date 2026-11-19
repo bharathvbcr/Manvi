@@ -58,7 +58,8 @@ func TestAFailedStageRemovalAfterTheLinkLandedStillReportsAPublishedWrite(t *tes
 	if !errors.Is(err, ErrPublishedUnsynced) {
 		t.Fatalf("the write took effect but reads as a failure: %v", err)
 	}
-	if got, rerr := os.ReadFile(filepath.Join(anchor, "entry")); rerr != nil || string(got) != "payload" {
+	got, rerr := os.ReadFile(filepath.Join(anchor, "entry")) // #nosec G304 -- a path under this test's own t.TempDir
+	if rerr != nil || string(got) != "payload" {
 		t.Fatalf("the name did not land: %q, %v", got, rerr)
 	}
 }
