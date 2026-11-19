@@ -44,7 +44,7 @@ func TestAdvW23PreferFailureOnlyReplacesAPlainEnd(t *testing.T) {
 // before the stream ended, with the maximum pending.
 func TestAdvW23ParkedPreflightPlusMaxPendingIsNeverRefusedAtTheEnd(t *testing.T) {
 	s := w18Codex(t)
-	var reqs []Request
+	reqs := make([]Request, 0, maxPendingCallbacks)
 	for i := 1; i <= maxPendingCallbacks; i++ {
 		e, ok, err := s.event(w18CodexAsk(i))
 		if err != nil || !ok {
