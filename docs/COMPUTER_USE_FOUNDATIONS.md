@@ -215,6 +215,29 @@ leg (CI clones Jarvis's main beside the checkout for it), and reports it NOT
 COVERED when no Jarvis checkout is found; run it directly before removing or
 changing an exported symbol in these packages.
 
+### Removing or renaming an export Jarvis calls
+
+Manvi's CI builds Jarvis's main as it stands, and Jarvis builds the Manvi
+commit its `upstream.lock.json` pins. So an export Jarvis calls cannot be
+removed in one step: the removal turns Manvi's `checks` leg red until Jarvis
+stops calling it, and Jarvis cannot stop calling it until it pins a Manvi that
+has the replacement. It takes two pin bumps:
+
+1. **Add the replacement in Manvi** beside the old export, and land it on main.
+   `check-consumers.sh` still passes, since nothing was removed.
+2. **Bump Jarvis's pin to that commit and migrate.** In Jarvis, set the Manvi
+   revision in `upstream.lock.json`, run `go get
+   github.com/bharathvbcr/Manvi/manvi@<commit>`, move every call to the
+   replacement, and pass `go run ./cmd/dev check-pins` and Jarvis CI. The pin
+   commit says what Manvi's own CI concluded at the pinned commit, so a Jarvis
+   built on a red Manvi says so.
+3. **Remove the old export in Manvi.** `check-consumers.sh` now builds the
+   migrated Jarvis main and passes.
+4. **Bump Jarvis's pin again**, to the commit that removed it.
+
+Changing an export's signature is a removal and an addition, and takes the same
+four steps.
+
 Contracts Jarvis relies on:
 
 - **Failure codes come from a typed cause.** `workflow.State.Cause` records why

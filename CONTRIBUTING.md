@@ -200,6 +200,15 @@ and keep `scripts/module-pins.txt` updated. See
 version rather than guessing, and run MANVI's live-contract tests against the
 new binary. Those tests are the only thing that will notice.
 
+**Jarvis consumes MANVI the other way round.** It imports `workflow`,
+`computer`, `llm/budget` and the `session` privacy API, and pins a MANVI
+commit. Removing or renaming an export it calls takes two of its pin bumps (add
+the replacement, migrate Jarvis, then remove); the steps are in
+[`docs/COMPUTER_USE_FOUNDATIONS.md`](docs/COMPUTER_USE_FOUNDATIONS.md),
+"Removing or renaming an export Jarvis calls". `verify.sh` builds Jarvis's
+main against your checkout in the `checks` leg, so a one-step removal fails
+there.
+
 ---
 
 ## 6. Changes, tests, and commits
