@@ -135,8 +135,13 @@ func TestRevisionsAppendHistoryAndSurviveConcurrentWriters(t *testing.T) {
 			t.Errorf("history lacks %q", want)
 		}
 	}
-	if entries, _ := filepath.Glob(filepath.Join(dir, "lessons", "gitpulse", ".*.tmp")); len(entries) != 0 {
-		t.Errorf("a lock or temporary file was left behind: %v", entries)
+	// The entry lock file is never removed (a removed lock file lets two writers
+	// lock two inodes of one name), so it is the one dot-tmp name allowed to stay.
+	entries, _ := filepath.Glob(filepath.Join(dir, "lessons", "gitpulse", ".*.tmp"))
+	for _, e := range entries {
+		if !strings.HasSuffix(e, ".0000000000000000.tmp") {
+			t.Errorf("a temporary file was left behind: %s", e)
+		}
 	}
 }
 

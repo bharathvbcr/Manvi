@@ -80,7 +80,12 @@ func TestCompareAndSwapAcrossStoresLosesNoUpdate(t *testing.T) {
 	}
 }
 
-func TestAStaleLockFromADeadWriterIsTakenOverAndALiveOneIsNotListed(t *testing.T) {
+// A lock file left by a writer that died is not held by anyone: the kernel
+// dropped its lock with the process, so the next update takes it on the spot
+// and the file stays (a removed lock file is how two writers lock two inodes of
+// one name). Held or not, it is neither an artifact nor a name a caller can
+// create.
+func TestALockFileLeftByADeadWriterBlocksNobodyAndIsNeverRemoved(t *testing.T) {
 	store, dir := newTestStore(t)
 	if _, err := store.Create("a.md", "x", Metadata{}); err != nil {
 		t.Fatal(err)
@@ -89,19 +94,15 @@ func TestAStaleLockFromADeadWriterIsTakenOverAndALiveOneIsNotListed(t *testing.T
 	if err := os.WriteFile(lock, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().Add(-2 * lockStaleAfter)
+	old := time.Now().Add(-2 * time.Hour)
 	if err := os.Chtimes(lock, old, old); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Update("a.md", "y", nil); err != nil {
 		t.Fatalf("a crashed writer's lock blocked every later update: %v", err)
 	}
-	if _, err := os.Lstat(lock); err == nil {
-		t.Error("the lock was left behind")
-	}
-	// Held fresh, it is neither an artifact nor a name a caller can create.
-	if err := os.WriteFile(lock, nil, 0o600); err != nil {
-		t.Fatal(err)
+	if _, err := os.Lstat(lock); err != nil {
+		t.Errorf("the lock file was removed: %v", err)
 	}
 	arts, err := store.List()
 	if err != nil || len(arts) != 1 {

@@ -144,7 +144,7 @@ func bootHarnessCore(reg *flags.Registry, root string) (*harnessCore, error) {
 			name:     "artifacts",
 			provides: []string{svcArtifacts},
 			apply: func(cx *plugin.Ctx) (plugin.Dispose, error) {
-				store, err := artifacts.NewStore(artifactsDir())
+				store, err := newArtifactStore()
 				if err != nil {
 					store = nil
 				}

@@ -151,7 +151,9 @@ func TestAFailedWriteKeepsThePreviousRevision(t *testing.T) {
 	}
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if e.Name() != "plan.md" && e.Name() != "plan.md.meta.json" {
+		// plan.md's entry lock stays: the lock file is never removed, so that two
+		// writers cannot lock two inodes of one name.
+		if e.Name() != "plan.md" && e.Name() != "plan.md.meta.json" && e.Name() != "."+"plan.md"+"."+lockNonce+".tmp" {
 			t.Errorf("a failed write left %q behind", e.Name())
 		}
 	}

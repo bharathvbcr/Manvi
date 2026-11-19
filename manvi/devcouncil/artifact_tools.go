@@ -132,8 +132,7 @@ func (r *Registry) getArtifactStore() (*artifacts.Store, error) {
 	if r.deps.Artifacts != nil {
 		return r.deps.Artifacts, nil
 	}
-	dir := filepath.Join(r.deps.Root, ".devcouncil", "artifacts")
-	return artifacts.NewStore(dir)
+	return artifacts.NewStoreUnder(r.deps.Root, filepath.Join(".devcouncil", "artifacts"))
 }
 
 func (r *Registry) createArtifact(ctx context.Context, call tools.Call) tools.Result {

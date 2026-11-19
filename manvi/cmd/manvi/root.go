@@ -1,12 +1,17 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+
+	"github.com/bharathvbcr/Manvi/manvi/artifacts"
 )
 
 var (
@@ -199,11 +204,85 @@ func sharedRoots() []string {
 // If MANVI_STATE_DIR is set to an absolute path, it is used directly.
 // Otherwise, it is resolved relative to the discovered project root (defaulting to <projectRoot>/.devcouncil).
 func stateDir() string {
+	anchor, rel := stateDirParts()
+	return filepath.Join(anchor, rel)
+}
+
+// stateDirParts splits the state directory into the anchor that is trusted and
+// the relative path below it that is not. An absolute MANVI_STATE_DIR is the
+// operator's own statement of where state lives, so it is its own anchor; the
+// default and any relative value are anchored at the project root, where a
+// repository's committed links are exactly what must not be followed.
+func stateDirParts() (anchor, rel string) {
 	raw := env("MANVI_STATE_DIR", ".devcouncil")
 	if filepath.IsAbs(raw) {
-		return filepath.Clean(raw)
+		return filepath.Clean(raw), "."
 	}
-	return filepath.Join(projectRoot(), raw)
+	return projectRoot(), raw
+}
+
+// errStateDirOutside is what start-up answers when the state directory, read
+// through the links below the project root, is not inside the project root.
+var errStateDirOutside = errors.New("the state directory resolves outside the project root")
+
+// verifyStateDir refuses a state directory that a repository has pointed out of
+// itself. It runs before anything is created, because the scaffolding that
+// follows makes directories and writes files through whatever the path names.
+// An absolute MANVI_STATE_DIR is the operator's choice and is not examined.
+func verifyStateDir() error {
+	anchor, rel := stateDirParts()
+	if rel == "." {
+		return nil
+	}
+	return checkStateDirBelow(anchor, rel)
+}
+
+// checkStateDirBelow resolves rel below root one component at a time and fails
+// with errStateDirOutside when the result is not inside root. Both sides are
+// resolved first, so a root that is itself reached through a link (a temporary
+// directory on macOS) is compared with what the links below it lead to.
+// Components that do not exist yet are not links and are taken as written. A
+// link that cannot be resolved is refused, never read as absent.
+func checkStateDirBelow(root, rel string) error {
+	clean := filepath.Clean(rel)
+	if !filepath.IsLocal(clean) {
+		return fmt.Errorf("%w: %q climbs out of %s; set MANVI_STATE_DIR to an absolute path to put state elsewhere on purpose", errStateDirOutside, rel, root)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolving the project root %s: %w", root, err)
+	}
+	current := resolvedRoot
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		next := filepath.Join(current, part)
+		info, err := os.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
+			current = next
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspecting the state directory %s: %w", next, err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(next)
+			if err != nil {
+				return fmt.Errorf("%w: %s is a link that cannot be resolved: %w", errStateDirOutside, next, err)
+			}
+			next = resolved
+		}
+		if within, err := filepath.Rel(resolvedRoot, next); err != nil || !filepath.IsLocal(within) && within != "." {
+			return fmt.Errorf("%w: %s leads to %s, which is not inside %s; set MANVI_STATE_DIR to an absolute path to put state elsewhere on purpose", errStateDirOutside, filepath.Join(root, clean), next, resolvedRoot)
+		}
+		current = next
+	}
+	return nil
+}
+
+// newArtifactStore is the artifact store over the state directory, built so that
+// a link anywhere below its anchor is refused rather than written through.
+func newArtifactStore() (*artifacts.Store, error) {
+	anchor, rel := stateDirParts()
+	return artifacts.NewStoreUnder(anchor, filepath.Join(rel, "artifacts"))
 }
 
 // configPath is the committable settings file, inside the state directory.
