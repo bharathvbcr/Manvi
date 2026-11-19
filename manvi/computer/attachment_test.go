@@ -99,7 +99,7 @@ func TestAttachWithoutReadOnlyTargetsSendsEmptyArray(t *testing.T) {
 
 func TestAttachmentReadinessBoundsPersistentAmbiguity(t *testing.T) {
 	calls := 0
-	_, admission, err := waitForAttachment(context.Background(), func(context.Context) (Session, error) {
+	_, admission, err := waitForAttachment(context.Background(), context.Background(), func(context.Context) (Session, error) {
 		calls++
 		return Session{RunID: "run"}, &BrokerError{Code: "window_ambiguous", Delivery: "not_sent"}
 	}, attachmentAttempts, time.Millisecond)
@@ -113,7 +113,7 @@ func TestAttachmentReadinessWaitsForRegistrationButNotDisabledAccessibility(t *t
 	for _, code := range []string{"accessibility_pending", "accessibility_inactive"} {
 		t.Run(code, func(t *testing.T) {
 			calls := 0
-			s, admission, err := waitForAttachment(context.Background(), func(context.Context) (Session, error) {
+			s, admission, err := waitForAttachment(context.Background(), context.Background(), func(context.Context) (Session, error) {
 				calls++
 				if calls == 1 {
 					return Session{}, &BrokerError{Code: code, Delivery: "not_sent"}
@@ -141,13 +141,13 @@ func TestAttachmentReadinessNamesTheLastTransientReasonWhenTheBudgetRunsOut(t *t
 		code string
 		want string
 	}{
-		{"accessibility_pending", "accessibility tree kept changing"},
+		{"accessibility_pending", "accessibility tree was not ready"},
 		{"window_missing", "window_missing"},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 			defer cancel()
-			_, admission, err := waitForAttachment(ctx, func(context.Context) (Session, error) {
+			_, admission, err := waitForAttachment(ctx, ctx, func(context.Context) (Session, error) {
 				return Session{}, &BrokerError{Code: tc.code, Delivery: "not_sent"}
 			}, attachmentAttempts, time.Hour)
 			var native *BrokerError
@@ -160,7 +160,7 @@ func TestAttachmentReadinessNamesTheLastTransientReasonWhenTheBudgetRunsOut(t *t
 	// Caller cancellation with no transient reason stays the bare context error.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := waitForAttachment(ctx, func(context.Context) (Session, error) {
+	if _, _, err := waitForAttachment(ctx, ctx, func(context.Context) (Session, error) {
 		return Session{}, nil
 	}, 1, time.Hour); err != context.Canceled { //nolint:errorlint // the assertion is that the error is the bare context error, not one wrapped around it
 		t.Fatalf("decorated an error with no reason to add: %v", err)
@@ -173,7 +173,7 @@ func TestAttachmentReadinessCancellationInterruptsBackoff(t *testing.T) {
 	attempted := make(chan struct{})
 	finished := make(chan error, 1)
 	go func() {
-		_, _, err := waitForAttachment(ctx, func(context.Context) (Session, error) {
+		_, _, err := waitForAttachment(ctx, ctx, func(context.Context) (Session, error) {
 			close(attempted)
 			return Session{}, &BrokerError{Code: "window_missing", Delivery: "not_sent"}
 		}, attachmentAttempts, time.Hour)
@@ -271,5 +271,103 @@ func TestStartRunDoesNotInventANativeAttachmentForANonClientDesktop(t *testing.T
 	_, err := StartRun(context.Background(), opts)
 	if err == nil {
 		t.Fatal("expected NewState to refuse an unattached non-client run")
+	}
+}
+
+// slowAttachPipe answers each attach after a delay, as a broker whose helper is
+// still settling the tree does. The reply is dropped if nothing waits for it.
+type slowAttachPipe struct {
+	client *Client
+	delay  time.Duration
+	reply  pendingResult
+}
+
+func (p *slowAttachPipe) Write(raw []byte) (int, error) {
+	var r request
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return 0, err
+	}
+	p.client.mu.Lock()
+	ch := p.client.pending[r.ID]
+	p.client.mu.Unlock()
+	go func() {
+		time.Sleep(p.delay)
+		select {
+		case ch <- p.reply:
+		default:
+		}
+	}()
+	return len(raw), nil
+}
+func (p *slowAttachPipe) Close() error { return nil }
+
+func slowAttachClient(delay time.Duration, reply pendingResult) *Client {
+	p := &slowAttachPipe{delay: delay, reply: reply}
+	done := make(chan struct{})
+	close(done)
+	c := &Client{in: p, write: make(chan struct{}, 1), pending: map[string]chan pendingResult{}, done: done}
+	p.client = c
+	return c
+}
+
+func shortenAttachment(t *testing.T, window, grace time.Duration) {
+	t.Helper()
+	oldWindow, oldGrace := attachmentTimeout, attachmentCallGrace
+	attachmentTimeout, attachmentCallGrace = window, grace
+	t.Cleanup(func() { attachmentTimeout, attachmentCallGrace = oldWindow, oldGrace })
+}
+
+func retired(c *Client) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+// perf1109 H2: the window used to cancel the attempt it was waiting for. The
+// broker's helper may take 12 s, longer than the 10 s window, and an attach
+// cancelled after it was sent retires the broker, so an application whose tree
+// never settled lost the broker instead of getting the not-ready answer. An
+// attempt in flight when the window closes now finishes, and its answer decides.
+func TestAttachmentReadinessLetsTheAttemptInFlightFinishWhenTheWindowCloses(t *testing.T) {
+	shortenAttachment(t, 30*time.Millisecond, 5*time.Second)
+	c := slowAttachClient(150*time.Millisecond, nativeAttachmentFailure("accessibility_pending", "not_sent"))
+	_, admission, err := c.AttachFocusedReady(context.Background(), "run", 42, nil)
+	if retired(c) {
+		t.Fatalf("the window retired the broker mid-attempt: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || admission.Attempts != 1 || admission.LastTransientCode != "accessibility_pending" ||
+		!strings.Contains(err.Error(), "accessibility tree was not ready") {
+		t.Fatalf("the finished attempt's answer was lost: %+v %v", admission, err)
+	}
+}
+
+// The caller's own cancellation still interrupts an attempt in flight, and the
+// error says which attempt and keeps the retirement it caused (perf1109 M1).
+func TestAttachmentReadinessCallerCancellationInterruptsTheAttemptAndSaysWhich(t *testing.T) {
+	shortenAttachment(t, 5*time.Second, 5*time.Second)
+	c := slowAttachClient(2*time.Second, nativeAttachmentFailure("window_missing", "not_sent"))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, admission, err := c.AttachFocusedReady(ctx, "run", 42, nil)
+	if !errors.Is(err, context.DeadlineExceeded) || admission.Attempts != 1 || !strings.Contains(err.Error(), "attempt 1 was interrupted") {
+		t.Fatalf("an interrupted attempt was not named: %+v %v", admission, err)
+	}
+	if !retired(c) {
+		t.Fatal("an attach cut off after it was sent must retire the broker")
+	}
+}
+
+// A broker that answers within neither the window nor the grace has stopped
+// answering; the grace bounds the call and the broker is retired.
+func TestAttachmentReadinessGraceBoundsABrokerThatStoppedAnswering(t *testing.T) {
+	shortenAttachment(t, 20*time.Millisecond, 60*time.Millisecond)
+	c := slowAttachClient(time.Hour, nativeAttachmentFailure("window_missing", "not_sent"))
+	start := time.Now()
+	_, _, err := c.AttachFocusedReady(context.Background(), "run", 42, nil)
+	if elapsed := time.Since(start); elapsed > safetyTimeout {
+		t.Fatalf("the call outlived its bound: %s", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "attempt 1 was interrupted") || !retired(c) {
+		t.Fatalf("a silent broker was not bounded and retired: %v", err)
 	}
 }

@@ -630,8 +630,11 @@ impl CaptureSource for LiveSource {
 }
 
 /// Attach waits for the target's tree to hold still: two walks 150 ms apart
-/// must be equal. Three seconds is well inside the host's ten second attach
-/// budget, which retries `accessibility_pending`.
+/// must be equal. An attempt can run past three seconds (the deadline is checked
+/// after a pause and a walk) and the broker allows its helper twelve. The host
+/// (computer.AttachFocusedReady) starts attempts for ten seconds, retrying
+/// `accessibility_pending`, and lets the attempt in flight at that point finish,
+/// so a slow attempt ends as an answer rather than a cancelled attach.
 const ATTACH_SETTLE: SettlePolicy = SettlePolicy {
     interval_ms: 150,
     deadline_ms: 3_000,
