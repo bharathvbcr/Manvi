@@ -49,6 +49,7 @@ const SEGMENTS = {
   commandgate: segment("Command gate — verdicts match what the shell actually writes", "Docs — mermaid blocks parse with the real grammar"),
   bunaudit: segment("Docs tooling — supply chain", "Brand — the published mark is the drawn mark"),
   consumers: segment("Consumers — Jarvis builds and vets against this checkout", "Provider wire contracts"),
+  bench: segment("Bench — instrument, statistics and cell assembly", "Bench — Python lint"),
 };
 
 // ---------------------------------------------------------------- stubs
@@ -159,6 +160,13 @@ exit 0
 `,
   "cargo-audit": String.raw`exit 0`,
   bun: String.raw`[ "\${BUN:-ok}" = fail ] && exit 1; exit 0`,
+  // Every bench suite: a summary line with its count, and, when asked, the line
+  // a suite prints for a claim it could not check on this host.
+  python3: String.raw`
+[ "\${BENCH_GAP:-}" = 1 ] && [ "$1" = stress_test.py ] && echo "NOT COVERED: C6 fork denial — no filter here"
+echo "100 passed, 0 failed"
+exit 0
+`,
 };
 
 const ENGINE_STUB = "#!/usr/bin/env bash\necho 'export CGO_ENABLED=1'\n";
@@ -174,6 +182,7 @@ function runGate(segments, tools, env = {}) {
   mkdirSync(path.join(root, "manvi"), { recursive: true });
   mkdirSync(path.join(root, "crates"), { recursive: true });
   mkdirSync(path.join(root, "native"), { recursive: true });
+  mkdirSync(path.join(root, "bench", "paper"), { recursive: true });
   mkdirSync(path.join(base, "DevCouncil", "backend", "go_orchestrator", "gate"), { recursive: true });
   symlinkSync(SCRIPTS, path.join(root, "scripts"));
   writeFileSync(path.join(root, "manvi", ".golangci-debt.counts"), "gosec 255\nnoctx 21\n");
@@ -184,7 +193,7 @@ function runGate(segments, tools, env = {}) {
 
   const bin = path.join(base, "bin");
   mkdirSync(bin);
-  const names = { go: "go", golangci: "golangci-lint", govulncheck: "govulncheck", nilaway: "nilaway", cargo: "cargo", "cargo-audit": "cargo-audit", bun: "bun" };
+  const names = { go: "go", golangci: "golangci-lint", govulncheck: "govulncheck", nilaway: "nilaway", cargo: "cargo", "cargo-audit": "cargo-audit", bun: "bun", python3: "python3" };
   for (const tool of tools) {
     const file = path.join(bin, names[tool]);
     writeFileSync(file, `#!/usr/bin/env bash\n${STUBS[tool].replaceAll("\\${", "${")}\n`);
@@ -404,6 +413,21 @@ test("consumers: control — a Jarvis that builds and vets passes and says what 
   const run = runGate([SEGMENTS.consumers], ["go"], { MANVI_CONSUMER_JARVIS: fakeJarvis() });
   assert.equal(run.status, 0, run.out);
   assert.match(run.out, /covered: Jarvis builds and vets/);
+  assert.match(run.out, /PASS all gates/);
+});
+
+// verify.sh discards a bench suite's output when it passes, so a claim the suite
+// could not check (stress_test.py's C6 fork denial under bwrap) would vanish
+// unless the step carries the suite's NOT COVERED line into the gate list.
+test("bench: a suite's NOT COVERED line is named as a gate that did not run, never a pass", () => {
+  assertNotAPass(runGate([SEGMENTS.bench], ["python3"], { BENCH_GAP: "1" }), "bench suite gap",
+    { named: /bench\/stress_test\.py: C6 fork denial — no filter here/ });
+});
+
+test("bench: control — suites that name no gap pass", () => {
+  const run = runGate([SEGMENTS.bench], ["python3"]);
+  assert.equal(run.status, 0, run.out);
+  assert.match(run.out, /covered: 1100 checks/);
   assert.match(run.out, /PASS all gates/);
 });
 

@@ -29,6 +29,10 @@ export const MODES = ["default", "race", "fuzz"];
 // scripts/verify-lib.test.mjs fails when any of the three differs.
 export const LEGS = ["go-test", "rust", "checks", "bench"];
 const SKIPPED = /^(\d+) of (\d+) test\(s\) skipped, so their assertions did not run: (.*)$/;
+// One line per fuzz target that did not reach MANVI_FUZZMIN inside the budget.
+// verify.sh prints it; an entry in `fuzz_floors` accepts it only while the count
+// stays at or above that target's floor.
+export const STARVED = /^fuzz target (\S+) was sampled, not explored: (\d+) of \d+ inputs in \d+s$/;
 
 /**
  * The leg line verify.sh prints before its verdict: `leg: <name> (<n> step(s) ran)`.
@@ -58,7 +62,16 @@ export function parseVerdict(log) {
   const skips = [];
   for (const line of lines.slice(start + 1)) {
     const match = /^\s{2,}- (.*)$/.exec(line);
-    if (!match) break;
+    if (!match) {
+      // A gap whose message runs over several lines continues, indented deeper,
+      // under its "- " line. Stopping there would leave every gap after it
+      // unread, so a gate that did not run could hide behind a long message.
+      if (gaps.length && /^\s{6,}\S/.test(line)) {
+        gaps[gaps.length - 1] += ` ${line.trim()}`;
+        continue;
+      }
+      break;
+    }
     const text = match[1].trim();
     const skipped = SKIPPED.exec(text);
     if (skipped) skips.push(...skipped[3].split(", ").map((name) => name.trim()).filter(Boolean));
@@ -69,7 +82,7 @@ export function parseVerdict(log) {
 
 /**
  * @param {{ gaps: string[], skips: string[] }} found
- * @param {{ gaps: {text: string, os: string[], modes?: string[], legs?: string[]}[], skips: {test: string, os: string[], modes?: string[], legs?: string[]}[] }} expected
+ * @param {{ gaps: {text: string, os: string[], modes?: string[], legs?: string[]}[], skips: {test: string, os: string[], modes?: string[], legs?: string[]}[], fuzz_floors?: {target: string, floor: number, os: string[], modes?: string[], legs?: string[]}[] }} expected
  * @param {string} os
  * @param {string} [mode] which verify.sh invocation produced the log; an entry with no `modes` holds in every one
  * @param {string} [leg] which leg produced it; "all" is a whole-script run, which every entry applies to. For one
@@ -81,12 +94,28 @@ export function compare(found, expected, os, mode = "default", leg = "all") {
     e.os.includes(os) && (e.modes ?? MODES).includes(mode) && (leg === "all" || (e.legs ?? []).includes(leg));
   const gapsHere = new Set(expected.gaps.filter(here).map((g) => g.text));
   const skipsHere = new Set(expected.skips.filter(here).map((s) => s.test));
+  const floorsHere = new Map((expected.fuzz_floors ?? []).filter(here).map((f) => [f.target, f.floor]));
+  /** @type {string[]} */
+  const unexpectedGaps = [];
+  const starved = new Set();
+  for (const gap of found.gaps) {
+    const sampled = STARVED.exec(gap);
+    if (!sampled) {
+      if (!gapsHere.has(gap)) unexpectedGaps.push(gap);
+      continue;
+    }
+    starved.add(sampled[1]);
+    const floor = floorsHere.get(sampled[1]);
+    if (floor === undefined) unexpectedGaps.push(gap);
+    else if (Number(sampled[2]) < floor) unexpectedGaps.push(`${gap} — below its floor of ${floor}`);
+  }
   return {
-    unexpectedGaps: found.gaps.filter((g) => !gapsHere.has(g)),
+    unexpectedGaps,
     unexpectedSkips: found.skips.filter((s) => !skipsHere.has(s)),
     stale: [
       ...[...gapsHere].filter((g) => !found.gaps.includes(g)),
       ...[...skipsHere].filter((s) => !found.skips.includes(s)),
+      ...[...floorsHere.keys()].filter((t) => !starved.has(t)).map((t) => `fuzz target ${t} reached the input floor`),
     ],
   };
 }

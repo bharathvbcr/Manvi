@@ -211,6 +211,7 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- `--fuzz` names each target that does not reach `MANVI_FUZZMIN` inputs on a line of its own with its count, and `scripts/verify-expected-gaps.json` holds a floor for each of the twelve that do not (half the lower of two CI runs). CI accepts the line only at or above the target's floor, so a slow target that gets slower, or a new slow one, still fails. A bench suite's `NOT COVERED:` line is carried into the gate list, and the three tests that need an installed agy, Claude Code or devmap binary are listed as expected skips.
 - **`verify.sh` builds Jarvis against the checkout.** A new `checks`-leg step
   runs `scripts/check-consumers.sh`, so removing or changing an export that
   Jarvis calls in `workflow`, `workflow/catalog`, `computer`, `llm/budget`
@@ -630,6 +631,7 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- CI's gap guard (`scripts/check-verify-gaps.mjs`) kept reading after a gap whose message wraps onto further lines; it used to stop there, so every gap printed after it went unchecked.
 - `bench/stress_test.py` C6 probes the harness by its own pid as well as `getppid()`. Under bwrap `--unshare-pid` the parent is the namespace's init, which drops a signal from inside without an error, so the old assertion failed on Linux without saying anything about the harness. Fork denial is checked on macOS only and named NOT COVERED under bwrap, which has no seccomp filter. `bench/test_tools.py` L7 finds the backgrounded sleeper by a unique command line in the host's process table instead of the pid echoed from inside the sandbox, which under bwrap named another process and failed with EPERM, and first checks the sleeper was running.
 - `manvi run --approve-fd N` refuses a descriptor that is already close-on-exec when the argv pre-scan first claims it. Such a descriptor cannot have come through exec, so this process opened it itself; on a Linux runner with `--approve-fd 3` left closed, that was the cgroup file the Go runtime opens at startup, a regular file that passed the type and epoll checks, and the run read approvals from it (`TestApproveFDClosedDescriptorIsRefusedAtStartup` failed on every Linux CI leg). The later claims stay idempotent. Security impact: narrows what is accepted as the approval channel; nothing that a host can pass is newly refused.
 - Defects in how the TUI drew a transcript and the dashboard, each now held by

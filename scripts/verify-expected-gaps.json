@@ -1,103 +1,392 @@
 {
-  "note": "Every gate verify.sh reports as NOT COVERED on a CI runner, and why. The 'Every gate ran and every gap is named' step in verify.yml fails on any gap or skipped test not listed here for that runner, so a gate that starts skipping for a new reason cannot pass as green. A skip listed here that stops happening is reported, not failed. An entry may carry `modes` (default, race, fuzz) to hold only for that verify.sh invocation; without it the entry holds in all three. Every entry names the `legs` it belongs to (go-test, rust, checks, bench: the verify.sh legs CI runs as separate jobs): a log is compared only against the entries of its own leg, so an entry for one leg cannot excuse the same text from another, and an entry that names no leg excuses nothing in a leg run.",
+  "note": "Every gate verify.sh reports as NOT COVERED on a CI runner, and why. The 'Every gate ran and every gap is named' step in verify.yml fails on any gap or skipped test not listed here for that runner, so a gate that starts skipping for a new reason cannot pass as green. A skip listed here that stops happening is reported, not failed. An entry may carry `modes` (default, race, fuzz) to hold only for that verify.sh invocation; without it the entry holds in all three. Every entry names the `legs` it belongs to (go-test, rust, checks, bench: the verify.sh legs CI runs as separate jobs): a log is compared only against the entries of its own leg, so an entry for one leg cannot excuse the same text from another, and an entry that names no leg excuses nothing in a leg run. `fuzz_floors` holds the --fuzz targets that do not reach MANVI_FUZZMIN inputs inside MANVI_FUZZMAX: verify.sh names each such target with its count, and CI accepts the line only while the count is at or above the target's floor, so a slow target that gets slower still fails and an unlisted one fails at once. Each floor is half the lower of two CI runs (44540872844 and 44571487515, ubuntu-latest, 120s cap).",
   "gaps": [
     {
       "text": "devmap not found — repo navigation is unverified here",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["checks"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
       "why": "devmap is DevCouncil's binary; this repository does not build it."
     },
     {
       "text": "local — this gate makes no request. The harness reports:",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["checks"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
       "why": "No local model server listens on a hosted runner."
     },
     {
       "text": "anthropic, gemini and xai are verified against scripted servers only.",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["checks"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
       "why": "CI holds no provider credentials; live endpoints are `manvi probe` with one."
+    },
+    {
+      "text": "bench/stress_test.py: C6 fork denial — the bwrap profile has no seccomp filter, so a Linux worker can fork (the macOS sandbox-exec profile denies it)",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "bench"
+      ],
+      "why": "Denying fork under bwrap needs a seccomp filter the bench does not build. The Linux worker's helpers stay inside its pid and network namespaces and die with it, and C6 shows they cannot read the hidden tests or signal the harness."
     }
   ],
   "skips": [
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexHandshakeWithoutModelTurn",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "Needs an installed Codex binary (MANVI_TEST_CODEX_BINARY), which no CI job sets; qualifying managed providers against installed binaries is board task ft-2550b25d."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexReadOnlyTurn",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "Opt-in model turn against an installed provider (MANVI_TEST_CODEX_BINARY and MANVI_TEST_CODEX_TURN), which no CI job sets; tracked with ft-2550b25d."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestApproveFDBareApproverHelper",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "A re-exec helper, not a test of its own: TestApproveFDBareApproverIsClosedToChildrenToo runs it as a child with the approval descriptor at fd 3, and it skips when the suite reaches it directly."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestTUIPtyHelper",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "A re-exec helper, not a test of its own: the TUI signal tests run it as a child on a pty to drive the real entry point, and it skips when the suite reaches it directly."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/session.TestSaveKillChild",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "A re-exec helper, not a test of its own: the killed-save test runs it as a child and kills it at each write step, and it skips when the suite reaches it directly."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/session.TestAdvFirstSaveKillChild",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "A re-exec helper, not a test of its own: the first-save kill test runs it as a child, and it skips when the suite reaches it directly."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantsCannotSmuggleADifferentFile/case",
-      "os": ["ubuntu-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "Case-insensitive volumes only; Linux ext4 distinguishes the spellings."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantsCannotSmuggleADifferentFile/nfc_nfd",
-      "os": ["ubuntu-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "Normalising volumes only; Linux ext4 distinguishes NFC from NFD."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/ui/input.TestAdvReadBoundaryInsideStartMarkerWithGapPastEscapeDelay",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "Inherent ESC-[ vs Alt+[ ambiguity: a bare ESC [ held past the escape delay cannot be told from Alt+[ or the start of a CSI, so it resolves as Escape plus keys on every platform (ft-7a1354a5; Fable ruling 2026-11-09)."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestZAdvUserConfigViaXDGInsideRepo",
-      "os": ["macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "os.UserConfigDir ignores XDG_CONFIG_HOME on darwin (it is ~/Library/Application Support), so there is no XDG path to point inside the repository; the test runs on Linux (ft-7a1354a5; confirmed on macOS 2026-11-09)."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantOfACreatedDirectoryCannotEscape",
-      "os": ["ubuntu-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "Case-insensitive volumes only."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/path",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "This action's frame does not draw the field, so there is no frame to assert on."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/agent",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "legs": ["go-test"],
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
       "why": "This action's frame does not draw the field, so there is no frame to assert on."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAgyRealBinaryACPHandshakeAndCrossProcessResume",
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Needs a standalone launchable agy at ~/.local/bin/agy, which no runner image has; qualifying managed providers against installed binaries is board task ft-2550b25d."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestRealClaudeBinaryStreamJSONHandshake",
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Needs a native Claude Code binary under ~/.local/share/claude/versions, which no runner image has; tracked with ft-2550b25d."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed",
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Needs DevCouncil's devmap binary (built under ../DevCouncil/rust/target or on PATH); this repository does not build it, the same reason the checks leg names devmap not found."
+    }
+  ],
+  "fuzz_floors": [
+    {
+      "target": "./devcouncil:FuzzVerifierAgreesWithGitAboutWhatADiffTouches",
+      "floor": 15000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Drives git per input, so it runs three orders of magnitude behind the pure targets: measured 33,667 and 31,578 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./serve:FuzzEnhancementOutputCannotSmuggleUnrequestedFields",
+      "floor": 110000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 223,313 and 943,874 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./devcouncil:FuzzVerifierChildAnswersEveryRequestWithExactlyOneObject",
+      "floor": 130000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 326,457 and 263,532 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./ui/tui:FuzzOpenLineLayout",
+      "floor": 150000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 337,700 and 308,132 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./serve:FuzzServeAnswersEveryRequestItReads",
+      "floor": 200000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 486,642 and 418,774 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./lessons:FuzzAdvRoundTrip",
+      "floor": 230000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 549,500 and 473,931 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./ui/input:FuzzPasteReadSplits",
+      "floor": 360000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 788,820 and 736,452 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./llm/gemini:FuzzOneDecodeMatchesTwo",
+      "floor": 370000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 746,157 and 1,089,565 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./ui:FuzzProject",
+      "floor": 370000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 936,009 and 751,458 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./serve:FuzzEnhancementUnwrapKeepsSingleObjectContract",
+      "floor": 380000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 762,843 and 907,747 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./tools:FuzzMergeWrites",
+      "floor": 440000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 897,527 and 1,285,370 inputs in two CI runs; the floor is half the lower."
+    },
+    {
+      "target": "./harness:FuzzDecodeSpec",
+      "floor": 460000,
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "checks"
+      ],
+      "modes": [
+        "fuzz"
+      ],
+      "why": "Measured 938,513 and 1,003,611 inputs in two CI runs; the floor is half the lower."
     }
   ]
 }

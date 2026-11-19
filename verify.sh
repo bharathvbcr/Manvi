@@ -1174,7 +1174,6 @@ if (( FUZZ )); then
   fuzz_ran=0
   fuzz_incomplete=0
   fuzz_execs=0
-  fuzz_starved=""
 
   # One round of the sweep. Sets `execs` to what the round reported. Fails the
   # gate on a real finding, and returns non-zero when the engine could not
@@ -1265,10 +1264,12 @@ if (( FUZZ )); then
     printf '    %s %s: %s executions in %ss\n' "$pkg" "$fn" "$target_execs" "$target_seconds"
     # Named, not tolerated silently. A target that cannot reach the floor even
     # with the whole budget is one this gate is sampling rather than exploring,
-    # and that is a fact about the coverage it just claimed.
+    # and that is a fact about the coverage it just claimed. One line per target,
+    # with its count, so CI can hold each to a floor of its own: the floors live
+    # in scripts/verify-expected-gaps.json beside every other accepted gap, not
+    # here, and a target that gets fast shows up there as a floor it now clears.
     if (( target_execs < FUZZMIN )); then
-      fuzz_starved="${fuzz_starved}
-                  ${pkg} ${fn}: ${target_execs} of ${FUZZMIN}"
+      notcovered "fuzz target ${pkg}:${fn} was sampled, not explored: ${target_execs} of ${FUZZMIN} inputs in ${target_seconds}s"
     fi
   done < <(declared_fuzz_targets)
 
@@ -1280,10 +1281,6 @@ if (( FUZZ )); then
     || fail "accounted for ${fuzz_ran} exercised and ${fuzz_incomplete} unexercised of ${fuzz_declared} declared targets"
   printf '    covered: %s of %s declared targets executed on %s workers, %s inputs total (%ss each, then as long again as reaching %s inputs needs, to a ceiling of %ss)\n' \
     "$fuzz_ran" "$fuzz_declared" "$fuzz_workers" "$fuzz_execs" "$fuzz_base" "$FUZZMIN" "$fuzz_cap"
-  if [[ -n "$fuzz_starved" ]]; then
-    notcovered "$(printf 'these targets could not reach %s inputs inside %ss, so the sweep sampled them rather than explored them:%s' \
-      "$FUZZMIN" "$fuzz_cap" "$fuzz_starved")"
-  fi
 fi
 
 # The command gate has two verdicts to reconcile — one about the command, one
@@ -1529,6 +1526,13 @@ for t in test_stats.py test_pool.py test_runtime.py test_compute.py test_tools.p
   n="$(tail -1 <<<"$bench_out" | grep -oE '[0-9]+' | head -1 || true)"
   [[ -n "$n" ]] && (( n > 0 )) || { printf '%s\n' "$bench_out" >&2; fail "bench/$t reported no count on its summary line, so whether it ran anything is unknown"; }
   bench_ran=$(( bench_ran + n ))
+  # A suite names a claim it could not check on this host with a line that
+  # starts "NOT COVERED: " (stress_test.py's C6 fork denial under bwrap). Its
+  # output is otherwise discarded on success, so the line is carried here, where
+  # the gate list and scripts/verify-expected-gaps.json see it.
+  while IFS= read -r bench_gap; do
+    notcovered "bench/$t: ${bench_gap#NOT COVERED: }"
+  done < <(grep '^NOT COVERED: ' <<<"$bench_out" || true)
 done
 (( bench_ran >= 600 )) || fail "the bench suites ran only ${bench_ran} checks in total"
 printf '    covered: %s checks — bootstrap CIs, paired deltas, seed pinning, cell-assembly refusals,\n' "$bench_ran"

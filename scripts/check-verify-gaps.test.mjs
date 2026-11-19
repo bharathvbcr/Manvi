@@ -21,13 +21,15 @@ const UBUNTU = [
   "    - devmap not found — repo navigation is unverified here",
   "    - local — this gate makes no request. The harness reports:",
   "    - anthropic, gemini and xai are verified against scripted servers only.",
+  // The bench leg's C6 fork denial, which bwrap cannot give (since 2026-11-19).
+  "    - bench/stress_test.py: C6 fork denial — the bwrap profile has no seccomp filter, so a Linux worker can fork (the macOS sandbox-exec profile denies it)",
   "",
 ].join("\n");
 
 test("the ubuntu verdict CI produced is fully expected", () => {
   const found = parseVerdict(UBUNTU);
   assert.equal(found.skips.length, UBUNTU_SKIPS.length);
-  assert.equal(found.gaps.length, 3);
+  assert.equal(found.gaps.length, 4);
   assert.deepEqual(compare(found, EXPECTED, "ubuntu-latest"), { unexpectedGaps: [], unexpectedSkips: [], stale: [] });
 });
 
@@ -75,6 +77,11 @@ test("the macos verdict CI produced is fully expected", () => {
     "github.com/bharathvbcr/Manvi/manvi/session.TestAdvFirstSaveKillChild",
     "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/agent",
     "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/path",
+    // Since 2026-11-19: three tests that need an installed agy, Claude Code or
+    // devmap binary, which no runner has, measured on macOS.
+    "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAgyRealBinaryACPHandshakeAndCrossProcessResume",
+    "github.com/bharathvbcr/Manvi/manvi/codingagent.TestRealClaudeBinaryStreamJSONHandshake",
+    "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed",
   ];
   const log = [
     "PASS with gates that did not run:",
@@ -106,6 +113,69 @@ test("every expected skip names a Go test that still exists", () => {
   }
 });
 
+// ---------------------------------------------------------------- fuzz floors
+//
+// A --fuzz target that cannot reach MANVI_FUZZMIN inputs is named on a line of
+// its own with its count. A listed target is accepted only at or above its own
+// floor; an unlisted one, or one that fell under its floor, still fails.
+const STARVED_LINE = (target, n) => `    - fuzz target ${target} was sampled, not explored: ${n} of 1000000 inputs in 120s`;
+const fuzzLog = (...lines) => ["PASS with gates that did not run:", ...lines, ""].join("\n");
+const SLOWEST = EXPECTED.fuzz_floors[0];
+
+test("fuzz floors: a listed target at or above its floor is expected", () => {
+  const found = parseVerdict(fuzzLog(STARVED_LINE(SLOWEST.target, SLOWEST.floor)));
+  assert.deepEqual(compare(found, EXPECTED, "ubuntu-latest", "fuzz", "checks").unexpectedGaps, []);
+});
+
+test("fuzz floors: a listed target under its floor fails, and says which floor", () => {
+  const found = parseVerdict(fuzzLog(STARVED_LINE(SLOWEST.target, SLOWEST.floor - 1)));
+  const [gap] = compare(found, EXPECTED, "ubuntu-latest", "fuzz", "checks").unexpectedGaps;
+  assert.match(gap, new RegExp(`below its floor of ${SLOWEST.floor}$`));
+});
+
+test("fuzz floors: an unlisted starved target fails, and floors hold only in the fuzz job", () => {
+  const unlisted = parseVerdict(fuzzLog(STARVED_LINE("./nowhere:FuzzNew", 5)));
+  assert.equal(compare(unlisted, EXPECTED, "ubuntu-latest", "fuzz", "checks").unexpectedGaps.length, 1);
+  const listed = parseVerdict(fuzzLog(STARVED_LINE(SLOWEST.target, SLOWEST.floor)));
+  assert.equal(compare(listed, EXPECTED, "ubuntu-latest", "default", "checks").unexpectedGaps.length, 1);
+  assert.equal(compare(listed, EXPECTED, "macos-latest", "fuzz", "checks").unexpectedGaps.length, 1);
+});
+
+test("fuzz floors: a listed target that now clears the input floor is reported, not failed", () => {
+  const found = parseVerdict(fuzzLog());
+  const result = compare(found, EXPECTED, "ubuntu-latest", "fuzz", "checks");
+  assert.deepEqual(result.unexpectedGaps, []);
+  assert.ok(result.stale.includes(`fuzz target ${SLOWEST.target} reached the input floor`));
+});
+
+test("fuzz floors: every entry is a declared target with a positive floor and a reason", () => {
+  for (const f of EXPECTED.fuzz_floors) {
+    assert.ok(Number.isInteger(f.floor) && f.floor > 0, JSON.stringify(f));
+    assert.ok(f.why && f.why.length > 10, JSON.stringify(f));
+    assert.deepEqual(f.modes, ["fuzz"], f.target);
+    assert.deepEqual(f.legs, ["checks"], f.target);
+    const [, pkg, fn] = /^\.\/(.+):(Fuzz\w+)$/.exec(f.target) ?? [];
+    assert.ok(pkg, `${f.target} is not ./<package>:<FuzzTarget>`);
+    const dir = new URL(`../manvi/${pkg}/`, import.meta.url);
+    const declared = existsSync(dir) && readdirSync(dir).filter((file) => file.endsWith("_test.go"))
+      .some((file) => new RegExp(`^func ${fn}\\(`, "m").test(readFileSync(new URL(file, dir), "utf8")));
+    assert.ok(declared, `${f.target}: no such fuzz target; delete the stale floor`);
+  }
+});
+
+// A gap whose message wraps onto deeper-indented lines used to end the parse, so
+// every gap printed after it went unchecked.
+test("a gap that runs over several lines does not hide the gaps after it", () => {
+  const found = parseVerdict([
+    "PASS with gates that did not run:",
+    "    - a long message that wraps:",
+    "                  and carries on here",
+    "    - sqlite3 not on PATH — schema readability is unverified here",
+    "",
+  ].join("\n"));
+  assert.deepEqual(found.gaps, ["a long message that wraps: and carries on here", "sqlite3 not on PATH — schema readability is unverified here"]);
+});
+
 // ---------------------------------------------------------------- legs
 //
 // CI runs one verify.sh leg per job. What is checked for a leg is that leg's
@@ -120,9 +190,10 @@ test("every expected entry names known legs, and gaps and skips sit where verify
     for (const leg of entry.legs) assert.ok(LEGS.includes(leg), `${name} names an unknown leg: ${leg}`);
   }
   // A skip is a Go test that skipped, which only the go-test leg runs; the
-  // gaps come from the wire and navigation steps, which are in checks.
+  // gaps come from the wire and navigation steps, which are in checks, except
+  // the ones a bench suite names, which verify.sh prefixes with the suite.
   for (const s of EXPECTED.skips) assert.deepEqual(s.legs, ["go-test"], s.test);
-  for (const g of EXPECTED.gaps) assert.deepEqual(g.legs, ["checks"], g.text);
+  for (const g of EXPECTED.gaps) assert.deepEqual(g.legs, g.text.startsWith("bench/") ? ["bench"] : ["checks"], g.text);
 });
 
 test("a leg is compared only against its own entries", () => {
@@ -130,10 +201,12 @@ test("a leg is compared only against its own entries", () => {
   // The whole-script verdict holds both legs' gaps, so judged as one leg each
   // half of it is unexpected there.
   const asGoTest = compare(found, EXPECTED, "ubuntu-latest", "default", "go-test");
-  assert.equal(asGoTest.unexpectedGaps.length, 3, "checks-leg gaps must not be excused in the go-test leg");
+  assert.equal(asGoTest.unexpectedGaps.length, 4, "checks- and bench-leg gaps must not be excused in the go-test leg");
   assert.equal(asGoTest.unexpectedSkips.length, 0);
   const asChecks = compare(found, EXPECTED, "ubuntu-latest", "default", "checks");
-  assert.equal(asChecks.unexpectedGaps.length, 0);
+  assert.deepEqual(asChecks.unexpectedGaps.map((g) => g.split(":")[0]), ["bench/stress_test.py"], "the bench leg's gap must not be excused in checks");
+  const asBench = compare(found, EXPECTED, "ubuntu-latest", "default", "bench");
+  assert.equal(asBench.unexpectedGaps.length, 3, "checks-leg gaps must not be excused in the bench leg");
   assert.equal(asChecks.unexpectedSkips.length, UBUNTU_SKIPS.length, "go-test-leg skips must not be excused in the checks leg");
 });
 
