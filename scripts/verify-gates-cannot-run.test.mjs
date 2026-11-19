@@ -48,6 +48,7 @@ const SEGMENTS = {
   rust: segment("Rust — format", "Rust — DevCouncil host"),
   commandgate: segment("Command gate — verdicts match what the shell actually writes", "Docs — mermaid blocks parse with the real grammar"),
   bunaudit: segment("Docs tooling — supply chain", "Brand — the published mark is the drawn mark"),
+  consumers: segment("Consumers — Jarvis builds and vets against this checkout", "Provider wire contracts"),
 };
 
 // ---------------------------------------------------------------- stubs
@@ -69,6 +70,7 @@ case "$1" in
     [ "\${GO_TIDY:-ok}" = diff ] && { echo "-	golang.org/x/sys v0.1.0"; exit 1; }
     exit 0 ;;
   tool) echo "total:	(statements)	91.0%"; exit \${GO_COVER_STATUS:-0} ;;
+  build|vet) [ "\${GO_BUILD:-ok}" = fail ] && { echo "undefined: workflow.Removed" >&2; exit 1; }; exit 0 ;;
   test)
     all="$*"
     if [[ "$all" == *-json* ]]; then
@@ -376,6 +378,33 @@ test("rust: cargo-audit missing is named", () => {
 test("bun audit: a failing audit fails and a missing bun is named", () => {
   assert.notEqual(runGate([SEGMENTS.bunaudit], ["bun"], { BUN: "fail" }).status, 0);
   assertNotAPass(runGate([SEGMENTS.bunaudit], []), "bun missing", { named: /bun is not installed/ });
+});
+
+// ---------------------------------------------------------------- consumers
+
+// The step runs the real scripts/check-consumers.sh (runGate links scripts/),
+// so these exercise its exit statuses rather than a stand-in for them.
+function fakeJarvis() {
+  const dir = mkdtempSync(path.join(tmpdir(), "gate-jarvis-"));
+  writeFileSync(path.join(dir, "go.mod"), "module github.com/bharathvbcr/Jarvis\n\ngo 1.27.4\n");
+  return dir;
+}
+
+test("consumers: no Jarvis checkout is a gate that did not run, named, never a pass", () => {
+  assertNotAPass(runGate([SEGMENTS.consumers], ["go"]), "Jarvis missing", { named: /no Jarvis checkout beside this repository/ });
+});
+
+test("consumers: a Jarvis that no longer builds against this checkout fails the gate", () => {
+  const run = runGate([SEGMENTS.consumers], ["go"], { MANVI_CONSUMER_JARVIS: fakeJarvis(), GO_BUILD: "fail" });
+  assert.notEqual(run.status, 0, run.out);
+  assert.match(run.out, /Jarvis no longer builds or vets against this checkout/);
+});
+
+test("consumers: control — a Jarvis that builds and vets passes and says what it covered", () => {
+  const run = runGate([SEGMENTS.consumers], ["go"], { MANVI_CONSUMER_JARVIS: fakeJarvis() });
+  assert.equal(run.status, 0, run.out);
+  assert.match(run.out, /covered: Jarvis builds and vets/);
+  assert.match(run.out, /PASS all gates/);
 });
 
 // ---------------------------------------------------------------- legs

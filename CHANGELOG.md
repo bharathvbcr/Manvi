@@ -211,6 +211,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **`verify.sh` builds Jarvis against the checkout.** A new `checks`-leg step
+  runs `scripts/check-consumers.sh`, so removing or changing an export that
+  Jarvis calls in `workflow`, `workflow/catalog`, `computer`, `llm/budget`
+  or `session` fails the gate instead of passing it (cab5166 and 995027c broke
+  Jarvis that way). With no Jarvis checkout beside the repository (or at
+  `MANVI_CONSUMER_JARVIS`) the step is reported NOT COVERED, never passed. CI
+  clones Jarvis's main for the `checks` leg.
+
 - **CI runs `verify.sh` as four parallel legs.** `./verify.sh --leg NAME` runs
   one slice of the gate (`go-test`, `rust`, `checks`, `bench`; `--list-legs`
   names them), and `.github/workflows/verify.yml` runs one leg per job on Linux

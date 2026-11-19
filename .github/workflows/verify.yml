@@ -115,6 +115,20 @@ jobs:
       - name: Module replacements
         run: bash scripts/fetch-modules.sh
 
+      # The checks leg builds Jarvis, the consumer of manvi/'s computer-use
+      # packages, against this checkout (scripts/check-consumers.sh). It looks
+      # for ../Jarvis, beside the siblings fetch-modules.sh just placed; without
+      # it verify.sh reports the gate NOT COVERED, which the expected-gaps list
+      # does not excuse. Jarvis's main rather than a pinned commit: the question
+      # is whether the consumer as it stands still builds against this tree.
+      - name: Consumer checkout (Jarvis)
+        if: matrix.leg == 'checks'
+        # Jarvis main floats (it pins Manvi, so pinning it here would be circular);
+        # the cloned commit is printed so a red run names the Jarvis change.
+        run: |
+          git clone --depth 1 https://github.com/bharathvbcr/Jarvis.git ../Jarvis
+          git -C ../Jarvis log -1 --format='Jarvis main at %H (%cs): %s'
+
       # The version comes from go.mod so this file cannot drift away from the
       # toolchain the module declares. Its own cache is off: it would save in a
       # post step that never runs on a red job. The explicit pair below does.
@@ -611,6 +625,14 @@ jobs:
           persist-credentials: false
       - name: Module replacements
         run: bash scripts/fetch-modules.sh
+      # --fuzz runs the whole checks leg, so it builds Jarvis too; see the gate job.
+      - name: Consumer checkout (Jarvis)
+        if: matrix.leg == 'checks'
+        # Jarvis main floats (it pins Manvi, so pinning it here would be circular);
+        # the cloned commit is printed so a red run names the Jarvis change.
+        run: |
+          git clone --depth 1 https://github.com/bharathvbcr/Jarvis.git ../Jarvis
+          git -C ../Jarvis log -1 --format='Jarvis main at %H (%cs): %s'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: manvi/go.mod

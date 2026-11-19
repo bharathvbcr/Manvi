@@ -1377,6 +1377,22 @@ if ! diff -q <(MANVI_HARNESS_INIT_ENABLED=false "$logo_bin" logo --svg) assets/m
 fi
 printf '    covered: assets/manvi-mark.svg is byte-identical to the generator\n'
 
+step "Consumers — Jarvis builds and vets against this checkout"
+# workflow, workflow/catalog, computer, llm/budget and the session privacy API
+# have no importer in this repository: Jarvis builds the desktop product on
+# them (docs/COMPUTER_USE_FOUNDATIONS.md). deadcode and devmap dead cannot see
+# a caller in another repository, so cab5166 and 995027c removed exports Jarvis
+# called while every gate here stayed green. The compiler is the only check
+# that sees those callers, and scripts/check-consumers.sh runs it. Its exit 2
+# is a Jarvis checkout that is not there to build: a gate that did not run.
+consumers_status=0
+scripts/check-consumers.sh || consumers_status=$?
+case "$consumers_status" in
+  0) printf '    covered: Jarvis builds and vets against this manvi/ tree\n' ;;
+  2) notcovered "no Jarvis checkout beside this repository (set MANVI_CONSUMER_JARVIS) — an export Jarvis calls could be removed unnoticed" ;;
+  *) fail "Jarvis no longer builds or vets against this checkout (scripts/check-consumers.sh)" ;;
+esac
+
 # The live wire contracts. Every provider constant was transcribed from
 # documentation, and documentation is a claim about an API rather than the API.
 # Nothing in this script can close that, so it is reported, never assumed.

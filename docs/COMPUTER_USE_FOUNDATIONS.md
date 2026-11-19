@@ -210,8 +210,10 @@ privacy API have no importer inside this repository. Their consumer is
 on them. That is why `deadcode` and `devmap dead` report them unreachable, and
 why removing an exported symbol from them breaks Jarvis without failing
 anything here (cab5166 and 995027c did). `scripts/check-consumers.sh` builds
-and vets Jarvis against this checkout; run it before removing or changing an
-exported symbol in these packages.
+and vets Jarvis against this checkout. `verify.sh` runs it in the `checks`
+leg (CI clones Jarvis's main beside the checkout for it), and reports it NOT
+COVERED when no Jarvis checkout is found; run it directly before removing or
+changing an exported symbol in these packages.
 
 Contracts Jarvis relies on:
 
