@@ -102,6 +102,7 @@ func buildNativeTools(reg *flags.Registry, approver ui.Approver, work *devcounci
 		Approver:         approver,
 		QuestionAsker:    questionAsker(approver),
 		Artifacts:        core.artifacts,
+		ArtifactsErr:     core.artifactsErr,
 		MCP:              core.mcp,
 		SubagentRegistry: subRegistry,
 		SubagentMgr:      subMgr,

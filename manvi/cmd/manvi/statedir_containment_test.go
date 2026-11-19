@@ -52,8 +52,10 @@ func TestCheckStateDirBelowAllowsWhatStaysInside(t *testing.T) {
 	if err := os.Symlink("real", filepath.Join(root, "alias")); err != nil {
 		t.Skipf("symlinks are not available: %v", err)
 	}
-	// A project root that is itself reached through a link is resolved before
-	// it is compared with what lies below it.
+	// A project root that is itself reached through a link is the caller's anchor
+	// and is not examined. A link below it is refused even when it stays inside
+	// the project (see TestCheckStateDirBelowRefusesAnInTreeLink): the artifact
+	// store refuses it too, and the two must agree.
 	viaLink := filepath.Join(t.TempDir(), "root-link")
 	if err := os.Symlink(root, viaLink); err != nil {
 		t.Fatal(err)
@@ -61,9 +63,7 @@ func TestCheckStateDirBelowAllowsWhatStaysInside(t *testing.T) {
 	for _, c := range []struct{ root, rel string }{
 		{root, ".devcouncil"},
 		{root, "real"},
-		{root, "alias/state"},
 		{viaLink, ".devcouncil/artifacts"},
-		{viaLink, "alias"},
 	} {
 		if err := checkStateDirBelow(c.root, c.rel); err != nil {
 			t.Errorf("checkStateDirBelow(%q, %q) = %v, want nil", c.root, c.rel, err)
@@ -132,5 +132,20 @@ func TestStartUpRefusesALinkedStateDirBeforeScaffolding(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
 		t.Fatalf("scaffolding created %v outside the project", entries)
+	}
+}
+
+func TestCheckStateDirBelowRefusesAnInTreeLink(t *testing.T) {
+	root, _ := stateTree(t)
+	if err := os.Mkdir(filepath.Join(root, "real"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(root, "alias")); err != nil {
+		t.Skipf("symlinks are not available: %v", err)
+	}
+	for _, rel := range []string{"alias", "alias/state"} {
+		if err := checkStateDirBelow(root, rel); !errors.Is(err, errStateDirOutside) {
+			t.Errorf("checkStateDirBelow(%q) = %v, want errStateDirOutside", rel, err)
+		}
 	}
 }

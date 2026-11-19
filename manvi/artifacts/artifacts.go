@@ -729,6 +729,9 @@ func (s *Store) openRoot(create bool) (*os.Root, error) {
 	var mode fs.FileMode
 	if create {
 		mode = 0o755
+		if err := s.ensureAnchor(); err != nil {
+			return nil, err
+		}
 	}
 	root, err := treefile.OpenDir(s.anchor, s.rel, mode)
 	if err != nil {
@@ -740,6 +743,21 @@ func (s *Store) openRoot(create bool) (*os.Root, error) {
 	return root, nil
 }
 
+// ensureAnchor makes the anchor itself on a write when it is not there yet. The
+// anchor is the one path the caller vouches for (the project root, or an
+// absolute MANVI_STATE_DIR an operator named, which on a fresh machine has not
+// been created), so it is made by path, as it always was; everything below it is
+// made and checked through handles.
+func (s *Store) ensureAnchor() error {
+	if s.anchor == "" {
+		return nil
+	}
+	if err := os.MkdirAll(s.anchor, 0o755); err != nil {
+		return fmt.Errorf("artifacts: creating %s: %w", s.anchor, err)
+	}
+	return nil
+}
+
 // dirFor opens the directory that holds the physical path full, which lies
 // within the store, and names its leaf. With create the directories below the
 // store are made, each inspected after it is made (os.Mkdir answers EEXIST for a
@@ -749,6 +767,9 @@ func (s *Store) dirFor(full string, create bool) (dir *os.Root, leaf string, err
 	var mode fs.FileMode
 	if create {
 		mode = 0o755
+		if err := s.ensureAnchor(); err != nil {
+			return nil, "", err
+		}
 	}
 	if s.anchor == "" {
 		dir, err = treefile.OpenDir(filepath.Dir(full), ".", mode)

@@ -48,7 +48,18 @@ type harnessCore struct {
 	fetch     *fetch.Client
 	mcp       *mcp.Manager
 	artifacts *artifacts.Store
-	tools     *tools.Registry
+	// artifactsErr is why artifacts is nil: the configured state directory was
+	// refused. It travels to the tool registry, which fails closed with it
+	// instead of building a store somewhere the configuration did not name.
+	artifactsErr error
+	tools        *tools.Registry
+}
+
+// artifactProvision is what the artifacts service provides: the store, or the
+// reason there is none.
+type artifactProvision struct {
+	store *artifacts.Store
+	err   error
 }
 
 func (c *harnessCore) Name() string { return "harness" }
@@ -70,9 +81,11 @@ func (c *harnessCore) Apply(cx *plugin.Ctx) (plugin.Dispose, error) {
 	if c.mcp, err = plugin.Resolve[*mcp.Manager](cx, svcMCP); err != nil {
 		return nil, err
 	}
-	if c.artifacts, err = plugin.Resolve[*artifacts.Store](cx, svcArtifacts); err != nil {
+	provision, err := plugin.Resolve[artifactProvision](cx, svcArtifacts)
+	if err != nil {
 		return nil, err
 	}
+	c.artifacts, c.artifactsErr = provision.store, provision.err
 	if c.tools, err = plugin.Resolve[*tools.Registry](cx, svcTools); err != nil {
 		return nil, err
 	}
@@ -148,7 +161,7 @@ func bootHarnessCore(reg *flags.Registry, root string) (*harnessCore, error) {
 				if err != nil {
 					store = nil
 				}
-				return nil, cx.Provide(svcArtifacts, store)
+				return nil, cx.Provide(svcArtifacts, artifactProvision{store: store, err: err})
 			},
 		},
 		&servicePlugin{
