@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -78,5 +79,28 @@ func TestManagedWithdrawalReceiptFailureIsNotOverwrittenByTheDecisionRead(t *tes
 	run, raw := m.finished()
 	if run.ProviderState != "failed" || !strings.Contains(string(raw), errReceipt.Error()) {
 		t.Fatalf("a failed withdrawal receipt did not end the run: provider_state=%s (%.300s)", run.ProviderState, raw[strings.Index(string(raw), `"reason"`):])
+	}
+}
+
+// Only the withdrawal itself is benign: an error joined to it, or wrapped
+// beside another, is a different failure and must reach the caller.
+func TestOnlyWithdrawnIsExactlyTheWithdrawal(t *testing.T) {
+	other := errors.New("store down")
+	for _, c := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"bare", codingagent.ErrCallbackWithdrawn, true},
+		{"one wrap of context", fmt.Errorf("answering: %w", codingagent.ErrCallbackWithdrawn), true},
+		{"joined with another error", errors.Join(codingagent.ErrCallbackWithdrawn, other), false},
+		{"joined the other way", errors.Join(other, codingagent.ErrCallbackWithdrawn), false},
+		{"two wraps in one", fmt.Errorf("%w; %w", codingagent.ErrCallbackWithdrawn, other), false},
+		{"another error", other, false},
+		{"nil", nil, false},
+	} {
+		if got := onlyWithdrawn(c.err); got != c.want {
+			t.Errorf("%s: onlyWithdrawn = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

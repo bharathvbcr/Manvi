@@ -363,7 +363,7 @@ func (c *connection) read() {
 	if err == nil {
 		err = io.EOF
 	}
-	err = c.preferFailure(err)
+	err = c.endedBy(err)
 	select {
 	case c.frames <- wireRead{err: err}:
 	case <-c.ctx.Done():
@@ -558,17 +558,35 @@ func (c *connection) failure() error {
 	return nil
 }
 
-// preferFailure is err, unless err is only the end of the stream and the
-// connection has a recorded failure, which is then the reason it ended. The
-// stderr cap, for one, records its cause and kills the agent, and the stream
-// that follows ends in a plain EOF: every reader of the frames, whether it takes
-// a queued end-of-stream frame, the closed channel or the cancellation, reports
-// the same cause through this one rule.
+// preferFailure is err, unless err is only the end of the stream (EOF, or the
+// read of a pipe close() shut) and the connection has already ended, in which
+// case the reason it ended is reported: the recorded failure (the stderr cap, for
+// one, records its cause and kills the agent, and the stream that follows ends
+// in a plain EOF), else the cancel that close() or an interrupt made. The end of
+// the stream is then only the consequence of that, and every reader of the
+// frames, whether it takes a queued end-of-stream frame, the closed channel or
+// the cancellation, reports the same cause through this one rule. A stream that
+// ends while the connection is live is the agent's own exit and stays EOF.
 func (c *connection) preferFailure(err error) error {
 	if errors.Is(err, io.EOF) {
 		if failure := c.failure(); failure != nil {
 			return failure
 		}
+	}
+	return err
+}
+
+// endedBy is what a reader of the frames reports for err: preferFailure, and
+// beyond it, when the connection was ended by a plain cancel (close(), an
+// interrupt), the cancel, because an end of the stream (EOF, or the read of the
+// pipe close() shut) is then only its consequence. serve classes a cancel
+// "interrupted" and a read error "failed", and which a run got depended on
+// which ready case the reader took. A stream that ends while the connection is
+// live is the agent's own exit and stays EOF; any other error is returned as is.
+func (c *connection) endedBy(err error) error {
+	err = c.preferFailure(err)
+	if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe)) && c.ctx.Err() != nil {
+		return c.err()
 	}
 	return err
 }
@@ -584,9 +602,9 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 	select {
 	case next, ok := <-c.frames:
 		if !ok {
-			return packet{}, nil, c.preferFailure(io.EOF)
+			return packet{}, nil, c.endedBy(io.EOF)
 		}
-		return next.value, next.raw, c.preferFailure(next.err)
+		return next.value, next.raw, c.endedBy(next.err)
 	case <-ctx.Done():
 		if err := c.failure(); err != nil {
 			return packet{}, nil, err
@@ -598,7 +616,7 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 		select {
 		case next, ok := <-c.frames:
 			if ok {
-				return next.value, next.raw, c.preferFailure(next.err)
+				return next.value, next.raw, c.endedBy(next.err)
 			}
 		default:
 		}
@@ -722,13 +740,13 @@ func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[
 			select {
 			case frame, ok := <-wire.frames:
 				if !ok {
-					if failure := wire.failure(); failure != nil {
-						return failure
+					if ended := wire.endedBy(io.EOF); !errors.Is(ended, io.EOF) {
+						return ended
 					}
 					return errors.New(agent + " connection ended before response validation")
 				}
 				if frame.err != nil {
-					return wire.preferFailure(frame.err)
+					return wire.endedBy(frame.err)
 				}
 				next = item(frame)
 			default:
@@ -827,17 +845,20 @@ func leadWith(deferred *[]Event, events []Event) Event {
 // there is nothing to report: no callback pending, or the caller's own context
 // is done, which leaves the session alive and so withdraws nothing. What it
 // parks is held to maxDeferredBacklog like every other path: past it, the
-// withdrawals are refused with errDeferredBacklog and nothing is parked.
+// withdrawals are refused with errDeferredBacklog, and because the refusal is
+// decided for the worst case (maxPendingCallbacks withdrawals) before withdraw
+// runs, it never forgets a callback it then cannot report. Next calls it with
+// deferred empty, so the refusal cannot happen there by construction.
 func withdrawAtEnd(ctx context.Context, deferred *[]Event, withdraw func() []Event) (e Event, ended bool, err error) {
 	if ctx.Err() != nil {
 		return Event{}, false, nil
 	}
+	if len(*deferred)+maxPendingCallbacks > maxDeferredBacklog {
+		return Event{}, true, errDeferredBacklog
+	}
 	events := withdraw()
 	if len(events) == 0 {
 		return Event{}, false, nil
-	}
-	if len(*deferred)+len(events) > maxDeferredBacklog {
-		return Event{}, true, errDeferredBacklog
 	}
 	return leadWith(deferred, events), true, nil
 }

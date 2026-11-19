@@ -269,43 +269,40 @@ func TestCloseDuringAnInFlightWriteReportsTheCancelEveryTime(t *testing.T) {
 	}
 }
 
-// withdrawAtEnd parks what it reports within the one deferred bound: at the
-// bound it reports everything, one past it refuses and parks nothing.
+// withdrawAtEnd parks what it reports within the one deferred bound, decided for
+// the worst case before it withdraws anything: at the bound it reports
+// everything, one past it refuses and the callbacks are still pending (nothing
+// was forgotten). The pending cap is below the bound, so Next, which calls it
+// with nothing parked, can never be refused.
 func TestWithdrawAtEndHoldsToTheDeferredBound(t *testing.T) {
-	withdraw := func(n int) func() []Event {
-		return func() []Event {
-			out := make([]Event, n)
-			for i := range out {
-				out[i] = Event{CancelledID: fmt.Sprint(i)}
-			}
-			return out
-		}
+	if maxPendingCallbacks >= maxDeferredBacklog {
+		t.Fatalf("maxPendingCallbacks %d must stay below maxDeferredBacklog %d", maxPendingCallbacks, maxDeferredBacklog)
 	}
 	for _, c := range []struct {
-		name     string
-		prefill  int
-		n        int
-		wantErr  bool
-		wantSize int
+		name    string
+		prefill int
+		wantErr bool
 	}{
-		{"fills the bound exactly", maxDeferredBacklog - 3, 3, false, maxDeferredBacklog - 1},
-		{"one past the bound is refused", maxDeferredBacklog - 3, 4, true, maxDeferredBacklog - 3},
-		{"nothing pending reports nothing", 5, 0, false, 5},
+		{"nothing parked is never refused", 0, false},
+		{"fills the bound exactly", maxDeferredBacklog - maxPendingCallbacks, false},
+		{"one past the bound is refused", maxDeferredBacklog - maxPendingCallbacks + 1, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			deferred := make([]Event, c.prefill)
-			e, ended, err := withdrawAtEnd(t.Context(), &deferred, withdraw(c.n))
-			if c.wantErr != errors.Is(err, errDeferredBacklog) || (err != nil && !c.wantErr) {
-				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
+			pending := []Event{{CancelledID: "a"}, {CancelledID: "b"}}
+			called := false
+			e, ended, err := withdrawAtEnd(t.Context(), &deferred, func() []Event { called = true; return pending })
+			if !ended {
+				t.Fatal("not ended")
 			}
-			if ended != (c.n > 0) {
-				t.Fatalf("ended = %v with %d withdrawals", ended, c.n)
+			if c.wantErr {
+				if !errors.Is(err, errDeferredBacklog) || called || len(deferred) != c.prefill {
+					t.Fatalf("err=%v withdrawn=%v parked=%d: a refusal must forget nothing and park nothing", err, called, len(deferred))
+				}
+				return
 			}
-			if !c.wantErr && c.n > 0 && e.CancelledID != "0" {
-				t.Fatalf("first event = %+v", e)
-			}
-			if len(deferred) != c.wantSize {
-				t.Fatalf("parked %d, want %d", len(deferred), c.wantSize)
+			if err != nil || e.CancelledID != "a" || len(deferred) != c.prefill+1 {
+				t.Fatalf("e=%+v err=%v parked=%d", e, err, len(deferred))
 			}
 		})
 	}

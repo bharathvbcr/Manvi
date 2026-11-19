@@ -1985,15 +1985,33 @@ func (r *ManagedRunner) answer(ctx context.Context, job *managedJob, callback *m
 		return false, err
 	}
 	if err = job.provider.ValidateResponse(callback.request, response); err != nil {
-		return errors.Is(err, codingagent.ErrCallbackWithdrawn), err
+		return onlyWithdrawn(err), err
 	}
 	if _, err = r.client.ClaimDecision(ctx, callback.captured, id, revision); err != nil {
 		return false, err
 	}
 	if err = job.provider.Respond(ctx, callback.request, response); err != nil {
-		return errors.Is(err, codingagent.ErrCallbackWithdrawn), err
+		return onlyWithdrawn(err), err
 	}
 	return false, nil
+}
+
+// onlyWithdrawn reports whether err is the adapter's withdrawal and nothing
+// else: it may carry context (a single %w wrap), but an error joined to it
+// (errors.Join, a second %w) is a different failure the withdrawal must not
+// swallow.
+func onlyWithdrawn(err error) bool {
+	for err != nil {
+		if err == codingagent.ErrCallbackWithdrawn { //nolint:errorlint // identity is the point: errors.Is would match a joined error
+			return true
+		}
+		wrapped, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = wrapped.Unwrap()
+	}
+	return false
 }
 
 // deliveredReason is the receipt for a decision written to the provider.
