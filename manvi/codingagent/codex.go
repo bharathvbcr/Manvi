@@ -198,9 +198,11 @@ type Event struct {
 	Request                  *Request
 	ResolvedID, Text, Status string
 	TurnID                   string
-	// CancelledID names a callback the provider withdrew before any answer was
-	// delivered. Only Claude reports it (control_cancel_request); the host
-	// resolves the decision row as cancelled and stops awaiting a person.
+	// CancelledID names a callback that can no longer be answered, withdrawn
+	// before any answer was delivered: Claude's control_cancel_request, and, for
+	// every adapter, the end of the turn or of the connection under a callback
+	// still pending. The host resolves the decision row as cancelled and stops
+	// awaiting a person.
 	CancelledID string
 	Tools       []Tool
 }
@@ -602,6 +604,9 @@ func (s *Codex) next(ctx context.Context) (Event, error) {
 			var err error
 			p, err = s.wire.receive(ctx)
 			if err != nil {
+				if e, ended, lerr := withdrawAtEnd(ctx, &s.deferred, s.withdrawPending); ended {
+					return e, lerr
+				}
 				return Event{}, err
 			}
 		}

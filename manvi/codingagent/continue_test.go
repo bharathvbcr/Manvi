@@ -590,3 +590,49 @@ func TestStartTurnStillTakesOneTurnPerSession(t *testing.T) {
 		t.Fatal("Codex StartTurn took a second turn")
 	}
 }
+
+// A turn that ends with a server request nobody answered withdraws it (ahead of
+// the status) and nothing is written for it: the app-server is not waiting on a
+// reply, because the turn it asked in is over. The follow-up must not stall on
+// those requests, must not be refused as backlogged, and must tolerate the
+// provider's late receipt for the abandoned request. The app-server here is the
+// scripted fixture (multiturn-pending), which never waits for a reply; whether
+// the installed codex-cli behaves the same was not observed.
+func TestCodexContinueTurnDoesNotStallOnRequestsWithdrawnAtTurnEnd(t *testing.T) {
+	s := fixture(t, "multiturn-pending")
+	if err := s.StartTurn(t.Context(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := context.WithTimeout(t.Context(), 10*time.Second)
+	defer stop()
+	var asked, withdrawn string
+	for status := ""; status == ""; {
+		e, err := s.Next(ctx)
+		if err != nil {
+			t.Fatalf("first turn: %v", err)
+		}
+		if e.Request != nil {
+			asked = e.Request.ID
+		}
+		if e.CancelledID != "" {
+			withdrawn = e.CancelledID
+		}
+		status = e.Status
+	}
+	if asked == "" || withdrawn != asked {
+		t.Fatalf("the unanswered request %q was withdrawn as %q", asked, withdrawn)
+	}
+	start := time.Now()
+	if err := s.ContinueTurn(ctx, "second"); err != nil {
+		t.Fatalf("the follow-up was refused behind a withdrawn request: %v", err)
+	}
+	if text, status := collectCodex(t, s); status != "completed" || !strings.Contains(text, "REPLY_turn-2") {
+		t.Fatalf("the follow-up turn: %q %q", text, status)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the follow-up took %v behind a withdrawn request", took)
+	}
+	if len(s.pending) != 0 {
+		t.Fatalf("callbacks still pending after the follow-up: %v", s.pending)
+	}
+}

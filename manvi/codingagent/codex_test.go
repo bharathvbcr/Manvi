@@ -68,7 +68,7 @@ func TestProtocolChild(t *testing.T) {
 		case "turn/start":
 			turnStarts++
 			switch scenario {
-			case "multiturn", "multiturn-early", "multiturn-callback", "reject-second", "silent", "late-tail", "late-tail-reject":
+			case "multiturn", "multiturn-early", "multiturn-callback", "multiturn-pending", "reject-second", "silent", "late-tail", "late-tail-reject":
 				// The recorded shape of a second turn on one thread (codex-cli
 				// 0.153.4, ephemeral thread): a new turn id per turn/start, answered
 				// with turn/started and turn/completed carrying it.
@@ -82,11 +82,24 @@ func TestProtocolChild(t *testing.T) {
 					continue
 				}
 				events := func() {
+					if scenario == "multiturn-pending" && turnStarts == 1 {
+						// The first turn ends with a command approval nobody answered, and
+						// the app-server never waits for a reply to it: the turn is over.
+						fmt.Printf("{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", id)
+						fmt.Printf("{\"id\":\"request-1\",\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"thread\",\"turnId\":%q,\"itemId\":\"item-1\",\"command\":\"git status\",\"cwd\":\"/x\",\"startedAtMs\":1}}\n", id)
+						fmt.Printf("{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"completed\",\"items\":[]}}}\n", id)
+						return
+					}
 					if scenario == "multiturn-callback" && turnStarts == 2 {
 						// The second turn asks to run a command and waits.
 						fmt.Printf("{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", id)
 						fmt.Printf("{\"id\":\"request-2\",\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"thread\",\"turnId\":%q,\"itemId\":\"item-2\",\"command\":\"git status\",\"cwd\":\"/x\",\"startedAtMs\":1}}\n", id)
 						return
+					}
+					if scenario == "multiturn-pending" && turnStarts == 2 {
+						// The provider's receipt that the abandoned request is resolved
+						// arrives late, inside the follow-up turn.
+						fmt.Println(`{"method":"serverRequest/resolved","params":{"threadId":"thread","requestId":"request-1"}}`)
 					}
 					fmt.Printf("{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", id)
 					fmt.Printf("{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread\",\"turnId\":%q,\"item\":{\"id\":\"answer-%d\",\"type\":\"agentMessage\",\"text\":\"REPLY_%s\"}}}\n", id, turnStarts, id)

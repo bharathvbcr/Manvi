@@ -635,6 +635,9 @@ func (s *Claude) next(ctx context.Context) (Event, error) {
 			var err error
 			_, raw, err = s.wire.receiveFrame(ctx)
 			if err != nil {
+				if e, ended, lerr := withdrawAtEnd(ctx, &s.deferred, s.withdrawPending); ended {
+					return e, lerr
+				}
 				return Event{}, err
 			}
 		}

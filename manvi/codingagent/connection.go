@@ -363,9 +363,16 @@ func (c *connection) read() {
 	if err == nil {
 		err = io.EOF
 	}
+	err = c.preferFailure(err)
 	select {
 	case c.frames <- wireRead{err: err}:
 	case <-c.ctx.Done():
+	}
+	if !errors.Is(err, io.EOF) {
+		// A read error is a failure of the connection, recorded like a refused
+		// frame, so a reader that takes the frame and one that takes the closed
+		// channel afterwards report the same cause (a no-op if one is recorded).
+		c.fail(err)
 	}
 }
 
@@ -509,14 +516,19 @@ func (c *connection) sendRaw(ctx context.Context, data []byte) error {
 
 // written is sendRaw's answer once the write has reported: nil for a delivered
 // frame; for a failed write, the connection's recorded failure when there is
-// one (it says why the pipe broke), else the pipe's error, ending the
-// connection.
+// one (it says why the pipe broke); the cancellation when a plain cancel already
+// ended the connection, because the pipe's error ("file already closed", a
+// broken pipe) is then only what Close or an interrupt did to it; else the
+// pipe's error, ending the connection.
 func (c *connection) written(err error) error {
 	if err == nil {
 		return nil
 	}
 	if failure := c.failure(); failure != nil {
 		return failure
+	}
+	if c.ctx.Err() != nil {
+		return c.err()
 	}
 	c.cancel()
 	return err
@@ -545,6 +557,21 @@ func (c *connection) failure() error {
 	}
 	return nil
 }
+
+// preferFailure is err, unless err is only the end of the stream and the
+// connection has a recorded failure, which is then the reason it ended. The
+// stderr cap, for one, records its cause and kills the agent, and the stream
+// that follows ends in a plain EOF: every reader of the frames, whether it takes
+// a queued end-of-stream frame, the closed channel or the cancellation, reports
+// the same cause through this one rule.
+func (c *connection) preferFailure(err error) error {
+	if errors.Is(err, io.EOF) {
+		if failure := c.failure(); failure != nil {
+			return failure
+		}
+	}
+	return err
+}
 func (c *connection) receive(ctx context.Context) (packet, error) {
 	p, _, err := c.receiveFrame(ctx)
 	return p, err
@@ -557,9 +584,9 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 	select {
 	case next, ok := <-c.frames:
 		if !ok {
-			return packet{}, nil, io.EOF
+			return packet{}, nil, c.preferFailure(io.EOF)
 		}
-		return next.value, next.raw, next.err
+		return next.value, next.raw, c.preferFailure(next.err)
 	case <-ctx.Done():
 		if err := c.failure(); err != nil {
 			return packet{}, nil, err
@@ -571,7 +598,7 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 		select {
 		case next, ok := <-c.frames:
 			if ok {
-				return next.value, next.raw, next.err
+				return next.value, next.raw, c.preferFailure(next.err)
 			}
 		default:
 		}
@@ -602,7 +629,10 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 // the group). No caller in this module adds a timeout of its own; the one bound
 // above them is ManagedRunner.Close, which waits five seconds for jobs to finish.
 func (c *connection) close() (Exit, error) {
-	c.closeOnce.Do(func() { c.stdin.Close(); c.cancel(); c.stdout.Close() })
+	// The cancellation lands before the pipes are closed, so a write that fails
+	// because stdin was closed finds the connection already cancelled and reports
+	// the cancel (an interrupted run), never "file already closed" (a failed one).
+	c.closeOnce.Do(func() { c.cancel(); c.stdin.Close(); c.stdout.Close() })
 	reaped := time.NewTimer(reapBudget)
 	defer reaped.Stop()
 	select {
@@ -692,10 +722,13 @@ func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[
 			select {
 			case frame, ok := <-wire.frames:
 				if !ok {
+					if failure := wire.failure(); failure != nil {
+						return failure
+					}
 					return errors.New(agent + " connection ended before response validation")
 				}
 				if frame.err != nil {
-					return frame.err
+					return wire.preferFailure(frame.err)
 				}
 				next = item(frame)
 			default:
@@ -768,12 +801,45 @@ func (w *withdrawnIDs) withdrawalEvents(ids []string) []Event {
 	return events
 }
 
+// errDeferredBacklog is the refusal of an event that would take deferred past
+// maxDeferredBacklog.
+var errDeferredBacklog = errors.New("managed provider event backlog exceeded its event budget")
+
 // leadWith returns events[0] and queues the rest behind whatever is already
 // deferred, so Next delivers them in order. It is how a turn end reports every
-// withdrawal ahead of its status for every adapter. events must not be empty.
+// withdrawal ahead of its status for every adapter. It does not refuse: a turn
+// end met by drainBacklog has already been read from the wire, so the preflight
+// checks the bound after the insertion and fails with every event still
+// deliverable, and one met by Next parks into an empty deferred (Next returns
+// what is parked first), so it adds at most maxPendingCallbacks+1 events.
+// Every path that parks events is one of these two, or withdrawAtEnd, which
+// checks the bound itself. events must not be empty.
 func leadWith(deferred *[]Event, events []Event) Event {
 	*deferred = append(*deferred, events[1:]...)
 	return events[0]
+}
+
+// withdrawAtEnd is the one rule for a Next that finds the connection ended
+// while callbacks still await an answer: nothing can answer them any more, so
+// each is reported withdrawn, ahead of the error that ended the connection (the
+// recorded failure, else the end of the stream), which the following Next
+// returns. withdraw is the adapter's own withdrawPending. ended is false when
+// there is nothing to report: no callback pending, or the caller's own context
+// is done, which leaves the session alive and so withdraws nothing. What it
+// parks is held to maxDeferredBacklog like every other path: past it, the
+// withdrawals are refused with errDeferredBacklog and nothing is parked.
+func withdrawAtEnd(ctx context.Context, deferred *[]Event, withdraw func() []Event) (e Event, ended bool, err error) {
+	if ctx.Err() != nil {
+		return Event{}, false, nil
+	}
+	events := withdraw()
+	if len(events) == 0 {
+		return Event{}, false, nil
+	}
+	if len(*deferred)+len(events) > maxDeferredBacklog {
+		return Event{}, true, errDeferredBacklog
+	}
+	return leadWith(deferred, events), true, nil
 }
 
 // callbackStale reports whether a host's copy of a callback no longer matches
