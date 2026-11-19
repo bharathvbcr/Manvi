@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/artifacts"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
@@ -144,6 +146,9 @@ func bootHarnessCore(reg *flags.Registry, root string) (*harnessCore, error) {
 				if err != nil {
 					return nil, err
 				}
+				// Standard error, as the grant-ledger and grant-refusal notices raised while
+				// a tool surface is built are: there is no notes stream at this depth.
+				reportMCPRefusals(os.Stderr, mgr)
 				if err := cx.Provide(svcMCP, mgr); err != nil {
 					return nil, err
 				}

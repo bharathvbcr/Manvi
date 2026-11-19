@@ -190,6 +190,8 @@ func doctorWithState(out io.Writer, reg *flags.Registry, stateRefusal error) err
 		reportDevMap(out, ctx, mapClient(projectRoot()))
 	}
 
+	reportMCPDoctor(out, reg, projectRoot())
+
 	_, _ = fmt.Fprintln(out)
 	statuses := credentials.NewResolver().Statuses()
 	for _, status := range statuses {
