@@ -20,7 +20,7 @@ func TestAnOversizedGitignoreIsLeftAloneAndReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := Ensure(root, options())
-	if raw, err := os.ReadFile(path); err != nil || string(raw) != big {
+	if raw, err := os.ReadFile(path); err != nil || string(raw) != big { // #nosec G304 -- a path under this test's own t.TempDir
 		t.Fatalf(".gitignore was changed (read error %v)", err)
 	}
 	if len(report.AddedRules) != 0 || len(report.Failures) == 0 {
@@ -60,7 +60,7 @@ func TestAnUnconfirmedGitignoreSyncIsReportedAsPublished(t *testing.T) {
 	if len(report.AddedRules) == 0 {
 		t.Fatalf("the rules that were written were not reported as added: %+v", report)
 	}
-	if raw, err := os.ReadFile(filepath.Join(root, ".gitignore")); err != nil || !strings.Contains(string(raw), ".devcouncil") {
+	if raw, err := os.ReadFile(filepath.Join(root, ".gitignore")); err != nil || !strings.Contains(string(raw), ".devcouncil") { // #nosec G304 -- a path under this test's own t.TempDir
 		t.Fatalf(".gitignore lacks the rules (%v):\n%s", err, raw)
 	}
 	if len(report.Failures) != 1 || !errors.Is(report.Failures[0].Err, treefile.ErrPublishedUnsynced) ||

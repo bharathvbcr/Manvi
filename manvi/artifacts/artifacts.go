@@ -114,7 +114,7 @@ func newStore(anchor, rel string) (*Store, error) {
 	dir := filepath.Join(anchor, rel)
 	// Lstat, not Stat: the store must not be built over a link, whatever it
 	// points at. The walk at every operation repeats this for each component.
-	if info, err := os.Lstat(dir); err == nil {
+	if info, err := os.Lstat(dir); err == nil { // #nosec G703 -- dir is the configured store root plus a component already validated; Lstat reads it without following a link
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("%w: artifacts: store dir %s is a symbolic link; refusing to write through it", treefile.ErrRefused, dir)
 		}
@@ -752,7 +752,7 @@ func (s *Store) ensureAnchor() error {
 	if s.anchor == "" {
 		return nil
 	}
-	if err := os.MkdirAll(s.anchor, 0o755); err != nil {
+	if err := os.MkdirAll(s.anchor, 0o755); err != nil { // #nosec G703 -- s.anchor is the store root the caller configured
 		return fmt.Errorf("artifacts: creating %s: %w", s.anchor, err)
 	}
 	return nil

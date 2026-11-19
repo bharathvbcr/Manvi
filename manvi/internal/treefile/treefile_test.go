@@ -204,7 +204,7 @@ func TestPublishCreatesReplacesAndLeavesNoStage(t *testing.T) {
 	if err := Publish(root, "a.json", []byte("three"), PublishOptions{Replace: true}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(anchor, "a.json"))
+	raw, err := os.ReadFile(filepath.Join(anchor, "a.json")) // #nosec G304 -- a path under this test's own t.TempDir
 	if err != nil || string(raw) != "three" {
 		t.Fatalf("content %q %v", raw, err)
 	}
@@ -234,7 +234,7 @@ func TestPublishNeverWritesThroughALinkOrOverANonFile(t *testing.T) {
 			t.Errorf("Publish(%q) succeeded", name)
 		}
 	}
-	if raw, _ := os.ReadFile(target); string(raw) != "keep" {
+	if raw, _ := os.ReadFile(target); string(raw) != "keep" { // #nosec G304 -- a path under this test's own t.TempDir
 		t.Fatalf("the link's target was written: %q", raw)
 	}
 }

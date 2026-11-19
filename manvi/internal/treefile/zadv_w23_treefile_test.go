@@ -214,7 +214,7 @@ func TestZadvReadFileHostileEntries(t *testing.T) {
 		t.Skip(err)
 	}
 	defer func() { _ = os.RemoveAll(short) }()
-	l, err := net.Listen("unix", filepath.Join(short, "s"))
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", filepath.Join(short, "s"))
 	if err != nil {
 		t.Skip(err)
 	}
@@ -239,7 +239,7 @@ func TestZadvReadFileHostileEntries(t *testing.T) {
 		}
 	})
 
-	big, err := os.Create(filepath.Join(anchor, "big"))
+	big, err := os.Create(filepath.Join(anchor, "big")) // #nosec G304 -- a path under this test's own t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestZadvPublishNeverWritesThroughALinkOrHardLink(t *testing.T) {
 			for _, name := range []string{"sym", "hard"} {
 				_ = Publish(dir, name, []byte("PWNED"), PublishOptions{Replace: replace})
 			}
-			got, err := os.ReadFile(target)
+			got, err := os.ReadFile(target) // #nosec G304 -- a path under this test's own t.TempDir
 			if err != nil || string(got) != "precious" {
 				t.Fatalf("the outside file was written through: %q %v", got, err)
 			}
@@ -468,7 +468,7 @@ func TestZadvSpuriousENOENTRootCauseProbe(t *testing.T) {
 				} else if errors.Is(err, fs.ErrNotExist) {
 					rootENOENT.Add(1)
 				}
-				if f, err := os.OpenFile(filepath.Join(anchor, "p"+name), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600); err == nil {
+				if f, err := os.OpenFile(filepath.Join(anchor, "p"+name), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600); err == nil { // #nosec G304 -- a path under this test's own t.TempDir
 					_ = f.Close()
 				} else if errors.Is(err, fs.ErrNotExist) {
 					plainENOENT.Add(1)
@@ -698,7 +698,7 @@ func TestZadvHelperProcess(t *testing.T) {
 				fmt.Fprintln(os.Stderr, "lock:", err)
 				os.Exit(3)
 			}
-			lf, err := os.OpenFile(log, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+			lf, err := os.OpenFile(log, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600) // #nosec G304 G703 -- a path under this test's own t.TempDir
 			if err != nil {
 				os.Exit(4)
 			}
@@ -715,7 +715,7 @@ func TestZadvHelperProcess(t *testing.T) {
 			os.Exit(3)
 		}
 		_ = unlock
-		if err := os.WriteFile(log, []byte("held"), 0o600); err != nil {
+		if err := os.WriteFile(log, []byte("held"), 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 			os.Exit(4)
 		}
 		time.Sleep(10 * time.Minute)
@@ -725,7 +725,7 @@ func TestZadvHelperProcess(t *testing.T) {
 
 func zadvChild(t *testing.T, mode, dir, log string, extra ...string) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestZadvHelperProcess$", "-test.v")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestZadvHelperProcess$", "-test.v") // #nosec G204 G702 -- re-execs this test binary as its own helper; the environment selects the role
 	cmd.Env = append(os.Environ(), zadvHelperEnv+"="+mode, "ZADV_DIR="+dir, "ZADV_LOG="+log)
 	cmd.Env = append(cmd.Env, extra...)
 	return cmd
@@ -753,7 +753,7 @@ func TestZadvLockAcrossProcesses(t *testing.T) {
 			t.Errorf("child %d: %v\n%s", i, err, outs[i].String())
 		}
 	}
-	f, err := os.Open(log)
+	f, err := os.Open(log) // #nosec G304 -- a path under this test's own t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}

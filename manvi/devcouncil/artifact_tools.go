@@ -210,7 +210,7 @@ func (r *Registry) updateArtifact(ctx context.Context, call tools.Call) tools.Re
 		return tools.Errorf("accessing artifact store: %v", err)
 	}
 
-	art, err := store.Update(args.Name, args.Content, args.Metadata)
+	art, err := store.Update(args.Name, args.Content, args.Metadata) //nolint:contextcheck // Store.Update takes no context; the lock wait inside it is bounded by artifacts.lockWait, so an abandoned call cannot queue forever
 	if err != nil && !errors.Is(err, artifacts.ErrPublishedUnsynced) {
 		return tools.Errorf("updating artifact: %v", err)
 	}

@@ -40,7 +40,7 @@ func TestAGitignoreThatIsALinkIsLeftAloneAndReported(t *testing.T) {
 		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
-		raw, rerr := os.ReadFile(p)
+		raw, rerr := os.ReadFile(p) // #nosec G122 G304 -- a path under this test's own t.TempDir
 		if rerr == nil && strings.Contains(string(raw), "SECRET") {
 			t.Errorf("%s holds the link target's text", p)
 		}

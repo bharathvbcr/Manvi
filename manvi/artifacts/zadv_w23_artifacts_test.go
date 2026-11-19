@@ -197,7 +197,7 @@ func TestZadvHardLinkToAnOutsideFile(t *testing.T) {
 	if _, err := s.Update("doc", "v2", nil); err != nil {
 		t.Logf("Update refused: %v", err)
 	}
-	if got, _ := os.ReadFile(secret); string(got) != "precious" {
+	if got, _ := os.ReadFile(secret); string(got) != "precious" { // #nosec G304 -- a path under this test's own t.TempDir
 		t.Fatalf("Update wrote through the hard link: %q", got)
 	}
 	// Sidecar hard-linked too.
@@ -209,7 +209,7 @@ func TestZadvHardLinkToAnOutsideFile(t *testing.T) {
 	if _, err := s.Update("doc", "v3", nil); err == nil {
 		t.Error("Update accepted a hard-linked sidecar")
 	}
-	if got, _ := os.ReadFile(secret); string(got) != "precious" {
+	if got, _ := os.ReadFile(secret); string(got) != "precious" { // #nosec G304 -- a path under this test's own t.TempDir
 		t.Fatalf("outside file changed: %q", got)
 	}
 }
@@ -239,7 +239,7 @@ func TestZadvListSurvivesUnreadableEntries(t *testing.T) {
 	if err := os.Chmod(filepath.Join(store, "sub"), 0); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chmod(filepath.Join(store, "sub"), 0o750) }()
+	defer func() { _ = os.Chmod(filepath.Join(store, "sub"), 0o750) }() // #nosec G302 -- a directory, not a file; it must be searchable again so TempDir can remove it
 	arts, err := s.List()
 	var partial *PartialListError
 	if !errors.As(err, &partial) {
@@ -405,7 +405,7 @@ func TestZadvHostileEntriesAtEveryReadSite(t *testing.T) {
 				t.Skip(err)
 			}
 		case "huge":
-			f, err := os.Create(path)
+			f, err := os.Create(path) // #nosec G304 -- a path under this test's own t.TempDir
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -466,7 +466,7 @@ func TestZadvHostileEntriesAtEveryReadSite(t *testing.T) {
 	}
 	p := filepath.Join(short, "store", "sock")
 	_ = os.Remove(p)
-	l, err := net.Listen("unix", p)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", p)
 	if err != nil {
 		t.Skip(err)
 	}
@@ -538,7 +538,7 @@ func TestZadvUpdatesAcrossProcessesLoseNothing(t *testing.T) {
 			var cmds []*exec.Cmd
 			var outs []*strings.Builder
 			for i := 0; i < procs; i++ {
-				c := exec.Command(os.Args[0], "-test.run=^TestZadvHelperProcess$")
+				c := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestZadvHelperProcess$") // #nosec G204 G702 -- re-execs this test binary as its own helper; the environment selects the role
 				c.Env = append(os.Environ(), zadvEnv+"="+mode, "ZADV_ANCHOR="+anchor, "ZADV_N="+strconv.Itoa(each))
 				var sb strings.Builder
 				c.Stdout, c.Stderr = &sb, &sb

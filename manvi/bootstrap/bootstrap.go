@@ -781,7 +781,7 @@ func inWorkTree(ctx context.Context, root string) (bool, error) {
 // devcouncil/verify.go, 2026-11-07): .git/config is a protected write path, so a
 // later caller that reaches one runs the operator's own program.
 func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	// #nosec G204 -- the binary is the literal "git"; every argument is a literal, the project root, or a file name this package created.
+	// #nosec G204 G702 -- the binary is the literal "git"; every argument is a literal, the project root, or a file name this package created.
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false"}, args...)...)
 	// Built, not inherited: a hook or filter in the repository runs with it.
 	cmd.Env = childenv.Git("LC_ALL=C")

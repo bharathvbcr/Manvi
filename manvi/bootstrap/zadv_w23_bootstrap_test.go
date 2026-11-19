@@ -61,7 +61,7 @@ func TestZadvGitignoreHostileEntries(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "huge":
-				f, err := os.Create(path)
+				f, err := os.Create(path) // #nosec G304 -- a path under this test's own t.TempDir
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -88,7 +88,7 @@ func TestZadvGitignoreHostileEntries(t *testing.T) {
 			if err != nil || !os.SameFile(before, after) || before.Mode() != after.Mode() {
 				t.Fatalf(".gitignore entry was replaced: %v", err)
 			}
-			if got, _ := os.ReadFile(outside); how == "link" && string(got) != "outside\n" {
+			if got, _ := os.ReadFile(outside); how == "link" && string(got) != "outside\n" { // #nosec G304 -- a path under this test's own t.TempDir
 				t.Fatalf("the link target was written: %q", got)
 			}
 			if es, _ := os.ReadDir(root); true {
@@ -119,14 +119,14 @@ func TestZadvGitignoreByteFidelity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := gitRepo(t)
 			path := filepath.Join(root, ".gitignore")
-			if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+			if err := os.WriteFile(path, []byte(original), 0o640); err != nil { // #nosec G306 -- a .gitignore the test builds under t.TempDir; 0640 is the mode whose preservation is being tested
 				t.Fatal(err)
 			}
 			report := Ensure(root, options())
 			if len(report.Failures) != 0 {
 				t.Fatalf("failures: %v", report.Failures)
 			}
-			got, err := os.ReadFile(path)
+			got, err := os.ReadFile(path) // #nosec G304 -- a path under this test's own t.TempDir
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -160,13 +160,13 @@ func TestZadvGitignoreEditedBetweenReadAndPublishIsKeptDefect(t *testing.T) {
 	}
 	root := gitRepo(t)
 	path := filepath.Join(root, ".gitignore")
-	if err := os.WriteFile(path, []byte("# mine\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("# mine\n"), 0o644); err != nil { // #nosec G306 -- an operator .gitignore under t.TempDir, written in the usual world-readable mode
 		t.Fatal(err)
 	}
 	shim := t.TempDir()
 	marker := filepath.Join(shim, "done")
 	script := fmt.Sprintf("#!/bin/sh\nif [ ! -e %q ]; then : > %q; printf 'OPERATOR-EDIT\\n' >> %q; fi\nexec %q \"$@\"\n", marker, marker, path, real)
-	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil { // #nosec G306 -- a stand-in git executable under t.TempDir must be executable
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -177,7 +177,7 @@ func TestZadvGitignoreEditedBetweenReadAndPublishIsKeptDefect(t *testing.T) {
 	if _, err := os.Stat(marker); err != nil {
 		t.Skip("the shim was never called, so the window was not exercised")
 	}
-	got, _ := os.ReadFile(path)
+	got, _ := os.ReadFile(path) // #nosec G304 -- a path under this test's own t.TempDir
 	if !strings.Contains(string(got), "OPERATOR-EDIT") {
 		t.Fatalf("an edit made between the read and the publish was overwritten:\n%s", got)
 	}
@@ -205,13 +205,13 @@ func TestZadvHelperProcess(t *testing.T) {
 func TestZadvConcurrentEnsureAcrossProcesses(t *testing.T) {
 	root := gitRepo(t)
 	path := filepath.Join(root, ".gitignore")
-	if err := os.WriteFile(path, []byte("# mine\nlocal.txt\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("# mine\nlocal.txt\n"), 0o644); err != nil { // #nosec G306 -- an operator .gitignore under t.TempDir, written in the usual world-readable mode
 		t.Fatal(err)
 	}
 	var cmds []*exec.Cmd
 	var outs []*strings.Builder
 	for i := 0; i < 6; i++ {
-		c := exec.Command(os.Args[0], "-test.run=^TestZadvHelperProcess$")
+		c := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestZadvHelperProcess$") // #nosec G204 G702 -- re-execs this test binary as its own helper; the environment selects the role
 		c.Env = append(os.Environ(), zadvEnv+"="+root)
 		var sb strings.Builder
 		c.Stdout, c.Stderr = &sb, &sb
@@ -225,7 +225,7 @@ func TestZadvConcurrentEnsureAcrossProcesses(t *testing.T) {
 			t.Errorf("child %d: %v\n%s", i, err, outs[i])
 		}
 	}
-	got, err := os.ReadFile(path)
+	got, err := os.ReadFile(path) // #nosec G304 -- a path under this test's own t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}

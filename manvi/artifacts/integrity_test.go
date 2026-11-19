@@ -94,8 +94,8 @@ func TestListReturnsEveryArtifactTheStoreCreated(t *testing.T) {
 
 func TestUpdateRefusesToResetHistoryOverBadMetadata(t *testing.T) {
 	for name, damage := range map[string]func(sidecar string) error{
-		"unreadable JSON": func(p string) error { return os.WriteFile(p, []byte("{not json"), 0o600) },
-		"empty object":    func(p string) error { return os.WriteFile(p, []byte("{}"), 0o600) },
+		"unreadable JSON": func(p string) error { return os.WriteFile(p, []byte("{not json"), 0o600) }, // #nosec G703 -- a path under this test's own t.TempDir
+		"empty object":    func(p string) error { return os.WriteFile(p, []byte("{}"), 0o600) },        // #nosec G703 -- a path under this test's own t.TempDir
 		"missing":         os.Remove,
 	} {
 		t.Run(name, func(t *testing.T) {

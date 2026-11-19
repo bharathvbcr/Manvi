@@ -99,7 +99,7 @@ func TestZadvGetAndListBesideJunkIdentities(t *testing.T) {
 		if err := os.Chmod(filepath.Join(s.Root, "locked"), 0); err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = os.Chmod(filepath.Join(s.Root, "locked"), 0o700) }()
+		defer func() { _ = os.Chmod(filepath.Join(s.Root, "locked"), 0o700) }() // #nosec G302 -- a directory, not a file; it must be searchable again so TempDir can remove it
 	}
 	zadvWithin(t, "Get and List", func() {
 		got, err := s.Get("a", "1")
@@ -157,7 +157,7 @@ func TestZadvHostileFilesInsideTheIdentityBeingUsed(t *testing.T) {
 						t.Skip(err)
 					}
 				default:
-					f, err := os.Create(path)
+					f, err := os.Create(path) // #nosec G304 -- a path under this test's own t.TempDir
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -460,7 +460,7 @@ func TestZadvHardLinksNeverWrittenThrough(t *testing.T) {
 	}
 	_ = s.Approve("a", "1", e.SHA256)
 	_ = s.Revoke("a", "1", e.SHA256)
-	if got, _ := os.ReadFile(outside); string(got) != "{\"keep\":true}" {
+	if got, _ := os.ReadFile(outside); string(got) != "{\"keep\":true}" { // #nosec G304 -- a path under this test's own t.TempDir
 		t.Fatalf("a write went through the hard-linked pointer: %q", got)
 	}
 }
