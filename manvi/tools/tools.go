@@ -818,7 +818,7 @@ func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
 		// credential once the joiner is shown.
 		thirdParty := r.thirdParty(call.Name)
 		if thirdParty {
-			result.Text = hygiene.Escape(result.Text)
+			result.Text = hygiene.EscapeResult(result.Text)
 			// The notes a failed stage leaves, which quote what panicked.
 			for i, note := range result.Degraded {
 				result.Degraded[i] = hygiene.Escape(note)
@@ -840,7 +840,7 @@ func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
 				case llm.TextBlock:
 					text := b.Text
 					if thirdParty {
-						text = hygiene.Escape(text)
+						text = hygiene.EscapeResult(text)
 					}
 					owned = append(owned, llm.TextBlock{Text: r.scrubText(text)})
 				case llm.ImageBlock:

@@ -10,9 +10,12 @@
 package hygiene
 
 import (
+	"encoding/json/jsontext"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -89,4 +92,121 @@ func EscapeLine(s string) string {
 		i += w
 	}
 	return b.String()
+}
+
+// EscapeResult is Escape for a third party's reply, which is sometimes plain
+// text and sometimes a JSON document: a reply that parses as JSON goes through
+// EscapeJSON, so what comes back still parses, and anything else through Escape.
+func EscapeResult(s string) string {
+	if jsontext.Value(s).IsValid() {
+		return EscapeJSON(s)
+	}
+	return Escape(s)
+}
+
+// EscapeJSON is Escape for text that is a JSON document, which the caller has
+// checked is valid. Escape cannot be used on one: its \xNN is not a JSON escape,
+// so a soft hyphen or a C1 control in a string value turned a document that
+// parsed into one that did not, and its \uNNNN, which JSON does read, decodes
+// back to the very rune it was written to hide, so a parser that read the escaped
+// document received the bidi override again.
+//
+// Here every Invisible rune inside a string value, whether it is written raw or
+// as a \uNNNN escape (json.Marshal writes the control characters and U+2028 and
+// U+2029 that way), becomes an escaped backslash and the rune's own \uNNNN
+// spelling: still one valid JSON string, and one that decodes to the visible text
+// \u202e instead of to U+202E. Backslashes that are already escaped are left
+// alone, so the result is unchanged by a second pass. A carriage return between
+// tokens is legal JSON whitespace but a terminal obeys it by overwriting the line,
+// so it is written as the newline it stands for (CRLF as one). Everything else
+// outside strings, and every string that holds nothing Invisible, is copied as it
+// was.
+func EscapeJSON(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case !inString && c == '\r':
+			b.WriteByte('\n')
+			i++
+			if i < len(s) && s[i] == '\n' {
+				i++
+			}
+		case !inString || c == '"':
+			if c == '"' {
+				inString = !inString
+			}
+			b.WriteByte(c)
+			i++
+		case c == '\\':
+			r, n := jsonEscape(s[i:])
+			if Invisible(r) {
+				fmt.Fprintf(&b, "\\\\u%04x", r)
+			} else {
+				b.WriteString(s[i : i+n])
+			}
+			i += n
+		default:
+			r, w := utf8.DecodeRuneInString(s[i:])
+			switch {
+			case r == utf8.RuneError && w == 1:
+				fmt.Fprintf(&b, "\\\\x%02x", c)
+			case Invisible(r):
+				fmt.Fprintf(&b, "\\\\u%04x", r)
+			default:
+				b.WriteString(s[i : i+w])
+			}
+			i += w
+		}
+	}
+	return b.String()
+}
+
+// jsonEscape reads the escape sequence that starts s, which begins with a
+// backslash inside a JSON string. It returns the rune a \uNNNN escape (or a
+// surrogate pair of them) stands for and the length of the sequence, or
+// utf8.RuneError, which is not Invisible, and the length of any other escape.
+func jsonEscape(s string) (rune, int) {
+	if len(s) < 2 {
+		return utf8.RuneError, len(s)
+	}
+	if s[1] != 'u' {
+		// The short escapes that name a control character (\b, \f, \r) are
+		// Invisible like their \u00NN spellings; the others are not.
+		switch s[1] {
+		case 'b':
+			return '\b', 2
+		case 'f':
+			return '\f', 2
+		case 'r':
+			return '\r', 2
+		}
+		return utf8.RuneError, 2
+	}
+	unit, ok := hexUnit(s[2:])
+	if !ok {
+		return utf8.RuneError, 2
+	}
+	if !utf16.IsSurrogate(unit) {
+		return unit, 6
+	}
+	if len(s) >= 12 && s[6] == '\\' && s[7] == 'u' {
+		if low, ok := hexUnit(s[8:]); ok {
+			if r := utf16.DecodeRune(unit, low); r != utf8.RuneError {
+				return r, 12
+			}
+		}
+	}
+	return utf8.RuneError, 6
+}
+
+// hexUnit reads the four hex digits that start s as one UTF-16 code unit.
+func hexUnit(s string) (rune, bool) {
+	if len(s) < 4 {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(s[:4], 16, 16)
+	return rune(n), err == nil
 }

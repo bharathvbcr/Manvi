@@ -81,10 +81,12 @@ const (
 const verdictMarkerPrefix = "MANVI-VERDICT"
 
 // invisible reports runes that render as nothing, or rewrite what is around
-// them, and so can hide or fake text: control characters other than newline
-// and tab (an escape sequence in a cue is executed by the terminal that
-// echoes it), format characters (zero-width joiners, bidi overrides, which
-// split a marker or reorder a line) and private-use characters.
+// them, and so can hide or fake text. It is hygiene.Invisible, which owns the
+// set: control characters other than newline and tab (an escape sequence in a
+// cue is executed by the terminal that echoes it), format characters
+// (zero-width joiners, bidi overrides, which split a marker or reorder a line),
+// private-use characters, the Unicode line and paragraph separators, and the
+// tag block.
 func invisible(r rune) bool { return hygiene.Invisible(r) }
 
 // ContainsMarker reports whether s carries the checkpoint critic's marker in
