@@ -42,3 +42,22 @@ func prepareApproveFD(fd int) error {
 	}
 	return nil
 }
+
+// inheritedAtExec refuses a descriptor that is already close-on-exec when the
+// argv pre-scan first looks at it. exec closes every close-on-exec descriptor,
+// so one that survived it never has the flag; a descriptor that does was opened
+// by this process before the claim, by the runtime or a package initialiser,
+// and took the number of an --approve-fd the host did not leave open. The type
+// check and isRuntimePoller each name one such descriptor (the kqueue, the
+// epoll instance); this covers every one, including the cgroup file the Linux
+// runtime opens at startup, which is a regular file and passes both.
+func inheritedAtExec(fd int) error {
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil {
+		return fmt.Errorf("not an open file descriptor: %w", err)
+	}
+	if flags&unix.FD_CLOEXEC != 0 {
+		return errors.New("it is close-on-exec, so it was not inherited: this process opened it before reading --approve-fd, which means the descriptor the host meant was not open when this process started")
+	}
+	return nil
+}

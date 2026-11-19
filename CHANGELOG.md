@@ -630,6 +630,7 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `manvi run --approve-fd N` refuses a descriptor that is already close-on-exec when the argv pre-scan first claims it. Such a descriptor cannot have come through exec, so this process opened it itself; on a Linux runner with `--approve-fd 3` left closed, that was the cgroup file the Go runtime opens at startup, a regular file that passed the type and epoll checks, and the run read approvals from it (`TestApproveFDClosedDescriptorIsRefusedAtStartup` failed on every Linux CI leg). The later claims stay idempotent. Security impact: narrows what is accepted as the approval channel; nothing that a host can pass is newly refused.
 - Defects in how the TUI drew a transcript and the dashboard, each now held by
   a test in `manvi/ui/tui/cleanui_defect_test.go` that fails against the
   previous code.

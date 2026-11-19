@@ -82,6 +82,12 @@ func claimApproveFDFromArgv(args []string) error {
 	if !set || fd < 3 {
 		return nil
 	}
+	// Only here, at the first claim of a real process start: a descriptor that
+	// is already close-on-exec cannot have come through exec, so this process
+	// opened it itself. The later claims stay idempotent on the flag they set.
+	if err := inheritedAtExec(fd); err != nil {
+		return fmt.Errorf("--approve-fd %d: %w", fd, err)
+	}
 	return claimApproveFD(runOptions{approveFD: fd, approveFDSet: true})
 }
 

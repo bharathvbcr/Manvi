@@ -20,3 +20,9 @@ func prepareApproveFD(handle int) error {
 	}
 	return nil
 }
+
+// inheritedAtExec has nothing to check on Windows. The runtime does not reissue
+// a closed HANDLE's value to a handle of its own the way a Unix descriptor
+// number is reused, and prepareApproveFD already fails on a value that is not
+// an open handle.
+func inheritedAtExec(int) error { return nil }
