@@ -3,11 +3,11 @@ package catalog
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,91 +19,58 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/internal/filelock"
 	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
+	"github.com/bharathvbcr/Manvi/manvi/internal/treefile"
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
 
+// open opens the catalog root. The root is a path the caller names, so it is
+// the anchor: its parent is the caller's, and the root itself must be a real
+// directory, not a link, and must be the directory that was inspected.
 func (s Store) open(create bool) (*os.Root, error) {
 	if strings.TrimSpace(s.Root) == "" {
 		return nil, errors.New("catalog root required")
 	}
+	clean := filepath.Clean(s.Root)
+	parent, name := filepath.Dir(clean), filepath.Base(clean)
+	var mode fs.FileMode
 	if create {
-		if err := os.MkdirAll(s.Root, 0700); err != nil {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
 			return nil, err
 		}
+		mode = 0o700
 	}
-	info, err := os.Lstat(s.Root)
-	if err != nil {
-		return nil, err
+	root, err := treefile.OpenDir(parent, name, mode)
+	if errors.Is(err, treefile.ErrRefused) {
+		return nil, fmt.Errorf("catalog root must be a real directory: %w", err)
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("catalog root must be a real directory")
-	}
-	root, err := os.OpenRoot(s.Root)
-	if err != nil {
-		return nil, err
-	}
-	opened, err := root.Stat(".")
-	if err != nil || !os.SameFile(info, opened) {
-		root.Close()
-		return nil, errors.New("catalog root changed during open")
-	}
-	return root, nil
+	return root, err
 }
+
+// openChild opens one identity directory below the catalog root.
 func openChild(root *os.Root, name string, create bool) (*os.Root, error) {
 	if !segment.MatchString(name) {
 		return nil, errors.New("invalid catalog directory")
 	}
+	var mode fs.FileMode
 	if create {
-		if err := root.Mkdir(name, 0700); err != nil && !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
+		mode = 0o700
 	}
-	info, err := root.Lstat(name)
-	if err != nil {
-		return nil, err
+	child, err := treefile.Child(root, name, mode)
+	if errors.Is(err, treefile.ErrRefused) {
+		return nil, fmt.Errorf("catalog identity must be a real directory: %w", err)
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("catalog identity must be a real directory")
-	}
-	child, err := root.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	opened, err := child.Stat(".")
-	if err != nil || !os.SameFile(info, opened) {
-		child.Close()
-		return nil, errors.New("catalog directory changed during open")
-	}
-	return child, nil
+	return child, err
 }
+
+// readRegular reads one catalog file: a regular file, no link followed, within
+// the artifact size bound. Hard links are not refused here: a revision is
+// published by link and its stage removed, so a read in that window sees two.
 func readRegular(root *os.Root, name string) ([]byte, error) {
-	info, err := root.Lstat(name)
-	if err != nil {
-		return nil, err
+	raw, err := treefile.ReadFile(root, name, treefile.ReadOptions{Limit: int64(workflow.MaxArtifactBytes)})
+	if errors.Is(err, treefile.ErrRefused) {
+		return nil, fmt.Errorf("catalog artifact must be a bounded regular file: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Size() > workflow.MaxArtifactBytes {
-		return nil, errors.New("catalog artifact must be a bounded regular file")
-	}
-	f, err := root.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	opened, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
-		return nil, errors.New("catalog file changed during open")
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, workflow.MaxArtifactBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > workflow.MaxArtifactBytes {
-		return nil, errors.New("catalog artifact exceeds size limit")
-	}
-	return raw, nil
+	return raw, err
 }
 func directoryEntries(root *os.Root) ([]os.DirEntry, error) {
 	f, err := root.Open(".")
@@ -160,13 +127,8 @@ func (s Store) lockCurrent(dir *os.Root, id string) (func(), error) {
 		return nil, waiting(ctx.Err())
 	}
 	// Opened through dir, not by path, so a directory swapped after openChild
-	// cannot redirect the lock file.
-	f, err := dir.OpenFile(currentLockName, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		<-slot
-		return nil, err
-	}
-	unlock, err := filelock.LockFile(ctx, f)
+	// cannot redirect the lock file, and no link at its name is followed.
+	unlock, err := treefile.Lock(ctx, dir, currentLockName)
 	if err != nil {
 		<-slot
 		if errors.Is(err, filelock.ErrUnsupported) {
@@ -350,41 +312,24 @@ func ownedOnly(fields map[string]json.RawMessage) (kept map[string]json.RawMessa
 	return kept, dropped, nil
 }
 
-// Publish only after the full bytes have reached a synchronized staging file.
-// Link provides atomic non-replacement for immutable revisions on every OS.
+// publish settles raw at name through treefile: staged in a synced sibling, then
+// linked (immutable revisions, never replacing) or renamed (the current pointer)
+// into place, and the directory synced. An error that matches
+// ErrPublishedUnsynced is not a failure: the name is published and only its
+// durability is unconfirmed.
 func publish(root *os.Root, name string, raw []byte, replace bool) error {
-	staged := ".staged-" + rand.Text()
-	f, err := root.OpenFile(staged, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	defer root.Remove(staged)
-	n, writeErr := f.Write(raw)
-	if writeErr == nil && n != len(raw) {
-		writeErr = io.ErrShortWrite
-	}
-	if writeErr == nil {
-		writeErr = f.Sync()
-	}
-	if err := errors.Join(writeErr, f.Close()); err != nil {
-		return err
-	}
-	if replace {
-		err = root.Rename(staged, name)
-	} else {
-		err = root.Link(staged, name)
-	}
-	if err != nil {
-		return err
-	}
-	// Syncing the staged file put the bytes on the disk; syncing the directory
-	// is what puts the name there. Without it a power loss can leave the
-	// revision (or the current pointer) published as an unreferenced inode.
-	if err := syncDir(root); err != nil {
-		return fmt.Errorf("catalog: syncing directory after publishing %s: %w", name, err)
-	}
-	return nil
+	return treefile.Publish(root, name, raw, treefile.PublishOptions{Perm: 0o600, Replace: replace, SyncDir: syncDir})
 }
+
+// ErrPublishedUnsynced is the answer of a catalog write that took effect but
+// whose directory sync failed, so after a crash the new name might not be
+// there. It is the same sentinel artifacts and bootstrap report, and the same
+// rule applies: it is not a failure. A caller that reads it as "not written" and
+// retries gets "revision is immutable" from Put or a second approval from
+// Approve; one that reads it as plain success hides a durability risk. Put,
+// Approve, Promote, Revoke, RevokeReport and SetStability return it after the
+// change is on disk; match it with errors.Is.
+var ErrPublishedUnsynced = treefile.ErrPublishedUnsynced
 
 // syncDir flushes a catalog directory's own entries. It is a variable so a
 // test can prove publish calls it and fails when it fails; a crash cannot be

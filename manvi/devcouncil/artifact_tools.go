@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -132,8 +133,15 @@ func (r *Registry) getArtifactStore() (*artifacts.Store, error) {
 	if r.deps.Artifacts != nil {
 		return r.deps.Artifacts, nil
 	}
-	dir := filepath.Join(r.deps.Root, ".devcouncil", "artifacts")
-	return artifacts.NewStore(dir)
+	if r.deps.ArtifactsErr != nil {
+		return nil, fmt.Errorf("the artifact store is unavailable: %w", r.deps.ArtifactsErr)
+	}
+	// No store was handed in. MANVI_STATE_DIR names where state lives, and a
+	// store built under the project root would ignore it.
+	if dir := os.Getenv("MANVI_STATE_DIR"); dir != "" {
+		return nil, errors.New("the artifact store is unavailable: none was configured for MANVI_STATE_DIR=" + dir)
+	}
+	return artifacts.NewStoreUnder(r.deps.Root, filepath.Join(".devcouncil", "artifacts"))
 }
 
 func (r *Registry) createArtifact(ctx context.Context, call tools.Call) tools.Result {
@@ -202,7 +210,7 @@ func (r *Registry) updateArtifact(ctx context.Context, call tools.Call) tools.Re
 		return tools.Errorf("accessing artifact store: %v", err)
 	}
 
-	art, err := store.Update(args.Name, args.Content, args.Metadata)
+	art, err := store.Update(args.Name, args.Content, args.Metadata) //nolint:contextcheck // Store.Update takes no context; the lock wait inside it is bounded by artifacts.lockWait, so an abandoned call cannot queue forever
 	if err != nil && !errors.Is(err, artifacts.ErrPublishedUnsynced) {
 		return tools.Errorf("updating artifact: %v", err)
 	}

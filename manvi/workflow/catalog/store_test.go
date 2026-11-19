@@ -12,7 +12,11 @@ import (
 
 func catalogFixture(t *testing.T, revision string) *workflow.Program {
 	t.Helper()
-	c := workflow.Capability{SchemaVersion: 1, ID: "bank", Revision: revision, Application: "bank", Targets: map[string]workflow.Selector{"balance": {Name: "Balance"}}, Limits: workflow.DefaultLimits(), Steps: []workflow.Step{{ID: "balance", Kind: "extract", Target: "balance", Effect: "read", Output: "balance", OutputType: "money", Currency: "USD"}}}
+	return catalogFixtureID(t, "bank", revision)
+}
+func catalogFixtureID(t *testing.T, id, revision string) *workflow.Program {
+	t.Helper()
+	c := workflow.Capability{SchemaVersion: 1, ID: id, Revision: revision, Application: "bank", Targets: map[string]workflow.Selector{"balance": {Name: "Balance"}}, Limits: workflow.DefaultLimits(), Steps: []workflow.Step{{ID: "balance", Kind: "extract", Target: "balance", Effect: "read", Output: "balance", OutputType: "money", Currency: "USD"}}}
 	raw, err := json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)

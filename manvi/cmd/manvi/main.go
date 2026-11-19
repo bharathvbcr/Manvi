@@ -376,6 +376,12 @@ func run(out, notes io.Writer, args []string) error {
 	// that refused to run 'manvi doctor' because it could not write .gitignore
 	// would be failing at the diagnosis the operator asked for.
 	if preparesRepository(args) {
+		// Before scaffolding, which creates directories and writes files through
+		// whatever the state path names: a repository that commits it as a link
+		// out of the tree is refused here, by name, not discovered afterwards.
+		if err := verifyStateDir(); err != nil {
+			return err
+		}
 		report, err := scaffold(reg)
 		if err != nil {
 			return err

@@ -155,7 +155,7 @@ func reflectCommand(out, notes io.Writer, reg *flags.Registry, args []string) er
 		return err
 	}
 
-	store, err := artifacts.NewStore(artifactsDir())
+	store, err := newArtifactStore()
 	if err != nil {
 		return err
 	}

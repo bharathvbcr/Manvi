@@ -1,12 +1,17 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+
+	"github.com/bharathvbcr/Manvi/manvi/artifacts"
 )
 
 var (
@@ -199,11 +204,76 @@ func sharedRoots() []string {
 // If MANVI_STATE_DIR is set to an absolute path, it is used directly.
 // Otherwise, it is resolved relative to the discovered project root (defaulting to <projectRoot>/.devcouncil).
 func stateDir() string {
+	anchor, rel := stateDirParts()
+	return filepath.Join(anchor, rel)
+}
+
+// stateDirParts splits the state directory into the anchor that is trusted and
+// the relative path below it that is not. An absolute MANVI_STATE_DIR is the
+// operator's own statement of where state lives, so it is its own anchor; the
+// default and any relative value are anchored at the project root, where a
+// repository's committed links are exactly what must not be followed.
+func stateDirParts() (anchor, rel string) {
 	raw := env("MANVI_STATE_DIR", ".devcouncil")
 	if filepath.IsAbs(raw) {
-		return filepath.Clean(raw)
+		return filepath.Clean(raw), "."
 	}
-	return filepath.Join(projectRoot(), raw)
+	return projectRoot(), raw
+}
+
+// errStateDirOutside is what start-up answers when the state directory leaves
+// the project root or passes through a symbolic link below it. The artifact
+// store refuses the same layouts with treefile.ErrRefused, so the two judge a
+// state directory alike and the failure is at start-up, not at the first write.
+var errStateDirOutside = errors.New("the state directory is outside the project root or passes through a symbolic link")
+
+// verifyStateDir refuses a state directory that a repository has pointed out of
+// itself, or through a link. It runs before anything is created, because the
+// scaffolding that follows makes directories and writes files through whatever
+// the path names. An absolute MANVI_STATE_DIR is the operator's choice and is
+// not examined.
+func verifyStateDir() error {
+	anchor, rel := stateDirParts()
+	if rel == "." {
+		return nil
+	}
+	return checkStateDirBelow(anchor, rel)
+}
+
+// checkStateDirBelow walks rel below root one component at a time and fails
+// with errStateDirOutside when rel climbs out of root or any existing component
+// is a symbolic link, whatever it points at: the artifact store does not walk
+// through links, so a link that stays inside the project would pass start-up
+// and fail at the first write. The root is the caller's anchor and is not
+// examined, so a project root reached through a link is fine. Components that
+// do not exist yet are not links.
+func checkStateDirBelow(root, rel string) error {
+	clean := filepath.Clean(rel)
+	if !filepath.IsLocal(clean) {
+		return fmt.Errorf("%w: %q climbs out of %s; set MANVI_STATE_DIR to an absolute path to put state elsewhere on purpose", errStateDirOutside, rel, root)
+	}
+	current := root
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspecting the state directory %s: %w", current, err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%w: %s is a symbolic link; set MANVI_STATE_DIR to an absolute path to put state elsewhere on purpose", errStateDirOutside, current)
+		}
+	}
+	return nil
+}
+
+// newArtifactStore is the artifact store over the state directory, built so that
+// a link anywhere below its anchor is refused rather than written through.
+func newArtifactStore() (*artifacts.Store, error) {
+	anchor, rel := stateDirParts()
+	return artifacts.NewStoreUnder(anchor, filepath.Join(rel, "artifacts"))
 }
 
 // configPath is the committable settings file, inside the state directory.

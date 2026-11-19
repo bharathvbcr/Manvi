@@ -4,12 +4,11 @@
 package artifacts
 
 import (
-	"crypto/rand"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -19,8 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
+	"github.com/bharathvbcr/Manvi/manvi/internal/filelock"
 	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
+	"github.com/bharathvbcr/Manvi/manvi/internal/treefile"
 )
 
 // Metadata defines structured artifact properties.
@@ -42,11 +42,21 @@ type Artifact struct {
 }
 
 // Store provides atomic artifact persistence and retrieval.
+//
+// The store directory is never trusted as a path string. Every operation opens
+// it afresh through treefile, which refuses a directory that is, or passes
+// through, a symbolic link below the store's anchor, and every read, write, lock
+// and sync then goes through that handle.
 type Store struct {
-	mu  sync.RWMutex
+	mu sync.RWMutex
+	// dir is the store directory as a path, for the Path an artifact reports.
 	dir string
+	// anchor is the directory the caller vouches for, and rel the path below it
+	// that is checked component by component. Both are empty on a zero Store,
+	// which resolves each write against the directory of the file it is given.
+	anchor, rel string
 	// dirSync flushes the directory a write was just published into. Nil means
-	// syncdir.Dir, the one shared owner of the platform rule.
+	// syncdir.Root, the one shared owner of the platform rule.
 	dirSync func(dir string) error
 }
 
@@ -54,14 +64,65 @@ type Store struct {
 // first write, not here: the store is built for every tool surface, 'manvi
 // tools' listing included, and a surface that never writes an artifact must
 // not leave a directory behind in the checkout it was built over.
+//
+// A relative dir is checked from the working directory down, component by
+// component; an absolute dir is anchored at its parent, so its last component
+// is checked and the path above it is the caller's to vouch for. A store over
+// a directory that is a symbolic link is refused. NewStoreUnder is the form for
+// a caller that knows the project root.
 func NewStore(dir string) (*Store, error) {
 	if dir == "" {
 		dir = ".devcouncil/artifacts"
 	}
-	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
-		return nil, fmt.Errorf("artifacts: store dir %s is not a directory", dir)
+	clean := filepath.Clean(dir)
+	if !filepath.IsAbs(clean) && filepath.IsLocal(clean) {
+		return newStore(".", clean)
 	}
-	return &Store{dir: dir}, nil
+	// The anchor is the deepest ancestor that exists: what the store will make
+	// below it is checked as it is made, and what is above it is the caller's.
+	anchor := filepath.Dir(clean)
+	for {
+		if info, err := os.Stat(anchor); err == nil && info.IsDir() {
+			break
+		}
+		parent := filepath.Dir(anchor)
+		if parent == anchor {
+			break
+		}
+		anchor = parent
+	}
+	rel, err := filepath.Rel(anchor, clean)
+	if err != nil {
+		return newStore(clean, ".")
+	}
+	return newStore(anchor, rel)
+}
+
+// NewStoreUnder returns an artifact store over rel below anchor. The anchor is
+// the project root, which the caller vouches for; every component of rel is
+// checked, so a state directory that is, or passes through, a symbolic link is
+// refused rather than written through.
+func NewStoreUnder(anchor, rel string) (*Store, error) {
+	rel = filepath.Clean(rel)
+	if !filepath.IsLocal(rel) && rel != "." {
+		return nil, fmt.Errorf("artifacts: store dir %q does not stay below %s", rel, anchor)
+	}
+	return newStore(anchor, rel)
+}
+
+func newStore(anchor, rel string) (*Store, error) {
+	dir := filepath.Join(anchor, rel)
+	// Lstat, not Stat: the store must not be built over a link, whatever it
+	// points at. The walk at every operation repeats this for each component.
+	if info, err := os.Lstat(dir); err == nil { // #nosec G703 -- dir is the configured store root plus a component already validated; Lstat reads it without following a link
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%w: artifacts: store dir %s is a symbolic link; refusing to write through it", treefile.ErrRefused, dir)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("artifacts: store dir %s is not a directory", dir)
+		}
+	}
+	return &Store{dir: dir, anchor: anchor, rel: rel}, nil
 }
 
 // syncFile is the durability step of a write, a variable so a test can make it
@@ -81,15 +142,6 @@ func NewStoreWithDirSync(dir string, sync func(dir string) error) (*Store, error
 	}
 	s.dirSync = sync
 	return s, nil
-}
-
-// syncDirectory is the directory half of a write's durability: it flushes the
-// directory the write was just published into, so the name survives a crash.
-func (s *Store) syncDirectory(dir string) error {
-	if s.dirSync != nil {
-		return s.dirSync(dir)
-	}
-	return syncdir.Dir(dir)
 }
 
 // sanitizeName ensures an artifact name contains no traversal elements.
@@ -206,7 +258,7 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	if metaErr != nil && !errors.Is(metaErr, ErrPublishedUnsynced) {
 		// This call created the content, so taking it away leaves the store as
 		// it was found.
-		_ = os.Remove(cPath)
+		_ = s.removeContained(cPath)
 		return nil, metaErr
 	}
 
@@ -243,7 +295,7 @@ var (
 	// Create, Update and UpdateIfRevision return it WITH a non-nil *Artifact,
 	// the one that was written, which departs from the usual error-or-value
 	// shape on purpose. The error text names the cause.
-	ErrPublishedUnsynced = errors.New("published, durability unconfirmed")
+	ErrPublishedUnsynced = treefile.ErrPublishedUnsynced
 )
 
 // Update updates an existing artifact's content and metadata, incrementing its
@@ -271,47 +323,38 @@ func (s *Store) UpdateIfRevision(name, content string, meta *Metadata, expected 
 // reserves, so the lock is neither listed as an artifact nor nameable as one.
 const lockNonce = "0000000000000000"
 
-// Bounds on the cross-process entry lock. The lock is held for the few
-// milliseconds an update takes, so a lock older than lockStaleAfter was left by
-// a writer that died; lockWait bounds how long a live contender queues.
-const (
-	lockStaleAfter = 30 * time.Second
-	lockWait       = 10 * time.Second
-)
+// lockWait bounds how long a live contender queues for an entry's lock. The
+// lock is held for the few milliseconds an update takes. It is a variable so a
+// test can shorten it.
+var lockWait = 10 * time.Second
 
-// lockEntry takes the cross-process lock for the entry at cPath: a file created
-// with O_CREATE|O_EXCL beside it, which every filesystem arbitrates, rather
-// than flock or LockFileEx, which differ by platform. The in-process mutex
-// cannot serve two processes, and two Stores in one process do not share it.
-//
-// A lock past lockStaleAfter is removed and taken. That is racy in principle
-// (two contenders can both judge it stale) and the age is what bounds the
-// harm: a live holder finishes in milliseconds, so only a crashed one is ever
-// old enough, and the revision compare in update still refuses a write over a
-// revision the writer did not read.
-func lockEntry(cPath string) (func(), error) {
-	lockPath := filepath.Join(filepath.Dir(cPath), "."+filepath.Base(cPath)+"."+lockNonce+".tmp")
-	deadline := time.Now().Add(lockWait)
-	for {
-		f, err := safefile.OpenNoFollow(nil, lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(lockPath) }, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("artifacts: locking %s: %w", filepath.Base(cPath), err)
-		}
-		if info, statErr := os.Lstat(lockPath); statErr == nil && time.Since(info.ModTime()) > lockStaleAfter {
-			_ = os.Remove(lockPath)
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("artifacts: %q is %w for more than %s", filepath.Base(cPath), ErrLocked, lockWait)
-		}
-		var jitter [1]byte
-		_, _ = rand.Read(jitter[:])
-		time.Sleep(2*time.Millisecond + time.Duration(jitter[0]%16)*time.Millisecond)
+// lockEntry takes the cross-process lock for the entry at full: an exclusive
+// kernel lock (internal/filelock, through treefile) on a lock file beside it.
+// The kernel drops the lock when its holder exits, so a crashed writer never
+// wedges the others and the lock file's age is never consulted; the file is
+// never removed, because removing it lets two writers lock two inodes of one
+// name. The in-process mutex cannot serve two processes, and two Stores in one
+// process do not share it. The revision compare in update is the second line of
+// defence against a write over a revision the writer did not read.
+func (s *Store) lockEntry(full string) (func(), error) {
+	dir, leaf, err := s.dirFor(full, false)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: locking %s: %w", filepath.Base(full), err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), lockWait)
+	defer cancel()
+	unlock, err := treefile.Lock(ctx, dir, "."+leaf+"."+lockNonce+".tmp")
+	if err != nil {
+		_ = dir.Close()
+		switch {
+		case errors.Is(err, filelock.ErrUnsupported):
+			return nil, fmt.Errorf("artifacts: no cross-process file lock on this platform; refusing to update %q unlocked: %w", leaf, err)
+		case errors.Is(err, context.DeadlineExceeded):
+			return nil, fmt.Errorf("artifacts: %q is %w for more than %s", leaf, ErrLocked, lockWait)
+		}
+		return nil, fmt.Errorf("artifacts: locking %s: %w", leaf, err)
+	}
+	return func() { unlock(); _ = dir.Close() }, nil
 }
 
 func (s *Store) update(name, content string, meta *Metadata, expected int) (*Artifact, error) {
@@ -334,11 +377,21 @@ func (s *Store) update(name, content string, meta *Metadata, expected int) (*Art
 	if err != nil {
 		return nil, err
 	}
+	root, err := s.openRoot(false)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
+		}
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	notFound := fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
+
 	// Update modifies what exists, so the entry's directory exists whenever
 	// there is anything to lock; when it does not, the existence check below
 	// answers and no lock file is made.
-	if info, statErr := os.Lstat(cPath); statErr == nil && info.Mode().IsRegular() {
-		unlock, lockErr := lockEntry(cPath)
+	if info, statErr := root.Lstat(filepath.FromSlash(clean)); statErr == nil && info.Mode().IsRegular() {
+		unlock, lockErr := s.lockEntry(cPath)
 		if lockErr != nil {
 			return nil, lockErr
 		}
@@ -349,21 +402,16 @@ func (s *Store) update(name, content string, meta *Metadata, expected int) (*Art
 	// never invents a history for one whose record it cannot read. Resetting
 	// to revision 1 over a damaged sidecar would be a silent loss of the real
 	// revision count and created_at.
-	if info, err := os.Lstat(cPath); err != nil || !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
-	}
-	root, err := os.OpenRoot(s.dir)
-	if err != nil {
-		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
+	if info, err := root.Lstat(filepath.FromSlash(clean)); err != nil || !info.Mode().IsRegular() {
+		return nil, notFound
 	}
 	metaData, err := readContained(root, clean+metaSuffix, maxSidecarBytes, true)
 	var nameErr error
 	if err == nil {
 		nameErr = requireOnDiskName(root, clean)
 	}
-	_ = root.Close()
 	if nameErr != nil {
-		return nil, fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
+		return nil, notFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: the metadata of %q is unreadable, so its revision history cannot be continued: %w", clean, err)
@@ -422,12 +470,12 @@ func (s *Store) Get(name string) (*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	root, err := os.OpenRoot(s.dir)
+	root, err := s.openRoot(false)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("artifacts: artifact %q %w", clean, ErrNotFound)
 		}
-		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
+		return nil, err
 	}
 	defer func() { _ = root.Close() }()
 
@@ -554,57 +602,30 @@ func readArtifact(root *os.Root, clean, fullPath string, withContent bool) (*Art
 	return art, nil
 }
 
-// readContained reads the regular file rel beneath root through the same
-// no-follow open the writes use (safefile.OpenNoFollow): no component below the
-// root is followed if it is a link, the leaf is opened O_NOFOLLOW (and
-// O_NONBLOCK, so a FIFO planted at the name cannot hang the read), and the
-// handle itself, not a separate lstat, is checked to be a regular file. The
-// A file with more than one hard link is refused too (as the DevCouncil
-// untracked-diff reader does): O_NOFOLLOW does not see a hard link to a file
-// outside the store, and a published artifact has exactly one name. A file over
-// limit bytes is refused. The error names the path; only a name that is absent
-// altogether wraps fs.ErrNotExist.
+// readContained reads the regular file rel beneath root through treefile: no
+// component below the root is followed if it is a link, the leaf is opened
+// O_NOFOLLOW and O_NONBLOCK (so a FIFO planted at the name cannot hang the
+// read), the handle itself is checked to be a regular file, and a file with
+// more than one hard link is refused: O_NOFOLLOW does not see a hard link to a
+// file outside the store, and a published artifact has exactly one name. A file
+// over limit bytes is refused. The error names the path; only a name that is
+// absent altogether wraps fs.ErrNotExist.
 func readContained(root *os.Root, rel string, limit int64, load bool) ([]byte, error) {
-	f, err := safefile.OpenNoFollow(root, filepath.FromSlash(rel), os.O_RDONLY, 0)
+	opts := treefile.ReadOptions{Limit: limit, SingleLink: true}
+	var (
+		data []byte
+		err  error
+	)
+	if load {
+		data, err = treefile.ReadFile(root, rel, opts)
+	} else {
+		err = treefile.Check(root, rel, opts)
+	}
 	if err != nil {
-		// os.Root can answer "does not exist" for a dangling link it resolved
-		// itself; a name that is present as anything is a refusal, not an
-		// absence, so that case must not wrap fs.ErrNotExist.
-		if errors.Is(err, fs.ErrNotExist) {
-			if _, lerr := root.Lstat(filepath.FromSlash(rel)); errors.Is(lerr, fs.ErrNotExist) {
-				return nil, err
-			}
-			return nil, fmt.Errorf("artifacts: refusing to read %q (a dangling symbolic link): %s", rel, err.Error())
+		if errors.Is(err, fs.ErrNotExist) && !errors.Is(err, treefile.ErrRefused) {
+			return nil, err
 		}
-		return nil, fmt.Errorf("artifacts: refusing to read %q (a symbolic link, or not an ordinary path): %w", rel, err)
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("artifacts: inspecting %q: %w", rel, err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("artifacts: refusing to read %q: not a regular file", rel)
-	}
-	links, err := safefile.LinkCount(f)
-	if err != nil {
-		return nil, fmt.Errorf("artifacts: counting the links of %q: %w", rel, err)
-	}
-	if links != 1 {
-		return nil, fmt.Errorf("artifacts: refusing to read %q: it has %d hard links, so it may be a file outside the store", rel, links)
-	}
-	if info.Size() > limit {
-		return nil, fmt.Errorf("artifacts: refusing to read %q: %d bytes exceeds the %d-byte limit", rel, info.Size(), limit)
-	}
-	if !load {
-		return nil, nil
-	}
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return nil, fmt.Errorf("artifacts: reading %q: %w", rel, err)
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("artifacts: refusing to read %q: it grew past the %d-byte limit", rel, limit)
+		return nil, fmt.Errorf("artifacts: refusing to read %q: %w", rel, err)
 	}
 	return data, nil
 }
@@ -624,12 +645,12 @@ func (s *Store) List() ([]*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	root, err := os.OpenRoot(s.dir)
+	root, err := s.openRoot(false)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
+		return nil, err
 	}
 	defer func() { _ = root.Close() }()
 
@@ -637,20 +658,22 @@ func (s *Store) List() ([]*Artifact, error) {
 		arts    []*Artifact
 		skipped []EntryError
 	)
-	err = filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
+	// Walked through the root's own file system, so the walk cannot leave the
+	// directory the root was opened on and shows a link as an entry, not as what
+	// it points at.
+	err = fs.WalkDir(root.FS(), ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if p == s.dir {
-				return fmt.Errorf("artifacts: walking %s: %w", p, err)
+			if name == "." {
+				return fmt.Errorf("artifacts: walking %s: %w", s.dir, err)
 			}
-			skipped = append(skipped, EntryError{Name: relName(s.dir, p), Reason: err.Error()})
+			skipped = append(skipped, EntryError{Name: name, Reason: err.Error()})
 			return nil
 		}
 		if d.IsDir() || isSidecarName(d.Name()) || isStoreTemp(d.Name()) {
 			return nil
 		}
 
-		name := relName(s.dir, p)
-		art, err := readArtifact(root, name, p, false)
+		art, err := readArtifact(root, name, s.contentPath(name), false)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil // removed while the walk was running
@@ -675,15 +698,6 @@ func (s *Store) List() ([]*Artifact, error) {
 	return arts, nil
 }
 
-// relName is p's slash-separated name relative to the store directory dir.
-func relName(dir, p string) string {
-	rel, err := filepath.Rel(dir, p)
-	if err != nil {
-		return p
-	}
-	return filepath.ToSlash(rel)
-}
-
 // --- containment ---
 //
 // sanitizeName refuses traversal, and traversal is not the only way out of a
@@ -705,61 +719,127 @@ func relName(dir, p string) string {
 // and the leaf is opened with O_NOFOLLOW so the kernel refuses the link rather
 // than resolving it.
 
-// containedPath returns the physical path for a cleaned artifact name,
-// creating the store directory and the directories beneath it, and refuses if
-// any component below the store directory is a symbolic link or is not a
-// directory. Only the two writes call it, which is what keeps a store that is
-// never written from ever touching the disk.
+// openRoot opens the store directory afresh and returns it as a root, after
+// treefile has checked every component below the store's anchor. With create
+// the directory and its missing parents are made through the same handles, which
+// is what keeps a store that is never written from ever touching the disk. A
+// directory that is not there is fs.ErrNotExist; one that is, or passes through,
+// a link is a refusal.
+func (s *Store) openRoot(create bool) (*os.Root, error) {
+	var mode fs.FileMode
+	if create {
+		mode = 0o755
+		if err := s.ensureAnchor(); err != nil {
+			return nil, err
+		}
+	}
+	root, err := treefile.OpenDir(s.anchor, s.rel, mode)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
+	}
+	return root, nil
+}
+
+// ensureAnchor makes the anchor itself on a write when it is not there yet. The
+// anchor is the one path the caller vouches for (the project root, or an
+// absolute MANVI_STATE_DIR an operator named, which on a fresh machine has not
+// been created), so it is made by path, as it always was; everything below it is
+// made and checked through handles.
+func (s *Store) ensureAnchor() error {
+	if s.anchor == "" {
+		return nil
+	}
+	if err := os.MkdirAll(s.anchor, 0o755); err != nil { // #nosec G703 -- s.anchor is the store root the caller configured
+		return fmt.Errorf("artifacts: creating %s: %w", s.anchor, err)
+	}
+	return nil
+}
+
+// dirFor opens the directory that holds the physical path full, which lies
+// within the store, and names its leaf. With create the directories below the
+// store are made, each inspected after it is made (os.Mkdir answers EEXIST for a
+// link, so creating without looking proves nothing). A zero Store, which has no
+// anchor, treats the directory of full as the one it vouches for.
+func (s *Store) dirFor(full string, create bool) (dir *os.Root, leaf string, err error) {
+	var mode fs.FileMode
+	if create {
+		mode = 0o755
+		if err := s.ensureAnchor(); err != nil {
+			return nil, "", err
+		}
+	}
+	if s.anchor == "" {
+		dir, err = treefile.OpenDir(filepath.Dir(full), ".", mode)
+		return dir, filepath.Base(full), err
+	}
+	// Both sides absolute: a relative store dir (the default is one) and the
+	// absolute path containedPath builds from it are the same place, and Rel
+	// refuses to compare a relative path with an absolute one.
+	absDir, err := filepath.Abs(s.dir)
+	if err != nil {
+		return nil, "", fmt.Errorf("artifacts: resolving store dir %s: %w", s.dir, err)
+	}
+	absFull, err := filepath.Abs(full)
+	if err != nil {
+		return nil, "", fmt.Errorf("artifacts: resolving %s: %w", full, err)
+	}
+	rel, err := filepath.Rel(absDir, absFull)
+	if err != nil || !filepath.IsLocal(rel) {
+		return nil, "", fmt.Errorf("artifacts: %q is not inside the store", full)
+	}
+	dir, err = treefile.OpenDir(s.anchor, filepath.Join(s.rel, filepath.Dir(rel)), mode)
+	return dir, filepath.Base(rel), err
+}
+
+// containedPath returns the physical path for a cleaned artifact name, creating
+// the store directory and the directories beneath it, and refuses if any
+// component below the store directory is a symbolic link or is not a directory.
+// Only the two writes call it, which is what keeps a store that is never
+// written from ever touching the disk.
 func (s *Store) containedPath(clean string) (string, error) {
 	root, err := filepath.Abs(s.dir)
 	if err != nil {
 		return "", fmt.Errorf("artifacts: resolving store dir %s: %w", s.dir, err)
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return "", fmt.Errorf("artifacts: creating store dir %s: %w", s.dir, err)
+	full := filepath.Join(root, filepath.FromSlash(clean))
+	dir, _, err := s.dirFor(full, true)
+	if err != nil {
+		return "", fmt.Errorf("artifacts: refusing %q: %w", clean, err)
 	}
-	current := root
-	parts := strings.Split(filepath.ToSlash(clean), "/")
-	for _, part := range parts[:len(parts)-1] {
-		if part == "" || part == "." {
-			continue
-		}
-		current = filepath.Join(current, part)
-		if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
-			return "", fmt.Errorf("artifacts: creating %s: %w", current, err)
-		}
-		// Lstat, not Stat: Stat follows the link and would report the directory
-		// at the far end as though this component were one.
-		info, err := os.Lstat(current)
-		if err != nil {
-			return "", fmt.Errorf("artifacts: inspecting %s: %w", current, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("artifacts: refusing %q: path component %q is a symbolic link", clean, part)
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("artifacts: refusing %q: path component %q is not a directory", clean, part)
-		}
-	}
-	return filepath.Join(current, parts[len(parts)-1]), nil
+	_ = dir.Close()
+	return full, nil
 }
 
-// writeContained writes data at full without ever leaving a half-written file
-// at that name: the bytes go to a temporary sibling, are synced, and are then
-// published by rename (replacing) or by link (exclusive, failing if the name is
-// taken). A symbolic link at the final component is refused, and the directory
-// is synced so the name survives a crash.
+// removeContained removes the file at the physical path full through the
+// store's root, never through the path.
+func (s *Store) removeContained(full string) error {
+	dir, leaf, err := s.dirFor(full, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }()
+	return dir.Remove(leaf)
+}
+
+// writeContained writes data at the physical path full without ever leaving a
+// half-written file at that name: treefile stages it in a synced temporary
+// sibling and publishes it by rename (replacing) or by link (exclusive, failing
+// if the name is taken). A symbolic link at the final component is refused, and
+// the directory is synced so the name survives a crash.
 //
 // A failure of that last step comes back wrapping ErrPublishedUnsynced: by then
 // the name is published, so the write is neither undone nor reported as not
 // written.
-//
-// The sibling is created with O_EXCL and O_NOFOLLOW, so nothing planted at its
-// name is followed; the final name is never opened for writing, so a link
-// swapped in at it cannot redirect a write — rename replaces the link itself.
-func (s *Store) writeContained(full string, data []byte, perm os.FileMode, exclusive bool) (result error) {
-	base := filepath.Base(full)
-	if info, err := os.Lstat(full); err == nil {
+func (s *Store) writeContained(full string, data []byte, perm os.FileMode, exclusive bool) error {
+	dir, base, err := s.dirFor(full, true)
+	if err != nil {
+		return fmt.Errorf("artifacts: refusing to write %q: %w", filepath.Base(full), err)
+	}
+	defer func() { _ = dir.Close() }()
+	if info, err := dir.Lstat(base); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("artifacts: refusing %q: that name is a symbolic link", base)
 		}
@@ -770,58 +850,22 @@ func (s *Store) writeContained(full string, data []byte, perm os.FileMode, exclu
 			return fmt.Errorf("artifacts: refusing to write %s: not a regular file", base)
 		}
 	}
-
-	dir := filepath.Dir(full)
-	var (
-		tmp  string
-		f    *os.File
-		open error
-	)
-	for attempt := 0; attempt < 16; attempt++ {
-		var nonce [8]byte
-		if _, err := rand.Read(nonce[:]); err != nil {
-			return fmt.Errorf("artifacts: naming a temporary file for %s: %w", base, err)
-		}
-		tmp = filepath.Join(dir, "."+base+"."+hex.EncodeToString(nonce[:])+".tmp")
-		f, open = safefile.OpenNoFollow(nil, tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-		if !errors.Is(open, fs.ErrExist) {
-			break
-		}
-	}
-	if open != nil {
-		return fmt.Errorf("artifacts: creating a temporary file for %s: %w", base, open)
-	}
-	defer func() {
-		// Rename consumed the temp name; after a link it is still there.
-		if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
-			result = errors.Join(result, err)
-		}
-	}()
-
-	if _, err := f.Write(data); err != nil {
-		return errors.Join(fmt.Errorf("artifacts: writing %s: %w", base, err), f.Close())
-	}
-	if err := syncFile(f); err != nil {
-		return errors.Join(fmt.Errorf("artifacts: syncing %s: %w", base, err), f.Close())
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("artifacts: closing %s: %w", base, err)
-	}
-
-	if exclusive {
-		if err := os.Link(tmp, full); err != nil {
-			if errors.Is(err, fs.ErrExist) {
-				return fmt.Errorf("artifacts: artifact %q %w; use Update to modify", base, ErrExists)
+	err = treefile.Publish(dir, base, data, treefile.PublishOptions{
+		Perm:     perm,
+		Replace:  !exclusive,
+		SyncFile: syncFile,
+		SyncDir: func(d *os.Root) error {
+			if s.dirSync != nil {
+				return s.dirSync(filepath.Dir(full))
 			}
-			return fmt.Errorf("artifacts: publishing %s: %w", base, err)
-		}
-	} else if err := os.Rename(tmp, full); err != nil {
-		return fmt.Errorf("artifacts: publishing %s: %w", base, err)
+			return syncdir.Root(d)
+		},
+	})
+	switch {
+	case err == nil:
+		return nil
+	case exclusive && errors.Is(err, fs.ErrExist):
+		return fmt.Errorf("artifacts: artifact %q %w; use Update to modify", base, ErrExists)
 	}
-
-	if err := s.syncDirectory(dir); err != nil {
-		return fmt.Errorf("artifacts: %s is published but syncing its directory failed, so it may not survive a crash: %w: %w",
-			base, ErrPublishedUnsynced, err)
-	}
-	return nil
+	return fmt.Errorf("artifacts: %w", err)
 }

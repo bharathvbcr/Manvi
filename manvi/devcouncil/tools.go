@@ -91,7 +91,11 @@ type Deps struct {
 	Workspaces WorkspaceCoordinator
 
 	// Extended dynamic subsystems:
-	Artifacts        *artifacts.Store
+	Artifacts *artifacts.Store
+	// ArtifactsErr is why Artifacts is nil when the configured store was refused.
+	// The artifact tools then answer with it; they never build a store at a
+	// default location the configuration did not name.
+	ArtifactsErr     error
 	MCP              *mcp.Manager
 	SubagentRegistry *agents.Registry
 	SubagentMgr      *agents.InstanceManager

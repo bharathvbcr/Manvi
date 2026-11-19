@@ -16,6 +16,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/hygiene"
 )
 
 // The reader below is the lesson-shaped twin of devcouncil.ParseVerdict, and it
@@ -83,12 +85,7 @@ const verdictMarkerPrefix = "MANVI-VERDICT"
 // and tab (an escape sequence in a cue is executed by the terminal that
 // echoes it), format characters (zero-width joiners, bidi overrides, which
 // split a marker or reorder a line) and private-use characters.
-func invisible(r rune) bool {
-	if r == '\n' || r == '\t' {
-		return false
-	}
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r)
-}
+func invisible(r rune) bool { return hygiene.Invisible(r) }
 
 // ContainsMarker reports whether s carries the checkpoint critic's marker in
 // any case, once the runes that could split it are removed. The packet builder

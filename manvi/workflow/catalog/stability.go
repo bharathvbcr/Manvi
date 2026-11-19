@@ -154,6 +154,10 @@ func (s Store) ApplyQualifyReport(id, revision, sha string, report []byte) (Stab
 		return Stability{}, err
 	}
 	if err := s.SetStability(id, revision, sha, st); err != nil {
+		if errors.Is(err, ErrPublishedUnsynced) {
+			// Stored: the summary comes back beside the unconfirmed sync.
+			return st, err
+		}
 		return Stability{}, err
 	}
 	return st, nil

@@ -37,6 +37,7 @@ import (
 	"sync"
 
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/internal/hygiene"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
@@ -237,6 +238,13 @@ type Tool struct {
 	// strand it. A list of pairs written beside the registry is true on the day
 	// it is written and quietly wrong afterwards.
 	Requires []string
+	// ThirdParty marks a tool whose result text is another program's or another
+	// party's words — an MCP server's reply, a fetched page — and not this
+	// harness's own. Run renders the invisible characters in it visible
+	// (hygiene.Escape) before it is scrubbed and handed on, so a bidi override or
+	// an escape sequence in it is shown to the model and to the terminal as what
+	// it is instead of being obeyed.
+	ThirdParty bool
 }
 
 // PreExecute is the waterfall event for the pre-execute stage. A listener may
@@ -313,6 +321,13 @@ func (r *Registry) SetScrubber(scrub func(string) string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.scrub = scrub
+}
+
+// thirdParty reports whether the named tool's results are third-party text.
+func (r *Registry) thirdParty(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tools[name].ThirdParty
 }
 
 func (r *Registry) scrubText(text string) string {
@@ -798,6 +813,17 @@ func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
 		if panicked := recover(); panicked != nil {
 			result = stagePanic("tool", panicked)
 		}
+		// Third-party text is made inert first, so the scrubber below sees what a
+		// reader will see: a credential split by a zero-width joiner is still a
+		// credential once the joiner is shown.
+		thirdParty := r.thirdParty(call.Name)
+		if thirdParty {
+			result.Text = hygiene.Escape(result.Text)
+			// The notes a failed stage leaves, which quote what panicked.
+			for i, note := range result.Degraded {
+				result.Degraded[i] = hygiene.Escape(note)
+			}
+		}
 		// Scrubbed last, on the named return, so every way out of this function
 		// is covered: the ordinary path, a listener short-circuit, a refusal, a
 		// post-execute rewrite, and the panic recovery immediately above. A
@@ -812,7 +838,11 @@ func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
 			for _, block := range result.Content {
 				switch b := block.(type) {
 				case llm.TextBlock:
-					owned = append(owned, llm.TextBlock{Text: r.scrubText(b.Text)})
+					text := b.Text
+					if thirdParty {
+						text = hygiene.Escape(text)
+					}
+					owned = append(owned, llm.TextBlock{Text: r.scrubText(text)})
 				case llm.ImageBlock:
 					if len(b.Data) == 0 || (b.MediaType != "image/png" && b.MediaType != "image/jpeg" && b.MediaType != "image/webp" && b.MediaType != "image/gif") {
 						result = Errorf("tool result has an empty image or unsupported media type")
