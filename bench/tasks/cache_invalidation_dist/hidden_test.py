@@ -6,9 +6,19 @@ bad = 0
 
 
 def eq(label, got, want):
+    # Exact types first: what crosses from the worker is data, and an object
+    # that is not the wanted builtin is not the wanted value however it compares.
     global bad
-    if got != want:
+    if type(got) is not type(want) or not (got == want):
         print("FAIL", label, "got", repr(got), "want", repr(want))
+        bad += 1
+
+
+def ne(label, got, want):
+    """got must be a value of want's type that differs from it."""
+    global bad
+    if type(got) is not type(want) or got == want:
+        print("FAIL", label, "got", repr(got), "must differ from", repr(want))
         bad += 1
 
 
@@ -31,8 +41,8 @@ c.put(0, "k", "A")
 c.put(1, "k", "B")
 eq("isolated 0", c.get(0, "k"), "A")
 eq("group 1-2 share B", (c.get(1, "k"), c.get(2, "k")), ("B", "B"))
-eq("0 does not see B", c.get(0, "k") != "B", True)
-eq("2 does not see A", c.get(2, "k") != "A", True)
+ne("0 does not see B", c.get(0, "k"), "B")
+ne("2 does not see A", c.get(2, "k"), "A")
 
 # --- heal: (clock, origin) — both sides wrote once from 0, so clocks are 1
 # (1, 1) > (1, 0) so B wins
@@ -165,13 +175,80 @@ c.put(0, "t", "v")
 c.invalidate(0, "t")
 eq("no tomb leak", c.get(0, "t"), None)
 
-# --- fuzzer: after every heal, replicas agree; partition isolation holds
+# --- fuzzer: a model of the spec, run in the checker, is the want. The candidate
+# is compared with it after every get and every heal, never with itself: a cache
+# that notices the fuzzer and answers one thing everywhere agrees with itself.
+class _Model:
+    TOMB = "__tomb__"
+
+    def __init__(self, n):
+        self.n = n
+        self.store = [{} for _ in range(n)]
+        self.clock = [0] * n
+        self.group = [0] * n
+
+    def _apply(self, j, key, rec):
+        cur = self.store[j].get(key)
+        if cur is None or (rec[1], rec[2]) > (cur[1], cur[2]):
+            self.store[j][key] = rec
+        if rec[1] > self.clock[j]:
+            self.clock[j] = rec[1]
+
+    def _replicate(self, node, key, tag):
+        self.clock[node] += 1
+        rec = (tag, self.clock[node], node)
+        for j in range(self.n):
+            if self.group[node] == self.group[j]:
+                self._apply(j, key, rec)
+
+    def put(self, node, key, value):
+        self._replicate(node, key, value)
+
+    def invalidate(self, node, key):
+        self._replicate(node, key, self.TOMB)
+
+    def get(self, node, key):
+        rec = self.store[node].get(key)
+        return None if rec is None or rec[0] == self.TOMB else rec[0]
+
+    def split(self, groups):
+        gmap = [None] * self.n
+        for gi, g in enumerate(groups):
+            for nid in g:
+                gmap[nid] = gi
+        self.group = gmap
+
+    def heal(self):
+        self.group = [0] * self.n
+        keys = set()
+        for s in self.store:
+            keys.update(s)
+        for k in keys:
+            best = None
+            for s in self.store:
+                rec = s.get(k)
+                if rec is not None and (best is None or (rec[1], rec[2]) > (best[1], best[2])):
+                    best = rec
+            if best is not None:
+                for s in self.store:
+                    s[k] = best
+        self.clock = [max(self.clock)] * self.n
+
+    def views(self, key):
+        return [self.get(i, key) for i in range(self.n)]
+
+
+class _FuzzStop(Exception):
+    pass
+
+
 random.seed(11)
+trials_done = 0
 for trial in range(40):
     n = 3
     c = DistCache(n)
+    m = _Model(n)
     keys = ["a", "b", "c"]
-    grouped = [[0, 1, 2]]
     try:
         for _ in range(25):
             op = random.choice(["put", "put", "inv", "get", "split", "heal"])
@@ -180,14 +257,17 @@ for trial in range(40):
             if op == "put":
                 val = random.choice(["x", "y", "z"])
                 c.put(node, key, val)
-                # isolation: nodes in other groups must not newly equal val
-                # unless they already had it. Checked loosely via heal agree.
+                m.put(node, key, val)
             elif op == "inv":
                 c.invalidate(node, key)
+                m.invalidate(node, key)
             elif op == "get":
-                v = c.get(node, key)
-                if v == "__tomb__":
-                    print("FAIL tomb leak fuzz", trial); bad += 1; raise StopIteration
+                v, w = c.get(node, key), m.get(node, key)
+                if type(v) is not type(w) or not (v == w):
+                    print("FAIL get differs from the model", trial, node, key,
+                          repr(v), "want", repr(w))
+                    bad += 1
+                    raise _FuzzStop
             elif op == "split":
                 # random partition of 3 nodes
                 kind = random.choice(["iso", "2-1", "3"])
@@ -199,16 +279,26 @@ for trial in range(40):
                 else:
                     groups = [[0], [1], [2]]
                 c.split(groups)
-                grouped = groups
+                m.split(groups)
             else:
                 c.heal()
+                m.heal()
                 for key in keys:
-                    vs = views(c, key)
-                    if any(x != vs[0] for x in vs):
-                        print("FAIL heal diverge", trial, key, vs)
+                    vs, ws = views(c, key), m.views(key)
+                    if len(vs) != len(ws) or any(
+                            type(x) is not type(y) or not (x == y) for x, y in zip(vs, ws)):
+                        print("FAIL heal diverge", trial, key, vs, "want", ws)
                         bad += 1
-                        raise StopIteration
-    except StopIteration:
+                        raise _FuzzStop
+    except _FuzzStop:
         break
+    except Exception as e:
+        # Whatever the candidate raised -- including StopIteration -- is a failed
+        # trial, never a reason to skip the remaining ones.
+        print("FAIL fuzz raised", trial, type(e).__name__, e)
+        bad += 1
+        break
+    trials_done += 1
+eq("fuzz trials", trials_done, 40)
 
 sys.exit(1 if bad else 0)

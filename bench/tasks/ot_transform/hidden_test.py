@@ -15,14 +15,40 @@ bad = 0
 
 
 def eq(label, got, want):
+    # Exact types first: what crosses from the worker is data, and an object
+    # that is not the wanted builtin is not the wanted value however it compares.
     global bad
-    if got != want:
+    if type(got) is not type(want) or not (got == want):
         print("FAIL", label, "got", repr(got), "want", repr(want))
         bad += 1
 
 
+def _o_apply(doc, op):
+    """The spec's apply, held in the checker: the documents below are computed
+    here from the ops the candidate's transform returned, so convergence is
+    never one candidate answer compared with another."""
+    kind = op[0]
+    if kind == "nop":
+        return doc
+    if kind == "ins":
+        _, pos, ch, _site = op
+        if pos < 0 or pos > len(doc):
+            raise ValueError("pos")
+        return doc[:pos] + ch + doc[pos:]
+    if kind == "del":
+        _, pos, _site = op
+        if pos < 0 or pos >= len(doc):
+            raise ValueError("pos")
+        return doc[:pos] + doc[pos + 1:]
+    raise ValueError("op")
+
+
 def settle(doc, a, b):
-    """Converged document reached by applying a then b2. None on divergence."""
+    """Converged document reached by applying a then b2. None on divergence.
+
+    The ops come from the candidate's transform and are applied here by the
+    checker's own apply; the candidate's apply must agree with it on every one.
+    """
     global bad
     before = (repr(a), repr(b))
     try:
@@ -35,6 +61,10 @@ def settle(doc, a, b):
         print("FAIL transform mutated its inputs", before, "->", (repr(a), repr(b)))
         bad += 1
         return None
+    if type(a2) is not tuple or type(b2) is not tuple:
+        print("FAIL transform did not return ops by value", doc, a, b)
+        bad += 1
+        return None
     try:
         left = apply(apply(doc, a), b2)
         right = apply(apply(doc, b), a2)
@@ -42,12 +72,25 @@ def settle(doc, a, b):
         print("FAIL conv exc", doc, a, b, type(e).__name__, e)
         bad += 1
         return None
-    if left != right:
-        print("FAIL conv", "doc", repr(doc), "a", a, "b", b,
-              "a2", a2, "b2", b2, "L", repr(left), "R", repr(right))
+    try:
+        want_left = _o_apply(_o_apply(doc, a), b2)
+        want_right = _o_apply(_o_apply(doc, b), a2)
+    except Exception as e:
+        print("FAIL transformed op does not apply", doc, a, b, "a2", a2, "b2", b2,
+              type(e).__name__, e)
         bad += 1
         return None
-    return left
+    if type(left) is not str or left != want_left or type(right) is not str or right != want_right:
+        print("FAIL apply disagrees with the spec", "doc", repr(doc), "a", a, "b", b,
+              "got", repr(left), repr(right), "want", repr(want_left), repr(want_right))
+        bad += 1
+        return None
+    if want_left != want_right:
+        print("FAIL conv", "doc", repr(doc), "a", a, "b", b,
+              "a2", a2, "b2", b2, "L", repr(want_left), "R", repr(want_right))
+        bad += 1
+        return None
+    return want_left
 
 
 def conv(doc, a, b):

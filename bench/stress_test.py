@@ -649,15 +649,32 @@ print("C4 the hidden test's source is not reachable from, nor writable by, the c
 # the import runs to completion) and tries to (a) write into the sandbox for the
 # next turn and (b) find the hidden test's source in its own process. Its own
 # report comes back only on the worker's captured stdout, never the verdict.
+# The heap walk (gc.get_objects) is itself refused in the worker now (an audit
+# hook, see C6 "verifier redesign"), so the payload also reads everything the
+# worker's own bootstrap holds -- its stdin data, its source and its payload --
+# which is where a hidden test's source would sit if it had been fed here.
 EXFIL = (
-    "import os, sys, gc\n"
+    "import os, sys\n"
     "try:\n"
     "    open(os.path.join(os.getcwd(), 'LEAK.txt'), 'w').write('x')\n"
     "    print('MH_WROTE_SANDBOX')\n"
     "except OSError:\n"
     "    print('MH_WRITE_DENIED')\n"
-    "src = ''.join(o for o in gc.get_objects()\n"
-    "              if isinstance(o, str) and 'invoice_total' in o and 'want' in o)\n"
+    "try:\n"
+    "    import gc\n"
+    "    _objs = list(gc.get_objects())\n"
+    "    print('MH_GC_WALK_OK')\n"
+    "except RuntimeError:\n"
+    "    _objs = []\n"
+    "    print('MH_GC_REFUSED')\n"
+    "_mm = vars(sys.modules['__main__'])\n"
+    "_objs += list(_mm.values()) + list((_mm.get('_g') or {}).values())\n"
+    "def _txt(o):\n"
+    "    if isinstance(o, bytes):\n"
+    "        return o.decode('latin-1')\n"
+    "    return o if isinstance(o, str) else ''\n"
+    "src = ''.join(_txt(o) for o in _objs\n"
+    "              if 'invoice_total' in _txt(o) and 'want' in _txt(o))\n"
     "print('MH_SRCLEN', len(src))\n"
     "print('MH_MAIN', getattr(sys.modules.get('__main__'), '__file__', None))\n"
 )
@@ -673,6 +690,8 @@ check("C4 nothing the payload wrote persists in the sandbox",
       not os.path.exists(os.path.join(s_, "LEAK.txt")))
 check("C4 the hidden test's source is not reachable from the worker",
       "MH_SRCLEN 0" in wout, wout[:200])
+check("C4 the worker's heap walk is refused, not merely empty-handed",
+      "MH_GC_REFUSED" in wout and "MH_GC_WALK_OK" not in wout, wout[:200])
 check("C4 __main__ in the worker is not the hidden test",
       "MH_MAIN" in wout and "hidden test" not in wout, wout[:200])
 check("C4 no copy of the hidden test is left on disk anywhere",
@@ -958,8 +977,8 @@ class _Link:
         encode = staticmethod(lambda o: o)
 _l = _Link([False, None])
 _p, _q = _rpc.Proxy(_l, 1), _rpc.Proxy(_l, 2)
-check("C6 a Proxy with no builtin data is unequal to a builtin, and != is true",
-      not (_p == 1) and (_p != 1) and not (_p == "x") and (_p != None)  # noqa: E711
+check("C6 a Proxy with no builtin data is unequal to a builtin (and != on it fails loudly, below)",
+      not (_p == 1) and not (_p == "x") and not (_p == None)  # noqa: E711
       and not ([_p] == [1]), _l.asked)
 check("C6 the checker asks only for the object's data, never sending the other operand",
       {m for m, _ in _l.asked} == {"value"} and all(k == ["id"] for _, k in _l.asked), _l.asked)
@@ -967,7 +986,7 @@ _l.asked.clear()
 check("C6 a Proxy equals itself without asking the worker",
       _p == _p and not (_p != _p) and _l.asked == [], _l.asked)
 check("C6 two distinct Proxies with no builtin data are unequal",
-      not (_p == _q) and (_p != _q), _l.asked)
+      not (_p == _q), _l.asked)
 for _label, _ans in (("True", True), ("[True]", [True]), ("[True, <a handle>]", [True, _p]),
                       ("[1, (1, 2)]", [1, (1, 2)]), ("['yes', (1, 2)]", ["yes", (1, 2)])):
     _lv = _Link(_ans)
@@ -1110,6 +1129,283 @@ check("C6 control: a transform without a tie-break fails the fuzzer",
       not _ok and "order-dependent" in _out, _out[:200])
 _ok, _out = _verify_with("ot_transform", "ot.py", _ot(True))
 check("C6 a transform without a tie-break does not pass with always-equal results", not _ok, _out[:200])
+
+print("C6 verifier redesign: every check that decides a verdict runs outside the candidate")
+
+def _verify_rec(task_name, files):
+    """Verify the task's reference with some files replaced; returns (ok, out, record)."""
+    _t = load_tasks([task_name])[0]
+    _sb = _t.materialise(os.path.join(tmpdir(), task_name))
+    _st.overlay(os.path.join(_t.dir, "reference"), _sb)
+    for _fn, _src in files.items():
+        open(os.path.join(_sb, _fn), "w").write(_src)
+    _ok, _out = _t.verify(_sb)
+    return _ok, _out, (_t.last_record or {})
+
+# -- writeback: the worker's word about its arguments is attested, never silent
+def _intervals_src(prefix=""):
+    return _ref_src("intervals", "intervals.py") + "\ndef _pre(*a):\n    pass\n" + prefix + (
+        "\n_merge, _intersect, _subtract = merge, intersect, subtract\n"
+        "def merge(a):\n    _pre(a)\n    a.append((99, 99))\n    return _merge(a[:-1])\n"
+        "def intersect(a, b):\n    _pre(a, b)\n    a.append((99, 99)); b.append((99, 99))\n"
+        "    return _intersect(a[:-1], b[:-1])\n"
+        "def subtract(a, b):\n    _pre(a, b)\n    a.append((99, 99)); b.append((99, 99))\n"
+        "    return _subtract(a[:-1], b[:-1])\n")
+
+_WB_REPLACE_CLASS = (
+    "\nimport sys as _s\n"
+    "_s.modules['__main__']._g['WorkerEndpoint']._make_wb = lambda self, args: None\n")
+_WB_REPLACE_GC = (
+    "\ndef _hide():\n    import gc\n    for o in gc.get_objects():\n"
+    "        if type(o).__name__ == 'WorkerEndpoint':\n"
+    "            type(o)._make_wb = lambda self, args: None\n_hide()\n")
+_WB_PRISTINE = (
+    "\nimport sys as _s\n_P = []\n"
+    "def _pre(*a):\n    _P[:] = [list(x) for x in a]\n"
+    "_WE = _s.modules['__main__']._g['WorkerEndpoint']\n_orig = _WE._make_wb\n"
+    "_WE._make_wb = lambda self, args: _orig(self, list(_P) or args)\n")
+
+_ok, _out, _rec = _verify_rec("intervals", {})
+check("C6 control: intervals reference passes", _ok, _out[:200])
+_ok, _out, _rec = _verify_rec("intervals", {"intervals.py": _intervals_src()})
+check("C6 control: appending to the arguments fails the no-mutation case",
+      not _ok and "nor b" in _out, _out[:200])
+check("C6 the checker records the argument mutation itself", _rec.get("arg_mutations", 0) > 0, _rec)
+for _label, _prefix in (("replacing _make_wb through the harness globals", _WB_REPLACE_CLASS),
+                        ("replacing _make_wb through gc", _WB_REPLACE_GC)):
+    _ok, _out, _rec = _verify_rec("intervals", {"intervals.py": _intervals_src(_prefix)})
+    check(f"C6 hiding an argument mutation by {_label} does not pass", not _ok, _out[:200])
+_ok, _out, _rec = _verify_rec("intervals", {"intervals.py": _intervals_src(_WB_PRISTINE)})
+check("C6 a worker that attests pristine arguments is named unenforced, not trusted silently",
+      any(u.startswith("writeback") for u in _rec.get("unenforced", [])), _rec)
+_ok, _out, _rec = _verify_rec("intervals", {})
+check("C6 the intervals reference run also names writeback as worker-attested",
+      any(u.startswith("writeback") for u in _rec.get("unenforced", [])), _rec)
+_ok, _out, _rec = _verify_rec("globmatch", {})
+check("C6 a run that sends no container argument names nothing unenforced",
+      _rec.get("unenforced") == [], _rec)
+
+# -- import ban: held by an audit hook the candidate cannot remove
+_GLOB_PLAIN = "\nimport fnmatch\n\ndef matches(pattern, name):\n    return fnmatch.fnmatchcase(name, pattern)\n"
+_GLOB_EVASION = (
+    "\nimport sys, builtins\n"
+    "sys.meta_path[:] = [f for f in sys.meta_path if type(f).__name__ != '_ImportBan']\n"
+    "_m = builtins.__dict__['__imp' + 'ort__']('fnm' + 'atch')\n\n"
+    "def matches(pattern, name):\n    return _m.fnmatchcase(name, pattern)\n")
+_GLOB_GETATTR = (
+    "\nimport sys\n"
+    "_i = getattr(sys.modules['builtins'], ''.join(['__im', 'port__']))\n"
+    "_m = _i('fn' + 'match')\n\n"
+    "def matches(pattern, name):\n    return _m.fnmatchcase(name, pattern)\n")
+_GLOB_RELOAD = (
+    "\nimport sys\n"
+    "sys.meta_path[:] = [f for f in sys.meta_path if type(f).__name__ != '_ImportBan']\n"
+    "exec('import fnm' + 'atch as _m', globals())\n\n"
+    "def matches(pattern, name):\n    return _m.fnmatchcase(name, pattern)\n")
+_ok, _out, _rec = _verify_rec("globmatch", {})
+check("C6 control: globmatch reference passes", _ok, _out[:200])
+_ok, _out, _rec = _verify_rec("globmatch", {"globmatch.py": _GLOB_PLAIN})
+check("C6 control: a plain import fnmatch is refused", not _ok, _out[:200])
+for _label, _src in (("a builtins.__dict__ __import__ after removing the meta_path ban", _GLOB_EVASION),
+                     ("a getattr spelling of __import__", _GLOB_GETATTR),
+                     ("an exec'd import after removing the meta_path ban", _GLOB_RELOAD)):
+    _ok, _out, _rec = _verify_rec("globmatch", {"globmatch.py": _src})
+    check(f"C6 the import ban holds against {_label}", not _ok, _out[:200])
+for _label, _tail in (("ctypes", "import ctypes\n"), ("gc.get_objects", "import gc\ngc.get_objects()\n"),
+                      ("gc.get_referrers", "import gc\ngc.get_referrers(1)\n")):
+    _ok, _out, _rec = _verify_rec(
+        "globmatch", {"globmatch.py": _ref_src("globmatch", "globmatch.py") + "\n" + _tail})
+    check(f"C6 a candidate that reaches for {_label} is refused", not _ok, _out[:200])
+for _tn in ("globmatch", "nfa_match", "concurrency_race"):
+    _ok, _out, _rec = _verify_rec(_tn, {})
+    _bans = _rec.get("bans") or [{}]
+    check(f"C6 {_tn}: the ban is held by the audit hook and the harness preloaded none of it",
+          _ok and all(b.get("mechanism") == "audit-hook" and b.get("preloaded") == [] for b in _bans)
+          and _rec.get("unenforced") == [], (_out[:120], _rec))
+
+# -- the queue ban: no module reachable from the harness, and the C half is banned too
+_CQ_G = ("\nimport sys as _s\n_Q = _s.modules['__main__']._g['queue']\n"
+         "_sq = _Q.SimpleQueue()\n")
+_CQ_C = "\nimport _queue\n_sq = _queue.SimpleQueue()\n"
+_cq_ref = _ref_src("concurrency_race", "bqueue.py")
+_ok, _out, _rec = _verify_rec("concurrency_race", {})
+check("C6 control: concurrency_race reference passes", _ok, _out[:200])
+_ok, _out, _rec = _verify_rec("concurrency_race", {"bqueue.py": "import queue\n" + _cq_ref})
+check("C6 control: a plain import queue is refused", not _ok, _out[:200])
+_ok, _out, _rec = _verify_rec("concurrency_race", {"bqueue.py": _CQ_G + _cq_ref})
+check("C6 the queue module is not reachable as sys.modules['__main__']._g['queue']", not _ok, _out[:200])
+_ok, _out, _rec = _verify_rec("concurrency_race", {"bqueue.py": _CQ_C + _cq_ref})
+check("C6 _queue, the C half of queue, is banned with it", not _ok, _out[:200])
+# Loading queue.py by hand never fires an import event; the ban also refuses to read its source.
+_CQ_HAND = (
+    "\nimport sys, os\n"
+    "_ext = sys.modules['_frozen_importlib_external']\n"
+    "_path = os.path.join(os.path.dirname(os.__file__), 'queue.py')\n"
+    "_spec = _ext.spec_from_file_location('mh_hand_queue', _path)\n"
+    "_hq = sys.modules['_frozen_importlib'].module_from_spec(_spec)\n"
+    "_spec.loader.exec_module(_hq)\n"
+    "_sq = _hq.Queue()\n")
+_ok, _out, _rec = _verify_rec("concurrency_race", {"bqueue.py": _CQ_HAND + _cq_ref})
+check("C6 hand-loading queue.py from the stdlib directory does not get round the ban", not _ok, _out[:200])
+
+# -- a verdict needs the checker's report; a pass without one is not a pass
+_vsb = tempfile.mkdtemp(prefix="mhrep-")
+_r = _rpc.verify_python(b"import os\nos._exit(0)\n", _vsb, [], 20, 4000)
+check("C6 a checker that exits 0 without sending its report is scored fail",
+      _r["rc"] != 0 and _r.get("report") is None, (_r["rc"], _r.get("report")))
+_r = _rpc.verify_python(b"raise SystemExit(0)\n", _vsb, [], 20, 4000)
+check("C6 a checker that exits 0 and sends its report is a pass",
+      _r["rc"] == 0 and _r.get("report") is not None, (_r["rc"], _r.get("report")))
+_r = _rpc.verify_python(b"import _mh\n_mh.forbid_imports(('collections',))\nraise SystemExit(0)\n",
+                        _vsb, [], 20, 4000)
+check("C6 a ban on a module the harness had already loaded is named unenforced",
+      _r["rc"] == 0 and any(u.startswith("import-ban: collections")
+                            for u in (_r.get("report") or {}).get("unenforced", [])), _r.get("report"))
+shutil.rmtree(_vsb, ignore_errors=True)
+
+# -- the static audit sees the spellings the old per-test scans did not
+_aud = tempfile.mkdtemp(prefix="mhaudit-")
+_SPELLINGS = {
+    "dict-subscript": "import builtins\n_m = builtins.__dict__['__imp' + 'ort__']('fnm' + 'atch')\n",
+    "getattr-join": "import sys\n_i = getattr(sys.modules['builtins'], '__im' 'port__')\n",
+    "bare __import__ name": "f = __import__\n",
+    "__builtins__": "x = __builtins__\n",
+    "importlib": "import importlib\n",
+    "from-import": "from fnmatch import fnmatchcase\n",
+    "dotted import": "import fnmatch.x\n",
+}
+check("C6 the audit is a public function of the verifier module", hasattr(_rpc, "audit_sources"))
+_audit_ok = hasattr(_rpc, "audit_sources")
+for _label, _src in _SPELLINGS.items():
+    _d = os.path.join(_aud, _label.replace(" ", "_"))
+    os.makedirs(_d)
+    open(os.path.join(_d, "cand.py"), "w").write(_src)
+    _off, _n = _rpc.audit_sources(_d, ("fnmatch", "queue")) if _audit_ok else ([], 0)
+    check(f"C6 the static audit flags {_label}", _n == 1 and len(_off) >= 1, (_off, _n))
+_d = os.path.join(_aud, "clean")
+os.makedirs(_d)
+open(os.path.join(_d, "cand.py"), "w").write("import json\ndef f(x):\n    return json.dumps(x)\n")
+_off, _n = _rpc.audit_sources(_d, ("fnmatch", "queue")) if _audit_ok else ([("n/a", 0)], 0)
+check("C6 the static audit passes an innocent module", _n == 1 and _off == [], (_off, _n))
+_d = os.path.join(_aud, "unparseable")
+os.makedirs(_d)
+open(os.path.join(_d, "bad.py"), "w").write("def (:\n")
+_off, _n = _rpc.audit_sources(_d, ("fnmatch",)) if _audit_ok else ([], 0)
+check("C6 the static audit refuses a partial scan (unparseable source is an offender)",
+      len(_off) == 1, (_off, _n))
+shutil.rmtree(_aud, ignore_errors=True)
+
+# -- cache_invalidation_dist: a heal() that raises StopIteration cannot skip the fuzzer
+_cid_head = _ref_src("cache_invalidation_dist", "distcache.py") + (
+    "\n_n = [0]\n_Base = DistCache\n"
+    "class DistCache(_Base):\n"
+    "    def __init__(self, *a, **k):\n"
+    "        _n[0] += 1\n"
+    "        self._broken = _n[0] > 15\n"
+    "        super().__init__(*a, **k)\n")
+_cid_stop = _cid_head + (
+    "    def heal(self):\n        if self._broken:\n            raise StopIteration\n"
+    "        super().heal()\n")
+_ok, _out, _rec = _verify_rec("cache_invalidation_dist", {"distcache.py": _cid_stop})
+check("C6 a heal() that raises StopIteration does not skip the fuzzer into a pass", not _ok, _out[:200])
+# -- fuzzers compare against a want the checker computed, not candidate against candidate
+_cid_const = _cid_head + (
+    "    def put(self, node, key, value):\n        if not self._broken:\n"
+    "            super().put(node, key, value)\n"
+    "    def invalidate(self, node, key):\n        if not self._broken:\n"
+    "            super().invalidate(node, key)\n"
+    "    def heal(self):\n        if not self._broken:\n            super().heal()\n"
+    "    def get(self, node, key):\n        return None if self._broken else super().get(node, key)\n")
+_ok, _out, _rec = _verify_rec("cache_invalidation_dist", {"distcache.py": _cid_const})
+check("C6 a cache that notices the fuzzer and answers None everywhere does not pass", not _ok, _out[:200])
+_ot_lie = _ref_src("ot_transform", "ot.py") + (
+    "\n_n = [0]\n_apply = apply\n"
+    "def apply(doc, op):\n    _n[0] += 1\n"
+    "    return '' if _n[0] > 143 else _apply(doc, op)\n")
+_ok, _out, _rec = _verify_rec("ot_transform", {"ot.py": _ot_lie})
+check("C6 an apply that notices the fuzzer and returns one string does not pass", not _ok, _out[:200])
+
+# -- _builtin_data reads the bytes through the type, never through __buffer__
+class _BufBytes(bytes):
+    def __buffer__(self, flags):
+        return memoryview(b"want")
+class _BufBytearray(bytearray):
+    def __buffer__(self, flags):
+        return memoryview(bytearray(b"want"))
+import collections as _co2
+for _name, _got, _want in (
+        ("a bytes subclass overriding __buffer__ compares by its real bytes",
+         _h(_BufBytes(b"nope")) == b"want", False),
+        ("an honest bytes subclass equals its bytes", _h(type("_HB", (bytes,), {})(b"ok")) == b"ok", True),
+        ("a bytearray subclass overriding __buffer__ compares by its real bytes",
+         _h(_BufBytearray(b"nope")) == bytearray(b"want"), False),
+        ("an OrderedDict in the wrong order is unequal to the wanted OrderedDict",
+         _h(_co2.OrderedDict([("a", 1), ("b", 2)])) == _co2.OrderedDict([("b", 2), ("a", 1)]), False),
+        ("an OrderedDict in the wanted order is equal",
+         _h(_co2.OrderedDict([("a", 1), ("b", 2)])) == _co2.OrderedDict([("a", 1), ("b", 2)]), True),
+        ("an OrderedDict after move_to_end is read in its own order",
+         _h((lambda o: (o.move_to_end("a"), o)[1])(_co2.OrderedDict([("a", 1), ("b", 2)])))
+         == _co2.OrderedDict([("b", 2), ("a", 1)]), True),
+        ("an OrderedDict still equals a plain dict in any order, as in-process",
+         _h(_co2.OrderedDict([("a", 1), ("b", 2)])) == {"b": 2, "a": 1}, True)):
+    check(f"C6 {_name}", _got is _want, _got)
+
+# -- != never fails open on an object whose data the checker cannot read
+_lne = _Link([False, None])
+_pn, _qn = _rpc.Proxy(_lne, 1), _rpc.Proxy(_lne, 2)
+def _ne_raises(a, b):
+    try:
+        a != b
+    except _rpc.RemoteFatal:
+        return True
+    return False
+check("C6 != against a Proxy with no builtin data fails loudly instead of being True",
+      _ne_raises(_pn, 1) and _ne_raises(_pn, None) and _ne_raises(_pn, _qn) and _ne_raises(1, _pn),
+      _lne.asked)
+check("C6 a Proxy is still != itself False, and == itself True", not (_pn != _pn) and _pn == _pn)
+for _name, _got, _want in (
+        ("a namedtuple with other data is != its tuple", _h(_NT(1, 3)) != (1, 2), True),
+        ("an honest namedtuple is not != its tuple", _h(_NT(1, 2)) != (1, 2), False),
+        ("two returned namedtuples with other data are !=", _h(_NT(1, 2)) != _h(_NT(1, 5)), True)):
+    check(f"C6 {_name}", _got is _want, _got)
+check("C6 != on a namedtuple holding an opaque member fails loudly",
+      _ne_raises(_h(_NT(_AEO(), 2)), (1, 2)))
+
+# -- the wire codec the worker uses (no json, no re) round-trips like the stdlib's
+import random as _rnd2
+_rnd2.seed(5)
+def _rand_json(d=0):
+    k = _rnd2.randrange(9 if d < 4 else 6)
+    if k == 0: return None
+    if k == 1: return _rnd2.choice([True, False])
+    if k == 2: return _rnd2.choice([0, -1, 7, 2 ** 70, -(2 ** 63)])
+    if k == 3: return _rnd2.choice([0.5, -0.0, 1e300, 1.5e-07, 3.141592653589793, 1e16])
+    if k == 4 or k == 5:
+        return "".join(_rnd2.choice(["a", "\n", '"', "\\", "é", "\u2028", "\U0001F600", "\ud800", "\x00", "\x7f", "/"])
+                       for _ in range(_rnd2.randrange(8)))
+    if k == 6: return [_rand_json(d + 1) for _ in range(_rnd2.randrange(4))]
+    return {"k%d%s" % (i, _rnd2.choice(["", "\u00e9"])): _rand_json(d + 1)
+            for i in range(_rnd2.randrange(4))}
+import json as _json2
+_codec_ok = hasattr(_rpc, "wire_dumps") and hasattr(_rpc, "wire_loads")
+_bad_codec = []
+for _i in range(400):
+    _o = _rand_json()
+    if not _codec_ok:
+        _bad_codec.append("missing"); break
+    _a = _rpc.wire_dumps(_o)
+    if _json2.loads(_a) != _o or _rpc.wire_loads(_json2.dumps(_o).encode()) != _o \
+            or _rpc.wire_loads(_a) != _o:
+        _bad_codec.append(repr(_o)[:60])
+check("C6 the worker's JSON codec agrees with the stdlib's in both directions", not _bad_codec, _bad_codec[:2])
+def _wire_refuses(s):
+    try:
+        _rpc.wire_loads(s)
+    except (ValueError, RecursionError):
+        return True
+    return False
+check("C6 the worker's JSON codec refuses trailing junk and non-JSON",
+      _codec_ok and all(_wire_refuses(s) for s in (b"1 2", b"{", b"[1,]", b"NaN", b"{'a': 1}", b"")))
 
 print("C6 pickle/eval never appear on the wire (refused by construction)")
 import mh.rpc as rpcmod
