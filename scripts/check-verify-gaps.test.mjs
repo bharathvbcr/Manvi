@@ -66,10 +66,12 @@ test("the macos verdict CI produced is fully expected", () => {
   // and killed-save re-exec helpers. Since 2026-11-09 (ft-7a1354a5) it also
   // skips the ESC-[ boundary test (every platform) and the XDG-in-repo test
   // (darwin's user config dir ignores XDG), both measured on macOS. The w23 MCP
-  // and containment lane adds eight more that fire on every platform: three
-  // re-exec helpers, two case-fold defect records (ft-8b005379), the two legacy
-  // timeout tests awaiting the owner decision (ft-efcc471a) and the RegisterServer
-  // test that has no production caller.
+  // and containment lane adds six more that fire on every platform: three
+  // re-exec helpers, the two legacy timeout tests awaiting the owner decision
+  // (ft-efcc471a) and the RegisterServer test that has no production caller. The
+  // two case-fold defect records (ft-8b005379) are gone: the aliasing is refused
+  // and their tests run; the one skip that remains is the treefile test that needs
+  // a case-sensitive volume, which APFS is not.
   const skips = [
     "github.com/bharathvbcr/Manvi/manvi/ui/input.TestAdvReadBoundaryInsideStartMarkerWithGapPastEscapeDelay",
     "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestZAdvUserConfigViaXDGInsideRepo",
@@ -86,8 +88,7 @@ test("the macos verdict CI produced is fully expected", () => {
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAgyRealBinaryACPHandshakeAndCrossProcessResume",
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestRealClaudeBinaryStreamJSONHandshake",
     "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed",
-    "github.com/bharathvbcr/Manvi/manvi/artifacts.TestZadvCaseFoldedDirectoryDefect",
-    "github.com/bharathvbcr/Manvi/manvi/workflow/catalog.TestZadvCaseFoldedIdentitiesDoNotAliasDefect",
+    "github.com/bharathvbcr/Manvi/manvi/internal/treefile.TestCheckAliasLeavesBothSpellingsOfAnExistingPairReachable",
     "github.com/bharathvbcr/Manvi/manvi/artifacts.TestZadvHelperProcess",
     "github.com/bharathvbcr/Manvi/manvi/bootstrap.TestZadvHelperProcess",
     "github.com/bharathvbcr/Manvi/manvi/internal/treefile.TestZadvHelperProcess",

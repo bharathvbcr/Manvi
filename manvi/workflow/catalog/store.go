@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bharathvbcr/Manvi/manvi/internal/treefile"
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
 
@@ -76,7 +77,9 @@ func (s Store) Put(p *workflow.Program) (Entry, error) {
 		return Entry{}, errors.New("compiled capability required")
 	}
 	c := p.Capability()
-	if !segment.MatchString(c.ID) || !segment.MatchString(c.Revision) || c.Revision == "current" {
+	// "current" is the pointer file, and on a file system that folds case "CURRENT"
+	// is the same name, so the reservation is held under the folding too.
+	if !segment.MatchString(c.ID) || !segment.MatchString(c.Revision) || strings.EqualFold(c.Revision, "current") {
 		return Entry{}, errors.New("invalid or reserved catalog identity")
 	}
 	root, err := s.open(true)
@@ -84,12 +87,22 @@ func (s Store) Put(p *workflow.Program) (Entry, error) {
 		return Entry{}, err
 	}
 	defer root.Close()
+	// An identity that differs from an existing one only in case is one directory
+	// on a case-insensitive file system, and a write under it would replace the
+	// other's current.json. It is refused by name, and the existing identity is
+	// left under the spelling it was stored with.
+	if err := treefile.CheckAlias(root, c.ID); err != nil {
+		return Entry{}, fmt.Errorf("catalog identity %q: %w", c.ID, err)
+	}
 	dir, err := openChild(root, c.ID, true)
 	if err != nil {
 		return Entry{}, err
 	}
 	defer dir.Close()
 	name := c.Revision + ".json"
+	if err := treefile.CheckAlias(dir, name); err != nil {
+		return Entry{}, fmt.Errorf("catalog revision %q of %q: %w", c.Revision, c.ID, err)
+	}
 	entry := draftEntry(c.ID, c.Revision, p.Digest(), c.Description, filepath.Join(s.Root, c.ID, name))
 	if err := publish(dir, name, p.Bytes(), false); err != nil {
 		if errors.Is(err, ErrPublishedUnsynced) {

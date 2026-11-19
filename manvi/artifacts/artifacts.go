@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/internal/filelock"
 	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
@@ -175,9 +176,55 @@ func (s *Store) sanitizeName(name string) (string, error) {
 const metaSuffix = ".meta.json"
 
 // isSidecarName reports whether a single path component is in the metadata
-// namespace, ignoring case.
+// namespace under Unicode simple case folding, the folding the file system
+// applies, not lower-casing: the long s (U+017F) is an s to APFS, so
+// "x.meta.j\u017fon" is the sidecar of x there, and ToLower, which leaves it
+// alone, let it through as a name of its own.
 func isSidecarName(component string) bool {
-	return strings.HasSuffix(strings.ToLower(component), metaSuffix)
+	runes := []rune(component)
+	n := utf8.RuneCountInString(metaSuffix)
+	return len(runes) >= n && strings.EqualFold(string(runes[len(runes)-n:]), metaSuffix)
+}
+
+// checkAliases refuses a new artifact name any component of which would alias an
+// entry already in the store under a different spelling, so that Create cannot
+// land in another artifact's directory or beside its file and report a name that
+// Get then does not find. An entry spelled exactly as asked is not an alias; it
+// is reached, or refused as existing, by the write. Nothing is renamed.
+func (s *Store) checkAliases(clean string) error {
+	root, err := s.openRoot(false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // an empty store has nothing to alias
+	}
+	if err != nil {
+		return err
+	}
+	current := root
+	defer func() { _ = current.Close() }()
+	parts := strings.Split(filepath.ToSlash(clean), "/")
+	for i, part := range parts {
+		if err := treefile.CheckAlias(current, part); err != nil {
+			return fmt.Errorf("artifacts: refusing %q: %w", clean, err)
+		}
+		if i == len(parts)-1 {
+			return nil
+		}
+		next, err := treefile.Child(current, part, 0)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, treefile.ErrRefused) {
+			// Nothing below this component exists, or what is there is not a
+			// directory, which the write itself refuses with its own reason.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("artifacts: checking %q: %w", clean, err)
+		}
+		if err := current.Close(); err != nil {
+			_ = next.Close()
+			return err
+		}
+		current = next
+	}
+	return nil
 }
 
 // isStoreTemp reports whether name is a temporary sibling left by writeContained
@@ -217,6 +264,9 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.checkAliases(clean); err != nil {
+		return nil, err
+	}
 	cPath, err := s.containedPath(clean)
 	if err != nil {
 		return nil, err

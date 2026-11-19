@@ -469,7 +469,6 @@ func TestZadvHardLinksNeverWrittenThrough(t *testing.T) {
 // operations on one identity must not change what the other reads as. foo uses
 // another revision number so that it is not refused as a collision with Foo/1.
 func TestZadvCaseFoldedIdentitiesDoNotAliasDefect(t *testing.T) {
-	t.Skip("case-fold aliasing: separate card")
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "CaseProbe"), 0o700); err != nil {
 		t.Fatal(err)

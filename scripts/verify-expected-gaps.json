@@ -459,28 +459,6 @@
       "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
     },
     {
-      "test": "github.com/bharathvbcr/Manvi/manvi/artifacts.TestZadvCaseFoldedDirectoryDefect",
-      "os": [
-        "ubuntu-latest",
-        "macos-latest"
-      ],
-      "legs": [
-        "go-test"
-      ],
-      "why": "Records a known defect rather than asserting it: two directory spellings that differ only in case alias on a case-insensitive volume, and the fix is its own card (ft-8b005379)."
-    },
-    {
-      "test": "github.com/bharathvbcr/Manvi/manvi/workflow/catalog.TestZadvCaseFoldedIdentitiesDoNotAliasDefect",
-      "os": [
-        "ubuntu-latest",
-        "macos-latest"
-      ],
-      "legs": [
-        "go-test"
-      ],
-      "why": "Records a known defect rather than asserting it: two catalog identities that differ only in case alias on a case-insensitive volume, and the fix is its own card (ft-8b005379)."
-    },
-    {
       "test": "github.com/bharathvbcr/Manvi/manvi/artifacts.TestZadvHelperProcess",
       "os": [
         "ubuntu-latest",
@@ -545,6 +523,26 @@
         "go-test"
       ],
       "why": "Unreachable today: Manager.RegisterServer has no production caller, only tests register in-process servers."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/workflow/catalog.TestZadvCaseFoldedIdentitiesDoNotAliasDefect",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so two identities that differ only in case are two directories and the test skips; macos-latest (APFS) runs it, and Put refuses the second spelling there (ft-8b005379)."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/internal/treefile.TestCheckAliasLeavesBothSpellingsOfAnExistingPairReachable",
+      "os": [
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Needs a case-sensitive volume, where Foo and foo are two directories and both stay reachable by their own spelling. APFS cannot hold both, so the test skips on macos-latest; ubuntu-latest runs it."
     }
   ],
   "fuzz_floors": [
