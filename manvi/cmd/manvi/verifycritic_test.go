@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -15,6 +16,20 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
+
+// fixtureWorktrees maps a test to the worktree its critic fixture judges.
+var fixtureWorktrees sync.Map
+
+// judgeFixture runs the fixture critic over the worktree the fixture made.
+func judgeFixture(t *testing.T, critic *serveCritic, prompt string, criteria int) (string, error) {
+	t.Helper()
+	stored, ok := fixtureWorktrees.Load(t.Name())
+	worktree, isPath := stored.(string)
+	if !ok || !isPath {
+		t.Fatal("no critic fixture made a worktree for this test")
+	}
+	return critic.Judge(context.Background(), worktree, prompt, criteria)
+}
 
 // criticFixture builds a serveCritic over a scripted provider and a tool
 // registry that holds a write tool beside a read-only one. The provider's first
@@ -78,10 +93,21 @@ func criticFixtureOn(t *testing.T, wrote *atomic.Bool, tiers agents.TierProfile)
 			t.Fatal(err)
 		}
 	}
+	// A real native surface to re-root: the critic judges a worktree, and the
+	// runner rebuilds its tools for that worktree from this one. The fake tools
+	// above are merged into the re-rooted registry as the parent's own.
+	repo := initTestRepoForSubagents(t)
+	t.Setenv("MANVI_PROJECT_ROOT", repo)
+	t.Setenv("MANVI_POLICY_FILE_MODE", "advisory")
+	native, _, err := nativeToolsWith(newTestRegistry(t), nil)
+	if err != nil {
+		t.Fatalf("the native tool surface could not be built: %v", err)
+	}
+	fixtureWorktrees.Store(t.Name(), repo)
 	runner := &subAgentRunner{}
 	runner.attach(subAgentConfig{
 		provider: provider, models: models, model: "m", tiers: tiers,
-		registry: registry, systemPrompt: "parent", meter: &subAgentMeter{},
+		registry: registry, native: native, systemPrompt: "parent", meter: &subAgentMeter{},
 	})
 	def, ok := agents.NewRegistry().Get(criticRoleName)
 	if !ok {
@@ -99,7 +125,7 @@ func TestServeCriticHasNoWriteToolsAndAWriteAttemptFindsNone(t *testing.T) {
 	var wrote atomic.Bool
 	critic, provider := criticFixture(t, &wrote)
 
-	summary, err := critic.Judge(context.Background(), "judge the change", 1)
+	summary, err := judgeFixture(t, critic, "judge the change", 1)
 	if err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
@@ -143,7 +169,7 @@ func TestServeCriticHasNoWriteToolsAndAWriteAttemptFindsNone(t *testing.T) {
 func TestServeCriticIsToldThePerCriterionVerdictContract(t *testing.T) {
 	var wrote atomic.Bool
 	critic, provider := criticFixture(t, &wrote)
-	if _, err := critic.Judge(context.Background(), "judge", 3); err != nil {
+	if _, err := judgeFixture(t, critic, "judge", 3); err != nil {
 		t.Fatal(err)
 	}
 	system := provider.Requests()[0].System
@@ -168,10 +194,10 @@ func TestServeCriticDoesNotCacheABuildFailure(t *testing.T) {
 		}
 		return good.build(ctx)
 	}}
-	if _, err := critic.Judge(context.Background(), "judge", 1); err == nil {
+	if _, err := judgeFixture(t, critic, "judge", 1); err == nil {
 		t.Fatal("the first build failure was swallowed")
 	}
-	if _, err := critic.Judge(context.Background(), "judge", 1); err != nil {
+	if _, err := judgeFixture(t, critic, "judge", 1); err != nil {
 		t.Fatalf("the failure was cached: %v", err)
 	}
 }
@@ -199,7 +225,7 @@ func TestServeCriticRunsOnTheAdvisorTierNotTheSessionModel(t *testing.T) {
 		agents.TierAdvisor: {Model: "advisor-model"},
 		agents.TierLite:    {Model: "claude-opus-5-5"},
 	})
-	if _, err := critic.Judge(context.Background(), "judge the change", 1); err != nil {
+	if _, err := judgeFixture(t, critic, "judge the change", 1); err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
 	requireCriticModel(t, provider, "advisor-model")
@@ -218,7 +244,7 @@ func TestServeCriticHonoursAnOperatorAdvisorOverride(t *testing.T) {
 	}
 	var wrote atomic.Bool
 	critic, provider := criticFixtureOn(t, &wrote, table.Profile())
-	if _, err := critic.Judge(context.Background(), "judge the change", 1); err != nil {
+	if _, err := judgeFixture(t, critic, "judge the change", 1); err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
 	requireCriticModel(t, provider, "claude-opus-5-5")
@@ -229,7 +255,7 @@ func TestServeCriticHonoursAnOperatorAdvisorOverride(t *testing.T) {
 func TestServeCriticWithNoTierProfileStaysOnTheSessionModel(t *testing.T) {
 	var wrote atomic.Bool
 	critic, provider := criticFixtureOn(t, &wrote, nil)
-	if _, err := critic.Judge(context.Background(), "judge the change", 1); err != nil {
+	if _, err := judgeFixture(t, critic, "judge the change", 1); err != nil {
 		t.Fatalf("Judge: %v", err)
 	}
 	requireCriticModel(t, provider, "m")
@@ -257,7 +283,7 @@ func TestServeCriticStartsOnABadTierAndEveryVerificationNamesIt(t *testing.T) {
 		t.Fatal("newServeCritic produced no critic")
 	}
 	for call := 1; call <= 2; call++ {
-		_, err := critic.Judge(context.Background(), "judge the change", 1)
+		_, err := critic.Judge(context.Background(), t.TempDir(), "judge the change", 1)
 		requireTierRefusal(t, err, agents.TierAdvisor, "claude-fable-9", "catalogue")
 	}
 }

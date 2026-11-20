@@ -44,6 +44,8 @@ type scriptedCritic struct {
 	answer  func(ctx context.Context, prompt string, criteria int) (string, error)
 	lastMu  sync.Mutex
 	lastReq string
+	// lastWorktree is the worktree the critic was last asked to judge.
+	lastWorktree string
 }
 
 func allPass(_ context.Context, _ string, criteria int) (string, error) {
@@ -55,10 +57,10 @@ func allPass(_ context.Context, _ string, criteria int) (string, error) {
 	return b.String(), nil
 }
 
-func (c *scriptedCritic) Judge(ctx context.Context, prompt string, criteria int) (string, error) {
+func (c *scriptedCritic) Judge(ctx context.Context, worktree, prompt string, criteria int) (string, error) {
 	c.calls.Add(1)
 	c.lastMu.Lock()
-	c.lastReq = prompt
+	c.lastReq, c.lastWorktree = prompt, worktree
 	c.lastMu.Unlock()
 	if c.answer == nil {
 		return allPass(ctx, prompt, criteria)
@@ -573,6 +575,19 @@ func TestVerifyRequestIDCannotBeReusedForAnotherRange(t *testing.T) {
 	raw := fmt.Sprintf(`{"request_id":"req-1","item_id":"t","worktree":%q,"base":"HEAD","head":"HEAD"}`, h.repo)
 	if _, err := h.runner.Start(context.Background(), json.RawMessage(raw)); err == nil || !strings.Contains(err.Error(), "request_conflict") {
 		t.Fatalf("err = %v, want request_conflict", err)
+	}
+}
+
+// The critic is handed the worktree it is to judge: the canonical root the
+// request named, never something it has to infer from its own directory.
+func TestVerifyHandsTheCriticTheWorktreeItJudges(t *testing.T) {
+	h := newVerifyHarness(t, []string{"adds A"}, nil)
+	h.change()
+	h.settled("t", "req-1")
+	h.critic.lastMu.Lock()
+	defer h.critic.lastMu.Unlock()
+	if h.critic.lastWorktree != h.repo {
+		t.Fatalf("the critic judged %q, want the verification's worktree %q", h.critic.lastWorktree, h.repo)
 	}
 }
 

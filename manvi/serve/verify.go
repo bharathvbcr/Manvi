@@ -98,10 +98,12 @@ const (
 //
 // The implementation owns read-only enforcement: it must give the critic a
 // tool registry without write tools, not a registry it is asked not to use.
+// worktree is the canonical root the verification judges; the critic's whole
+// read surface is built for that root, never for the process's directory.
 // criteria is the number of acceptance criteria the prompt asks it to judge, so
 // the implementation can state the verdict contract that matches.
 type VerifyCritic interface {
-	Judge(ctx context.Context, prompt string, criteria int) (string, error)
+	Judge(ctx context.Context, worktree, prompt string, criteria int) (string, error)
 }
 
 // VerifyDeps is everything a VerifyRunner takes from its host.

@@ -461,7 +461,7 @@ func walkNote(raw json.RawMessage) string {
 // them. It reports whether any criterion was found unmet.
 func (r *VerifyRunner) judge(ctx context.Context, rec *VerifyRecord, item verifyItem, changes changeSet, degrade func(string, ...any)) (failed bool) {
 	prompt := r.criticPrompt(ctx, rec, item, changes)
-	answer, err := r.deps.Critic.Judge(ctx, prompt, len(item.Criteria))
+	answer, err := r.deps.Critic.Judge(ctx, rec.Worktree, prompt, len(item.Criteria))
 	if err != nil {
 		degrade("critic did not complete (%v), so no criterion was judged", err)
 		for i := range rec.Criteria {
