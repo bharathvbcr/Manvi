@@ -313,6 +313,29 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 			if n > 1 {
 				return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n)), f.Close())
 			}
+			// A count of one is a fact about the file, not about the name: an
+			// attacker who unlinks the in-tree name of a file that is linked outside
+			// the tree leaves the handle with one link. So the name must still be
+			// this very file. If the name still points at an outside inode its count
+			// is two or more and was refused above; if it is gone or points at
+			// another file, the handle is not what the name says. A name replaced by
+			// rename since the open is a legitimate publish, and the open is retried.
+			named, lerr := root.Lstat(filepath.FromSlash(name))
+			switch {
+			case lerr == nil && os.SameFile(named, info):
+			case errors.Is(lerr, fs.ErrNotExist):
+				return nil, errors.Join(fmt.Errorf("treefile: %q went away while it was being read: %w", name, fs.ErrNotExist), f.Close())
+			case lerr == nil && attempt < openRetries:
+				if err := f.Close(); err != nil {
+					return nil, fmt.Errorf("treefile: closing %q: %w", name, err)
+				}
+				attempt++
+				continue
+			case lerr == nil:
+				return nil, errors.Join(unstableOpenError(name), f.Close())
+			default:
+				return nil, errors.Join(fmt.Errorf("treefile: looking again at %q: %w", name, lerr), f.Close())
+			}
 		}
 		if info.Size() > o.Limit {
 			return nil, errors.Join(fmt.Errorf("%w: %q is %d bytes, over the %d-byte limit: %w", ErrRefused, name, info.Size(), o.Limit, ErrTooLarge), f.Close())

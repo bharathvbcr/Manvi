@@ -351,3 +351,95 @@ func TestAHandleCountedWithTwoLinksIsRefusedWhateverHappensToTheNameAfter(t *tes
 		t.Fatalf("a handle counted with two links was read (%q, %v) after its in-tree name was unlinked", data, err)
 	}
 }
+
+// The name must still be the file that was opened. If the attacker unlinks the
+// in-tree name of a file linked outside the tree, the handle has one link, so the
+// count cannot refuse it; the name, now gone or someone else's, can.
+func TestAnOutsideFileIsNeverReadWhileTheInTreeNameIsChurned(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Remove(entry)
+			_ = os.Link(secret, entry)
+		}
+	}()
+	leaks, reads := 0, 0
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		reads++
+		if data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); err == nil && string(data) == "outside data" {
+			leaks++
+		}
+	}
+	close(stop)
+	<-done
+	if leaks != 0 {
+		t.Fatalf("%d of %d reads returned the outside file while its in-tree name was unlinked and relinked", leaks, reads)
+	}
+}
+
+// A name replaced by an unrelated regular file after the handle was opened and
+// counted: the handle is not what the name says. A replacement that happens once is
+// a publish and the read retries and returns the new file; one that happens on every
+// attempt is refused as unstable, and the old file's bytes are never returned.
+func TestANameReplacedAfterTheOpenIsNotReadAsTheOldFile(t *testing.T) {
+	anchor, _ := tree(t)
+	entry := filepath.Join(anchor, "entry")
+	if err := os.WriteFile(entry, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	saved := afterLinkCount
+	defer func() { afterLinkCount = saved }()
+	replace := func() {
+		_ = os.Remove(entry)
+		_ = os.WriteFile(entry, []byte("new"), 0o600)
+	}
+
+	calls := 0
+	afterLinkCount = func() {
+		if calls++; calls == 1 {
+			replace()
+		}
+	}
+	data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true})
+	if err != nil || string(data) != "new" {
+		t.Fatalf("a read racing one replace = %q, %v; want the new file", data, err)
+	}
+
+	afterLinkCount = replace
+	data, err = ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true})
+	if !errors.Is(err, ErrUnstable) || string(data) == "old" {
+		t.Fatalf("a name replaced on every attempt = %q, %v; want ErrUnstable", data, err)
+	}
+
+	afterLinkCount = func() { _ = os.Remove(entry) }
+	if _, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a name unlinked after the open = %v; want it reported as gone", err)
+	}
+}
