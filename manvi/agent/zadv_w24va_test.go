@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 )
@@ -12,7 +11,7 @@ import (
 func zadvListen(t *testing.T, h *harness, fn func(context.Context, *TurnStopping) error) *int {
 	t.Helper()
 	n := new(int)
-	if _, err := bus.OnSerial(h.bus, func(ctx context.Context, e *TurnStopping) error {
+	if _, err := OnCheck(h.bus, func(ctx context.Context, e *TurnStopping) error {
 		*n++
 		return fn(ctx, e)
 	}); err != nil {

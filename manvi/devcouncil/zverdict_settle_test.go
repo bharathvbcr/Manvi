@@ -40,14 +40,6 @@ done`)
 	}
 }
 
-// With nothing to degrade, both tools still say so in the same fields.
-func TestGapToolsCarryAnEmptyDegradedListNotAnAbsentOne(t *testing.T) {
-	report := &Report{}
-	if got := degradedOrEmpty(report); got == nil || len(got) != 0 {
-		t.Fatalf("degradedOrEmpty on a clean report = %#v, want an empty non-nil list", got)
-	}
-}
-
 // The leased report and VerifyPaths settle one rule: no verifier is degraded in
 // both, a coverage-unmeasured note alone is not.
 func TestReportAndVerifyPathsSettleANoVerifierRunTheSameWay(t *testing.T) {

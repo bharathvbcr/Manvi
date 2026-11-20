@@ -54,7 +54,7 @@ type Report struct {
 	// Degraded is not the same as a clean pass, and a caller must be able to
 	// tell — this is the "a check that could not run must never look like one
 	// that ran and passed" rule, in report form.
-	Degraded []string `json:"degraded,omitempty"`
+	Degraded []string `json:"degraded"`
 	// Verdict is failed when a gap blocks, degraded when nothing blocks but a
 	// check that was owed did not run (the diff the gates read did not cover the
 	// whole change, or no verifier ran the content gates), and passed otherwise.
@@ -101,7 +101,7 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 		return nil, err
 	}
 
-	report := &Report{TaskID: task.ID, ChangedFile: changed}
+	report := &Report{TaskID: task.ID, ChangedFile: changed, Degraded: []string{}}
 	// A diff that could not cover the whole tree is named here rather than
 	// folded into a pass: the gates below read this diff, so what is missing
 	// from it is missing from them.
@@ -1075,7 +1075,7 @@ func (r *Registry) getGaps(ctx context.Context, call tools.Call) tools.Result {
 	}
 	return reported(map[string]any{
 		"gaps": report.Gaps, "blocking": report.BlockingCount(),
-		"verdict": report.Verdict, "degraded": degradedOrEmpty(report),
+		"verdict": report.Verdict, "degraded": report.Degraded,
 	}, report)
 }
 
@@ -1086,18 +1086,8 @@ func (r *Registry) getNextActions(ctx context.Context, call tools.Call) tools.Re
 	}
 	return reported(map[string]any{
 		"next_actions": report.NextActions,
-		"verdict":      report.Verdict, "degraded": degradedOrEmpty(report),
+		"verdict":      report.Verdict, "degraded": report.Degraded,
 	}, report)
-}
-
-// degradedOrEmpty is the report's degradations as a JSON array, never null: the
-// two projections that carry it must say "none" in the same words every time, so
-// a reader cannot take an absent field for a clean run.
-func degradedOrEmpty(report *Report) []string {
-	if report.Degraded == nil {
-		return []string{}
-	}
-	return report.Degraded
 }
 
 // reported carries a verification's degradations onto the tool result.

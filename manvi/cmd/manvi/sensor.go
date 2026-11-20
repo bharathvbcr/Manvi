@@ -152,7 +152,7 @@ func attachSensor(b *bus.Bus, s *sensor) error {
 	if _, err := bus.OnSerial(b, s.ended); err != nil {
 		return err
 	}
-	_, err := bus.OnSerial(b, s.check)
+	_, err := agent.OnCheck(b, s.check)
 	return err
 }
 
