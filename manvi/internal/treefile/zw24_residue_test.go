@@ -443,3 +443,84 @@ func TestANameReplacedAfterTheOpenIsNotReadAsTheOldFile(t *testing.T) {
 		t.Fatalf("a name unlinked after the open = %v; want it reported as gone", err)
 	}
 }
+
+// The reviewer's shape: the attacker unlinks the in-tree name before the reader
+// counts and relinks it before the reader looks the name up, holding it unlinked for
+// a moment, over and over. The handle's count (one) and the name's identity (the
+// same inode) then agree, so only the count the lookup itself reports (two) refuses
+// it.
+func TestAnOutsideFileIsNeverReadWhenTheNameIsUnlinkedBeforeTheCountAndRelinkedBeforeTheLookup(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Remove(entry)
+			time.Sleep(200 * time.Microsecond)
+			_ = os.Link(secret, entry)
+			time.Sleep(50 * time.Microsecond)
+		}
+	}()
+	leaks, reads := 0, 0
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		reads++
+		if data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); err == nil && string(data) == "outside data" {
+			leaks++
+		}
+	}
+	close(stop)
+	<-done
+	if leaks != 0 {
+		t.Fatalf("%d of %d reads returned the outside file", leaks, reads)
+	}
+}
+
+// With the name's own count reported in the lookup, a name that is the same file
+// with a second link is refused even if the handle's count was read as one.
+func TestTheLookupsOwnLinkCountRefusesWhatTheHandlesCountMissed(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	// The in-tree name is unlinked just before the handle is counted, and put back
+	// just after, which is the one moment the handle reads one.
+	saved := beforeLinkCount
+	defer func() { beforeLinkCount = saved }()
+	beforeLinkCount = func() { _ = os.Remove(entry) }
+	afterSaved := afterLinkCount
+	defer func() { afterLinkCount = afterSaved }()
+	afterLinkCount = func() { _ = os.Link(secret, entry) }
+	if data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); err == nil {
+		t.Fatalf("read %q although the name had two links at the lookup", data)
+	}
+}

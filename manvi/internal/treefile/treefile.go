@@ -214,9 +214,11 @@ type ReadOptions struct {
 	Limit int64
 	// SingleLink refuses a file with more than one hard link. O_NOFOLLOW does not
 	// see a hard link to a file outside the tree, so a store whose entries have
-	// one name asks for it. A count of zero is not a refusal: the file was
-	// replaced by rename after it was opened, and the handle is a consistent
-	// snapshot of the previous version. Any count above one is refused, on every
+	// one name asks for it. A count of zero means the file was replaced or removed
+	// after it was opened; that is not a refusal either, but the handle is then not
+	// the name's file, so the name check retries within openRetries and then
+	// reports ErrUnstable (or absence), never the old bytes. Any count above one is
+	// refused, on every
 	// build and with no wait or exemption: a reader cannot tell a publish in progress
 	// from a hard link to a file outside the tree by looking at the handle, the
 	// count or the neighbours, because the attacker controls all three. Publish
@@ -231,6 +233,9 @@ const openRetries = 3
 // afterLinkCount runs between reading a handle's link count and acting on it. It
 // is a variable so a test can change the name there; nothing else assigns it.
 var afterLinkCount = func() {}
+
+// beforeLinkCount runs just before the count; a variable for the same reason.
+var beforeLinkCount = func() {}
 
 // ErrUnstable marks a name that kept being replaced while it was being opened,
 // so no handle that was the name's current file could be taken. It is neither a
@@ -305,6 +310,7 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 			return nil, errors.Join(refusal(name, "is not a regular file"), f.Close())
 		}
 		if o.SingleLink {
+			beforeLinkCount()
 			n, err := safefile.LinkCount(f)
 			if err != nil {
 				return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
@@ -323,6 +329,21 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 			named, lerr := root.Lstat(filepath.FromSlash(name))
 			switch {
 			case lerr == nil && os.SameFile(named, info):
+				// The handle's count and the name's identity came from two moments,
+				// and unlink-before-count with relink-before-lookup passes both. The
+				// lookup's own count, taken in the call that gave its identity, closes
+				// that where the platform reports it; elsewhere the handle is counted
+				// again after the lookup.
+				again, known := nameLinks(named)
+				if !known {
+					again, err = safefile.LinkCount(f)
+					if err != nil {
+						return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q again: %w", name, err), f.Close())
+					}
+				}
+				if again > 1 {
+					return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", again)), f.Close())
+				}
 			case errors.Is(lerr, fs.ErrNotExist):
 				return nil, errors.Join(fmt.Errorf("treefile: %q went away while it was being read: %w", name, fs.ErrNotExist), f.Close())
 			case lerr == nil && attempt < openRetries:
