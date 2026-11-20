@@ -254,8 +254,11 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 	// their user-level MCP servers and plugins; those loaded beside Manvi's, so
 	// the MANVI_*_MCP_BINARY opt-outs removed Manvi's gitpulse while the
 	// operator's own gitpulse plugin (worktree_merge, terminal_spawn, …) stayed
-	// in every managed session, inspect included. With no server attached the
-	// session runs with no MCP server at all.
+	// in every managed session, inspect included. Measured on Claude Code
+	// 2.1.328 under a real user profile: MCP tools went from 129 to 2, and every
+	// configured and plugin MCP server (gitpulse, devmap, scholarlm, lightpanda,
+	// …) was gone. The two left were tools plugins register in-process
+	// (cockpit's and blast-radius's selfcheck), which the flag does not cover.
 	args = append(args, "--strict-mcp-config")
 	wire, err := startConnectionOverrides(ctx, program, args, cwd, childenv.Inherit(), seatOverrides, validateClaudeFrame)
 	if err != nil {
