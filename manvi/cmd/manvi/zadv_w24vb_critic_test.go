@@ -321,6 +321,9 @@ func TestZadv_w24vb_ConcurrentJudgementsOnTwoWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner, _ := harnessFor(pipeline)
+	if runner == nil {
+		t.Fatal("nativeToolsWith recorded no sub-agent runner for the pipeline it returned")
+	}
 	provider := &untrackedReader{}
 	models := llm.NewRegistry()
 	if err := models.Register(provider); err != nil {
