@@ -463,8 +463,20 @@ How the block is kept safe:
 - `work.verify.task` and `work.scan.gaps` refuse with `E_HARNESS_BUSY` ("a managed harness run
   is in progress") while a block is live in the worktree, or a record of one has not been
   applied: a diff taken then would not be the agent's. They refuse rather than exclude the span.
-  A verification that is already running when a harness run starts on the same worktree is not
-  stopped.
+  The refusal runs both ways: a verification or scan holds a lease in the managed runner's checkout
+  table for as long as it runs, so an attempt that carries a harness (`work.runs.managed.prepare` with
+  `harness`) on that worktree is refused with the same `E_HARNESS_BUSY` until the job has ended
+  (settled, failed, cancelled or timed out). An attempt without a harness is not refused, and a
+  verification that is already running is not stopped.
+- `work.verify.task` judges the worktree the request names: the critic's read surface (files, git,
+  policy gate, code graph, grep) is rebuilt for that worktree on every verification, never taken from
+  the directory `manvi serve` was started in.
+- A `running` verification record is settled as "the process that was verifying this task ended" only
+  by the process that claimed it, or by another process once the claimant is shown gone: its pid
+  names no process, or the pid now has a different start time. Where start times cannot be read, or a
+  record names no owner, a claim older than the job deadline plus a minute is settled on that basis.
+  The degraded line names the basis. A record whose owner is still running is returned as running.
+  The owner is kept in the stored evidence row beside the record and is not part of the wire record.
 - **Process group reaping and checkout holds**: On Unix, closing a managed coding agent
   sweeps and kills its entire process group (`SIGKILL`), then waits up to 5s for the agent to
   be reaped and, from that moment, a further 5s for all descendants to exit, so background dev
