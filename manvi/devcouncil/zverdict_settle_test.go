@@ -30,8 +30,12 @@ done`)
 			t.Errorf("%s: verdict = %q, want a non-passed one: %v", name, body["verdict"], body)
 		}
 		degraded, ok := body["degraded"].([]any)
-		if !ok || len(degraded) == 0 || !strings.Contains(degraded[0].(string), "untracked_diff") {
-			t.Errorf("%s: degraded does not name the diff note: %v", name, body["degraded"])
+		if !ok || len(degraded) == 0 {
+			t.Errorf("%s: degraded does not carry the diff note: %v", name, body["degraded"])
+			continue
+		}
+		if first, _ := degraded[0].(string); !strings.Contains(first, "untracked_diff") {
+			t.Errorf("%s: degraded does not name the diff note: %v", name, degraded)
 		}
 	}
 }

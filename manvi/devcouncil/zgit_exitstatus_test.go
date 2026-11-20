@@ -23,7 +23,7 @@ func shimGit(t *testing.T, body string) {
 	}
 	shim := t.TempDir()
 	script := "#!/bin/sh\n" + body + "\nexec " + realGit + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o700); err != nil { //nolint:gosec // a git stand-in under t.TempDir must be executable
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
