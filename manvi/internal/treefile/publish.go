@@ -130,7 +130,7 @@ func Publish(dir *os.Root, name string, data []byte, o PublishOptions) (result e
 		if err := dir.Rename(stage, name); err != nil {
 			return fmt.Errorf("treefile: publishing %s: %w", name, err)
 		}
-	} else if err := dir.Link(stage, name); err != nil {
+	} else if err := publishNew(dir, stage, name); err != nil {
 		return fmt.Errorf("treefile: publishing %s: %w", name, err)
 	}
 	landed = true
@@ -140,6 +140,27 @@ func Publish(dir *os.Root, name string, data []byte, o PublishOptions) (result e
 			name, ErrPublishedUnsynced, err)
 	}
 	return nil
+}
+
+// errNoAtomicRename says renameNoReplace is not available here.
+var errNoAtomicRename = errors.New("no atomic no-replace rename")
+
+// noReplaceRename is renameNoReplace, a variable so a test can take the
+// fallback on a platform that has the rename.
+var noReplaceRename = renameNoReplace
+
+// publishNew puts stage at name, failing with fs.ErrExist if name is taken. Where
+// the OS has an atomic no-replace rename that is the whole step, and the entry is
+// never reachable under two names, so a reader cannot see it with a second hard
+// link. Where it does not, the stage is linked onto the name and removed later,
+// and the entry has two links in between: SingleLink readers accept that one
+// extra link only when it is this store's own stage sibling (see openRegular).
+func publishNew(dir *os.Root, stage, name string) error {
+	err := noReplaceRename(dir, stage, name)
+	if errors.Is(err, errNoAtomicRename) {
+		return dir.Link(stage, name)
+	}
+	return err
 }
 
 // Lock takes the exclusive cross-process lock held on the file name in dir,

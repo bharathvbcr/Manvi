@@ -45,8 +45,8 @@ func TestCreateRefusesNamesThatAliasAnExistingEntry(t *testing.T) {
 	if err != nil || got.Content != "first" {
 		t.Fatalf("the existing artifact is no longer readable by its own spelling: %v, %v", got, err)
 	}
-	entries, _ := os.ReadDir(filepath.Join(anchor, "store"))
-	if len(entries) != 1 || entries[0].Name() != "Dir" {
+	entries := visibleEntries(filepath.Join(anchor, "store"))
+	if len(entries) != 1 || entries[0] != "Dir" {
 		t.Fatalf("an entry was renamed or created beside Dir: %v", entries)
 	}
 	// A new name inside the stored spelling is fine.
@@ -122,4 +122,16 @@ func TestTheSidecarNamespaceIsFoldedLikeTheNames(t *testing.T) {
 			t.Errorf("%q is in the sidecar namespace", name)
 		}
 	}
+}
+
+// visibleEntries lists a directory without the store's dot-named lock files.
+func visibleEntries(dir string) []string {
+	entries, _ := os.ReadDir(dir)
+	var names []string
+	for _, e := range entries {
+		if e.Name()[0] != '.' {
+			names = append(names, e.Name())
+		}
+	}
+	return names
 }

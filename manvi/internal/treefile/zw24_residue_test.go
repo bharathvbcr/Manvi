@@ -51,6 +51,11 @@ func TestAFailedStageRemovalAfterTheLinkLandedStillReportsAPublishedWrite(t *tes
 		}
 		return errors.New("no stage to break")
 	}
+	// The link fallback, which leaves the stage behind to be removed; where the OS
+	// has the atomic rename there is no stage to fail to remove.
+	saved := noReplaceRename
+	defer func() { noReplaceRename = saved }()
+	noReplaceRename = func(*os.Root, string, string) error { return errNoAtomicRename }
 	err = Publish(root, "entry", []byte("payload"), PublishOptions{SyncDir: breakStage})
 	if err == nil {
 		t.Fatal("a stage that could not be removed was not reported at all")
@@ -160,48 +165,83 @@ func TestAnUnreadableFileIsNotRefusedAsHostile(t *testing.T) {
 	}
 }
 
-// A store that publishes by link has two links to the file for a moment. A read
-// that lands there is not looking at a file outside the tree; one that still sees
-// two afterwards is.
-func TestSingleLinkWaitsForAPublishInProgressAndStillRefusesAPlantedLink(t *testing.T) {
+// Where the OS has an atomic no-replace rename a published entry never has a
+// second name, however slow the directory sync: there is no window to read it in.
+func TestAPublishNeverLeavesTheEntryWithASecondLink(t *testing.T) {
 	anchor, _ := tree(t)
-	name, stage := filepath.Join(anchor, "entry"), filepath.Join(anchor, ".entry.0123456789abcdef.tmp")
-	if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(name, stage); err != nil {
-		t.Skipf("hard links are not available: %v", err)
-	}
 	root, err := Open(anchor)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-
-	// The publish ends at the moment the reader first waits: the hook removes the
-	// stage there, so the test does not depend on how fast this host schedules.
-	saved := settle
-	defer func() { settle = saved }()
-	waits := 0
-	settle = func(time.Duration) {
-		waits++
-		_ = os.Remove(stage)
+	if err := noReplaceRename(root, "absent", "alsoabsent"); errors.Is(err, errNoAtomicRename) {
+		t.Skip("this platform has no atomic no-replace rename")
 	}
-	if got, err := ReadFile(root, "entry", ReadOptions{Limit: 10, SingleLink: true}); err != nil || string(got) != "x" {
-		t.Fatalf("a read racing the end of a publish was refused: %q, %v", got, err)
+	var seen error
+	err = Publish(root, "entry", []byte("payload"), PublishOptions{SyncDir: func(*os.Root) error {
+		time.Sleep(50 * time.Millisecond)
+		_, seen = ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true})
+		return nil
+	}})
+	if err != nil || seen != nil {
+		t.Fatalf("publish %v; a read during the slow sync: %v", err, seen)
 	}
+	if err := Publish(root, "entry", []byte("again"), PublishOptions{}); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("publishing over an existing name = %v, want fs.ErrExist", err)
+	}
+}
 
-	planted := filepath.Join(anchor, "planted")
-	if err := os.Link(name, planted); err != nil {
+// The link fallback has a second name until the stage is removed. A reader accepts
+// that second link only as this store's own stage sibling, however long the sync
+// takes, and refuses a hard link to a file outside the tree, with or without a
+// stage-shaped name beside it.
+func TestTheLinkFallbackIsReadableOnlyThroughItsOwnStage(t *testing.T) {
+	anchor, outside := tree(t)
+	root, err := Open(anchor)
+	if err != nil {
 		t.Fatal(err)
 	}
-	waits = 0
-	settle = func(time.Duration) { waits++ }
-	_, err = ReadFile(root, "entry", ReadOptions{Limit: 10, SingleLink: true})
-	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "hard links") {
-		t.Fatalf("a hard link that stays was not refused: %v", err)
+	defer func() { _ = root.Close() }()
+	saved := noReplaceRename
+	defer func() { noReplaceRename = saved }()
+	noReplaceRename = func(*os.Root, string, string) error { return errNoAtomicRename }
+
+	var during error
+	err = Publish(root, "entry", []byte("payload"), PublishOptions{SyncDir: func(*os.Root) error {
+		time.Sleep(60 * time.Millisecond) // a slow fsync, far over any fixed window
+		_, during = ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true})
+		return nil
+	}})
+	if err != nil || during != nil {
+		t.Fatalf("publish %v; a read through its own stage: %v", err, during)
 	}
-	if waits != linkSettleAttempts-1 {
-		t.Fatalf("a planted link was waited on %d times, want the bound %d", waits, linkSettleAttempts-1)
+
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(anchor, "planted")
+	if err := os.Link(secret, planted); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	if _, err := ReadFile(root, "planted", ReadOptions{Limit: 1 << 10, SingleLink: true}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "hard links") {
+		t.Fatalf("a hard link to a file outside the tree was read: %v", err)
+	}
+	// The same link with a stage-shaped name beside it is three links, not a publish.
+	if err := os.Link(secret, filepath.Join(anchor, ".planted.0123456789abcdef.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFile(root, "planted", ReadOptions{Limit: 1 << 10, SingleLink: true}); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a planted stage-shaped name excused a link to a file outside the tree: %v", err)
+	}
+	// And a two-link file whose second name is not a stage sibling is refused.
+	if err := os.WriteFile(filepath.Join(anchor, "two"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(anchor, "two"), filepath.Join(anchor, "other-name")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFile(root, "two", ReadOptions{Limit: 1 << 10, SingleLink: true}); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a second link that is not a stage sibling was accepted: %v", err)
 	}
 }
