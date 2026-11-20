@@ -55,8 +55,13 @@ func TestAFailedStageRemovalAfterTheLinkLandedStillReportsAPublishedWrite(t *tes
 	// has the atomic rename there is no stage to fail to remove.
 	saved := noReplaceRename
 	defer func() { noReplaceRename = saved }()
-	noReplaceRename = func(*os.Root, string, string) error { return errNoAtomicRename }
-	err = Publish(root, "entry", []byte("payload"), PublishOptions{SyncDir: breakStage})
+	noReplaceRename = func(dir *os.Root, stage, name string) error {
+		if err := dir.Link(stage, name); err != nil {
+			return err
+		}
+		return breakStage(dir) // the link landed; now the stage cannot be removed
+	}
+	err = Publish(root, "entry", []byte("payload"), PublishOptions{})
 	if err == nil {
 		t.Fatal("a stage that could not be removed was not reported at all")
 	}
@@ -191,11 +196,10 @@ func TestAPublishNeverLeavesTheEntryWithASecondLink(t *testing.T) {
 	}
 }
 
-// The link fallback has a second name until the stage is removed. A reader accepts
-// that second link only as this store's own stage sibling, however long the sync
-// takes, and refuses a hard link to a file outside the tree, with or without a
-// stage-shaped name beside it.
-func TestTheLinkFallbackIsReadableOnlyThroughItsOwnStage(t *testing.T) {
+// The link fallback removes its stage before the directory sync, so a slow sync
+// is no window in which the entry has two names, and a hard link to a file outside
+// the tree is refused with or without a stage-shaped name beside it.
+func TestTheLinkFallbackRemovesItsStageBeforeTheSlowSync(t *testing.T) {
 	anchor, outside := tree(t)
 	root, err := Open(anchor)
 	if err != nil {
@@ -243,5 +247,280 @@ func TestTheLinkFallbackIsReadableOnlyThroughItsOwnStage(t *testing.T) {
 	}
 	if _, err := ReadFile(root, "two", ReadOptions{Limit: 1 << 10, SingleLink: true}); !errors.Is(err, ErrRefused) {
 		t.Fatalf("a second link that is not a stage sibling was accepted: %v", err)
+	}
+}
+
+// A link count of two is refused outright on every build, even with a sibling named like a stage
+// that is the very same file: that pairing is what a hard link to a file outside
+// the tree plus a planted stage-named link looks like.
+func TestACountOfTwoIsRefusedEvenWithAStageNamedSibling(t *testing.T) {
+	anchor, _ := tree(t)
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := os.WriteFile(filepath.Join(anchor, "entry"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(anchor, "entry"), filepath.Join(anchor, ".entry.0123456789abcdef.tmp")); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	if _, err := ReadFile(root, "entry", ReadOptions{Limit: 10, SingleLink: true}); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a count of two with a stage-named sibling was accepted: %v", err)
+	}
+}
+
+// The attack on a stage-sibling exemption: an entry that is a hard link to a file
+// outside the tree, read while a stage-named sibling is linked and unlinked in a
+// loop. Not one read may return the outside file, whatever the interleaving.
+func TestAHardLinkToAnOutsideFileIsNeverReadWhileAStageNamedLinkFlickers(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stage := filepath.Join(anchor, ".entry.0123456789abcdef.tmp")
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if os.Link(secret, stage) == nil {
+				_ = os.Remove(stage)
+			}
+		}
+	}()
+	leaks, reads := 0, 0
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		reads++
+		if got, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); err == nil {
+			leaks++
+			_ = got
+		}
+	}
+	close(stop)
+	<-done
+	if leaks != 0 {
+		t.Fatalf("%d of %d reads returned a file that is hard-linked outside the tree", leaks, reads)
+	}
+}
+
+// The attack on a recount: the reader has counted two links (the outside file and
+// the in-tree name) and the attacker then unlinks the in-tree name, so that any
+// later count would read one while the handle is still the outside file. The
+// decision is made on the count the handle had when it was checked, so it is refused
+// however the name is churned afterwards. (A name that is gone before the count is
+// read leaves a file with one link, which no count can tell from any other; that is
+// not something a reader of one handle can close.)
+func TestAHandleCountedWithTwoLinksIsRefusedWhateverHappensToTheNameAfter(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	saved := afterLinkCount
+	defer func() { afterLinkCount = saved }()
+	afterLinkCount = func() { _ = os.Remove(entry) }
+	data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true})
+	if err == nil || !errors.Is(err, ErrRefused) {
+		t.Fatalf("a handle counted with two links was read (%q, %v) after its in-tree name was unlinked", data, err)
+	}
+}
+
+// The name must still be the file that was opened. If the attacker unlinks the
+// in-tree name of a file linked outside the tree, the handle has one link, so the
+// count cannot refuse it; the name, now gone or someone else's, can.
+func TestAnOutsideFileIsNeverReadWhileTheInTreeNameIsChurned(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Remove(entry)
+			_ = os.Link(secret, entry)
+		}
+	}()
+	leaks, reads := 0, 0
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		reads++
+		if data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); err == nil && string(data) == "outside data" {
+			leaks++
+		}
+	}
+	close(stop)
+	<-done
+	if leaks != 0 {
+		t.Fatalf("%d of %d reads returned the outside file while its in-tree name was unlinked and relinked", leaks, reads)
+	}
+}
+
+// A name replaced by an unrelated regular file after the handle was opened and
+// counted: the handle is not what the name says. A replacement that happens once is
+// a publish and the read retries and returns the new file; one that happens on every
+// attempt is refused as unstable, and the old file's bytes are never returned.
+func TestANameReplacedAfterTheOpenIsNotReadAsTheOldFile(t *testing.T) {
+	anchor, _ := tree(t)
+	entry := filepath.Join(anchor, "entry")
+	if err := os.WriteFile(entry, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	saved := afterLinkCount
+	defer func() { afterLinkCount = saved }()
+	replace := func() {
+		_ = os.Remove(entry)
+		_ = os.WriteFile(entry, []byte("new"), 0o600)
+	}
+
+	calls := 0
+	afterLinkCount = func() {
+		if calls++; calls == 1 {
+			replace()
+		}
+	}
+	data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true})
+	if err != nil || string(data) != "new" {
+		t.Fatalf("a read racing one replace = %q, %v; want the new file", data, err)
+	}
+
+	afterLinkCount = replace
+	data, err = ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true})
+	if !errors.Is(err, ErrUnstable) || string(data) == "old" {
+		t.Fatalf("a name replaced on every attempt = %q, %v; want ErrUnstable", data, err)
+	}
+
+	afterLinkCount = func() { _ = os.Remove(entry) }
+	if _, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a name unlinked after the open = %v; want it reported as gone", err)
+	}
+}
+
+// The reviewer's shape: the attacker unlinks the in-tree name before the reader
+// counts and relinks it before the reader looks the name up, holding it unlinked for
+// a moment, over and over. The handle's count (one) and the name's identity (the
+// same inode) then agree, so only the count the lookup itself reports (two) refuses
+// it.
+func TestAnOutsideFileIsNeverReadWhenTheNameIsUnlinkedBeforeTheCountAndRelinkedBeforeTheLookup(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Remove(entry)
+			time.Sleep(200 * time.Microsecond)
+			_ = os.Link(secret, entry)
+			time.Sleep(50 * time.Microsecond)
+		}
+	}()
+	leaks, reads := 0, 0
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		reads++
+		if data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); err == nil && string(data) == "outside data" {
+			leaks++
+		}
+	}
+	close(stop)
+	<-done
+	if leaks != 0 {
+		t.Fatalf("%d of %d reads returned the outside file", leaks, reads)
+	}
+}
+
+// With the name's own count reported in the lookup, a name that is the same file
+// with a second link is refused even if the handle's count was read as one.
+func TestTheLookupsOwnLinkCountRefusesWhatTheHandlesCountMissed(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	// The in-tree name is unlinked just before the handle is counted, and put back
+	// just after, which is the one moment the handle reads one.
+	saved := beforeLinkCount
+	defer func() { beforeLinkCount = saved }()
+	beforeLinkCount = func() { _ = os.Remove(entry) }
+	afterSaved := afterLinkCount
+	defer func() { afterLinkCount = afterSaved }()
+	afterLinkCount = func() { _ = os.Link(secret, entry) }
+	if data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); err == nil {
+		t.Fatalf("read %q although the name had two links at the lookup", data)
 	}
 }

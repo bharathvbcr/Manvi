@@ -19,7 +19,6 @@ package treefile
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -215,58 +214,28 @@ type ReadOptions struct {
 	Limit int64
 	// SingleLink refuses a file with more than one hard link. O_NOFOLLOW does not
 	// see a hard link to a file outside the tree, so a store whose entries have
-	// one name asks for it. A count of zero is not a refusal: the file was
-	// replaced by rename after it was opened, and the handle is a consistent
-	// snapshot of the previous version. Publish uses an atomic no-replace rename
-	// where the OS has one, so a published entry has one name; where it links
-	// instead, the one extra link a publish in progress has is accepted only when it
-	// is the entry's own stage sibling (see ownStageLink).
+	// one name asks for it. A count of zero means the file was replaced or removed
+	// after it was opened; that is not a refusal either, but the handle is then not
+	// the name's file, so the name check retries within openRetries and then
+	// reports ErrUnstable (or absence), never the old bytes. Any count above one is
+	// refused, on every
+	// build and with no wait or exemption: a reader cannot tell a publish in progress
+	// from a hard link to a file outside the tree by looking at the handle, the
+	// count or the neighbours, because the attacker controls all three. Publish
+	// keeps the second name to a minimum instead (an atomic rename where the OS has
+	// one, and otherwise a stage removed before the directory sync).
 	SingleLink bool
 }
 
 // openRetries bounds the retries of an open that raced a rename-replace.
 const openRetries = 3
 
-// ownStageLink reports whether the second hard link of f, which has n links, is
-// this store's own stage for it: a sibling of name in its directory called
-// ".<name>.<16 hex>.tmp" that is the same file. A publish by link, where the OS has
-// no atomic no-replace rename, has exactly this second name for the moment before
-// it removes the stage, however slow the directory sync in between. A link to a file
-// outside the tree makes a count of 3 or more, because the file's own name is
-// outside, and one with no stage sibling is not a publish, so both are refused.
-func ownStageLink(root *os.Root, name string, f *os.File, n uint64) bool {
-	if n != 2 {
-		return false
-	}
-	dirPath, base := filepath.Split(filepath.FromSlash(name))
-	dirPath = filepath.Clean(dirPath)
-	d, err := root.Open(dirPath)
-	if err != nil {
-		return false
-	}
-	names, err := d.Readdirnames(maxAliasScan + 1)
-	_ = d.Close()
-	if err != nil || len(names) > maxAliasScan {
-		return false
-	}
-	held, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	prefix := "." + base + "."
-	for _, cand := range names {
-		if len(cand) != len(prefix)+16+len(".tmp") || !strings.HasPrefix(cand, prefix) || !strings.HasSuffix(cand, ".tmp") {
-			continue
-		}
-		if _, err := hex.DecodeString(cand[len(prefix) : len(prefix)+16]); err != nil {
-			continue
-		}
-		if info, err := root.Lstat(filepath.Join(dirPath, cand)); err == nil && os.SameFile(info, held) {
-			return true
-		}
-	}
-	return false
-}
+// afterLinkCount runs between reading a handle's link count and acting on it. It
+// is a variable so a test can change the name there; nothing else assigns it.
+var afterLinkCount = func() {}
+
+// beforeLinkCount runs just before the count; a variable for the same reason.
+var beforeLinkCount = func() {}
 
 // ErrUnstable marks a name that kept being replaced while it was being opened,
 // so no handle that was the name's current file could be taken. It is neither a
@@ -341,16 +310,52 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 			return nil, errors.Join(refusal(name, "is not a regular file"), f.Close())
 		}
 		if o.SingleLink {
+			beforeLinkCount()
 			n, err := safefile.LinkCount(f)
 			if err != nil {
 				return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
 			}
-			if n > 1 && !ownStageLink(root, name, f, n) {
-				// The publisher may have finished between the count and the
-				// look, which leaves one link.
-				if again, err := safefile.LinkCount(f); err != nil || again > 1 {
-					return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n)), f.Close())
+			afterLinkCount()
+			if n > 1 {
+				return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n)), f.Close())
+			}
+			// A count of one is a fact about the file, not about the name: an
+			// attacker who unlinks the in-tree name of a file that is linked outside
+			// the tree leaves the handle with one link. So the name must still be
+			// this very file. If the name still points at an outside inode its count
+			// is two or more and was refused above; if it is gone or points at
+			// another file, the handle is not what the name says. A name replaced by
+			// rename since the open is a legitimate publish, and the open is retried.
+			named, lerr := root.Lstat(filepath.FromSlash(name))
+			switch {
+			case lerr == nil && os.SameFile(named, info):
+				// The handle's count and the name's identity came from two moments,
+				// and unlink-before-count with relink-before-lookup passes both. The
+				// lookup's own count, taken in the call that gave its identity, closes
+				// that where the platform reports it; elsewhere the handle is counted
+				// again after the lookup.
+				again, known := nameLinks(named)
+				if !known {
+					again, err = safefile.LinkCount(f)
+					if err != nil {
+						return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q again: %w", name, err), f.Close())
+					}
 				}
+				if again > 1 {
+					return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", again)), f.Close())
+				}
+			case errors.Is(lerr, fs.ErrNotExist):
+				return nil, errors.Join(fmt.Errorf("treefile: %q went away while it was being read: %w", name, fs.ErrNotExist), f.Close())
+			case lerr == nil && attempt < openRetries:
+				if err := f.Close(); err != nil {
+					return nil, fmt.Errorf("treefile: closing %q: %w", name, err)
+				}
+				attempt++
+				continue
+			case lerr == nil:
+				return nil, errors.Join(unstableOpenError(name), f.Close())
+			default:
+				return nil, errors.Join(fmt.Errorf("treefile: looking again at %q: %w", name, lerr), f.Close())
 			}
 		}
 		if info.Size() > o.Limit {

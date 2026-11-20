@@ -74,3 +74,32 @@ func TestAnArtifactThatIsAHardLinkToAFileOutsideTheStoreIsStillRefused(t *testin
 		t.Fatalf("a content file with a second name outside the store was read: %v", err)
 	}
 }
+
+// Update replaces the content and sidecar by rename. A Get racing it must never be
+// refused: the reader's name check retries a replace it lands in.
+func TestAGetRacingAnUpdateIsNeverRefused(t *testing.T) {
+	anchor, _ := aliasTree(t)
+	s := mustStoreUnder(t, anchor, "store")
+	if _, err := s.Create("doc.md", "v0", Metadata{}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 1; i <= 2000; i++ {
+			if _, err := s.Update("doc.md", fmt.Sprintf("v%d", i), nil); err != nil {
+				t.Errorf("Update %d: %v", i, err)
+				return
+			}
+		}
+	}()
+	other := mustStoreUnder(t, anchor, "store")
+	for i := 0; i < 2000; i++ {
+		if _, err := other.Get("doc.md"); err != nil {
+			t.Errorf("Get %d was refused while an Update was replacing the files: %v", i, err)
+			break
+		}
+	}
+	wg.Wait()
+}
