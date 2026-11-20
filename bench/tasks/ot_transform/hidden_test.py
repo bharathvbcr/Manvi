@@ -43,6 +43,35 @@ def _o_apply(doc, op):
     raise ValueError("op")
 
 
+def _o_transform(a, b):
+    """SPEC.md's transform, held in the checker. The spec fixes every rewrite
+    (positions, the lower-site-id tie-break, the equal-site rule, nops), so the
+    candidate's answer is compared with it op for op, not only for convergence: a
+    transform that converges by throwing both edits away is not the spec's."""
+    if a[0] == "nop":
+        return ("nop",), b
+    if b[0] == "nop":
+        return a, ("nop",)
+    if a[0] == "ins" and b[0] == "ins":
+        pa, pb = a[1], b[1]
+        if pa < pb or (pa == pb and a[3] <= b[3]):
+            return a, ("ins", pb + 1, b[2], b[3])
+        return ("ins", pa + 1, a[2], a[3]), b
+    if a[0] == "ins":
+        if a[1] <= b[1]:
+            return a, ("del", b[1] + 1, b[2])
+        return ("ins", a[1] - 1, a[2], a[3]), b
+    if b[0] == "ins":
+        if b[1] <= a[1]:
+            return ("del", a[1] + 1, a[2]), b
+        return a, ("ins", b[1] - 1, b[2], b[3])
+    if a[1] < b[1]:
+        return a, ("del", b[1] - 1, b[2])
+    if a[1] > b[1]:
+        return ("del", a[1] - 1, a[2]), b
+    return ("nop",), ("nop",)
+
+
 def settle(doc, a, b):
     """Converged document reached by applying a then b2. None on divergence.
 
@@ -63,6 +92,12 @@ def settle(doc, a, b):
         return None
     if type(a2) is not tuple or type(b2) is not tuple:
         print("FAIL transform did not return ops by value", doc, a, b)
+        bad += 1
+        return None
+    want_a2, want_b2 = _o_transform(a, b)
+    if repr(a2) != repr(want_a2) or repr(b2) != repr(want_b2):
+        print("FAIL transform differs from the spec", "doc", repr(doc), "a", a, "b", b,
+              "got", repr((a2, b2)), "want", repr((want_a2, want_b2)))
         bad += 1
         return None
     try:

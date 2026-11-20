@@ -128,6 +128,15 @@ def _wb_wants(a):
     return type(a) in _WB_TYPES and len(a) <= MUT_WB_MAX
 
 
+def _wb_holds(x, depth=0):
+    """True when x is, or holds within a few tuple/frozenset levels, a mutable container."""
+    if type(x) in _WB_TYPES:
+        return True
+    if type(x) in (tuple, frozenset) and depth < 4:
+        return any(_wb_holds(e, depth + 1) for e in x)
+    return False
+
+
 def _jeq(a, b, depth=0):
     """Structural equality of two wire trees (exact types; sets as multisets)."""
     ta = type(a)
@@ -334,8 +343,19 @@ def wire_loads(data):
     return val
 
 
+# Set by _entry to the endpoint's _fatal once a real checker or worker process is up.
+# In-process uses of the codec (tests) leave it empty and just see the exception.
+_EXIT_HOOK = []
+
+
 class _Fatal(Exception):
-    """A transport failure. Whoever raises it has already scheduled the exit."""
+    """A transport failure. Raising it ends the process (see _EXIT_HOOK), so no
+    except clause in candidate or test code can swallow it: construction is the exit."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        if _EXIT_HOOK:
+            _EXIT_HOOK[0](str(self))
 
 
 class RemoteFatal(Exception):
@@ -784,6 +804,9 @@ class Endpoint:
         self._done = False
         self.wb_attested = 0             # container args whose post-state the peer reported
         self.wb_oversized = 0            # container args too long to be attested at all
+        self.wb_kw = 0                   # container keyword arguments: never attested
+        self.wb_nested = 0               # containers inside a tuple/frozenset argument: never attested
+        self.wb_raised = 0               # container args of a call that raised: no report comes back
         self.mutations = 0               # attested args whose post-state differs from what we sent
 
     # ---- object tables ---------------------------------------------------- #
@@ -1001,6 +1024,7 @@ class Endpoint:
         with self._lock:
             rid = self._next_rid
             self._next_rid += 1
+        self._note_wb_gaps(args, kwargs)
         sent = [self.codec.encode(x) for x in args]
         payload = {"id": target_id, "a": sent,
                    "kw": {k: self.codec.encode(v) for k, v in kwargs.items()}}
@@ -1024,6 +1048,7 @@ class Endpoint:
                 # arrive while we wait is ours. Anything else is a protocol bug.
                 self._fatal("out-of-order response")
             if k == "e":
+                self.wb_raised += sum(1 for a in (wb_args or ()) if _wb_wants(a))
                 self._raise_remote(frame["x"])
             self._writeback(wb_args, frame.get("wb"), wb_sent)
             return self.codec.decode(frame["v"])
@@ -1041,6 +1066,11 @@ class Endpoint:
                 if self._deadline is not None and \
                         time.monotonic() >= self._deadline:
                     self._fatal("deadline exceeded")
+
+    def _note_wb_gaps(self, args, kwargs):
+        """Count the container arguments whose mutation no report will cover."""
+        self.wb_kw += sum(1 for v in kwargs.values() if _wb_holds(v))
+        self.wb_nested += sum(1 for a in args if type(a) in (tuple, frozenset) and _wb_holds(a))
 
     def _writeback(self, args, wb, sent):
         """Bring the container arguments we sent up to date with the worker's report.
@@ -1260,6 +1290,25 @@ LOADER_RESIDUAL = (
     "other spelling, including direct _imp calls, is refused")
 
 
+# The source-read refusal stats the path the audit event names and the open happens
+# afterwards; a candidate thread that re-points a symlink in between reads a banned
+# file the hook judged harmless. The audit event carries no file descriptor to
+# judge instead, so this cannot be closed from a hook.
+SOURCE_RACE_RESIDUAL = (
+    "import-ban: source read: the hook judges the path an open event names, then the "
+    "open happens; a symlink re-pointed by another thread in between reads a banned "
+    "module's source")
+
+
+# The worker's containment lets it write to the temp directories (the interpreter and
+# the tools share one profile that re-allows them), and nothing removes what it
+# leaves there after the verification: a file or process-less state in /tmp
+# outlives the run and a later verification on the same host can read it.
+WORKER_TEMP_RESIDUAL = (
+    "worker-temp: files the worker writes under the temp directories are not "
+    "removed after the verification and can be read by a later one on this host")
+
+
 class CheckerEndpoint(Endpoint):
     """The checker side: serves only the callback ops of `CHECKER_OPS`."""
 
@@ -1274,6 +1323,7 @@ class CheckerEndpoint(Endpoint):
         self._loads = json.loads
         self.report_fd = report_fd       # a pipe to the parent; the worker has no such fd
         self.bans = []                   # what each forbid_imports reply said
+        self.static_only = []            # bans held by the static audit alone
 
     def report(self):
         """What this run relied on that the checker cannot itself verify.
@@ -1291,8 +1341,22 @@ class CheckerEndpoint(Endpoint):
             unenforced.append(
                 f"writeback: {self.wb_oversized} container argument(s) longer than "
                 f"{MUT_WB_MAX} are not attested at all")
+        for n, what in ((self.wb_kw, "container keyword argument(s)"),
+                        (self.wb_nested, "container(s) inside a tuple or frozenset argument"),
+                        (self.wb_raised, "container argument(s) of a call that raised")):
+            if n:
+                unenforced.append(
+                    f"writeback: {n} {what}: a mutation of them is not attested at all "
+                    f"(the report covers only the exact-builtin positional containers of a call that returned)")
+        unenforced.append(WORKER_TEMP_RESIDUAL)
+        for names in self.static_only:
+            unenforced.append(
+                "import-ban: runtime: " + ", ".join(names) + " are banned by the static "
+                "audit only; the worker itself needs them, so no audit hook refuses a "
+                "spelling the audit cannot see")
         if self.bans:
             unenforced.append(LOADER_RESIDUAL)
+            unenforced.append(SOURCE_RACE_RESIDUAL)
         for b in self.bans:
             if b["preloaded"]:
                 unenforced.append(
@@ -1368,8 +1432,16 @@ _ESCAPE_MODULES = ("ctypes", "_ctypes", "_interpreters", "_xxsubinterpreters",
 # classes and the checker link.
 # sys._current_frames hands a thread the live frames of every other thread, which is
 # where the loader gateway's real functions sit while a load runs.
+# os.exec* replaces the worker with a fresh interpreter that has no hook (the macOS
+# profile denies fork but not exec, and the Linux profile allows fork), so every way
+# to start another process is refused too; the names are from the CPython audit
+# events table (os.exec, os.fork, os.forkpty, os.posix_spawn, os.spawn, os.system,
+# subprocess.Popen) plus the _posixsubprocess.fork_exec that Popen reaches.
 _DENIED_EVENTS = ("gc.get_objects", "gc.get_referrers", "gc.get_referents",
-                  "sys._current_frames", "sys._current_exceptions")
+                  "sys._current_frames", "sys._current_exceptions",
+                  "os.exec", "os.fork", "os.forkpty", "os.posix_spawn", "os.spawn",
+                  "os.system", "subprocess.Popen", "_posixsubprocess.fork_exec")
+AUDIT_IDS_MAX = 4000      # files whose identity the hook can hold; more is refused, never truncated
 # The C half of a ban is banned with the pure-Python half: a candidate that may
 # not use queue may not use _queue.SimpleQueue either.
 _BAN_ALIASES = {
@@ -1390,7 +1462,7 @@ _BAN_ALIASES = {
 # builtin type.
 _HOOK_TEMPLATE = '''
 def hook(event, args, _t=type, _s=str, _b=bytes, _i=int, _l=list, _E=ImportError, _R=RuntimeError,
-         _N=NSPEC, _CB=LCB, _GF=LGF, _FF=LFF):
+         _N=NSPEC, _CB=LCB, _GF=LGF, _FF=LFF, _stat=STAT):
     if _t(event) is not _s:
         return
     if event == "import":
@@ -1412,6 +1484,12 @@ def hook(event, args, _t=type, _s=str, _b=bytes, _i=int, _l=list, _E=ImportError
             for f in FILES:
                 if ("/" + f + ".") in p or ("/" + f + "/") in p:
                     raise _R("reading the source of a banned module is refused")
+            try:
+                st = _stat(p)
+            except BaseException:
+                return
+            if (st.st_dev, st.st_ino) in IDS:
+                raise _R("reading the source of a banned module is refused")
     elif event in EVENTS:
         raise _R(event + " is not available to candidate code")
     elif event == "mh.loader":
@@ -1488,6 +1566,51 @@ _LOADER_NAMES = ("create_builtin", "init_frozen", "get_frozen_object", "find_fro
 assert all(n in _LOADER_WRAPPERS for n in _LOADER_NAMES)
 
 
+def _banned_file_ids(names):
+    """(st_dev, st_ino) of every source, compiled and extension file of the banned
+    top-level modules, found without importing any of them.
+
+    A path test is spelling; an inode is the file. A relative path, a case variant
+    on a case-insensitive disk, a symlink and a hard link all stat to the same pair.
+    A package contributes every file under its directory. More than AUDIT_IDS_MAX
+    files raises: a partial set would read as a complete one.
+    """
+    ids = set()
+    for top in sorted({n.partition(".")[0] for n in names}):
+        try:
+            spec = _find_spec(top)
+        except (ImportError, ValueError, AttributeError):
+            continue
+        if spec is None:
+            continue
+        paths = [getattr(spec, "origin", None), getattr(spec, "cached", None)]
+        dirs = list(spec.submodule_search_locations or ())
+        if not dirs and isinstance(paths[0], str) and os.path.isfile(paths[0]):
+            cache = os.path.join(os.path.dirname(paths[0]), "__pycache__")
+            if os.path.isdir(cache):
+                paths += [os.path.join(cache, f) for f in os.listdir(cache)
+                          if f.partition(".")[0] == top]
+        for d in dirs:
+            for root, _dirs, files in os.walk(d):
+                paths += [os.path.join(root, f) for f in files]
+        for p in paths:
+            if not isinstance(p, str) or p in ("built-in", "frozen"):
+                continue
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            ids.add((st.st_dev, st.st_ino))
+            if len(ids) > AUDIT_IDS_MAX:
+                raise RuntimeError(f"more than {AUDIT_IDS_MAX} banned-module files; refusing a partial set")
+    return ids
+
+
+def _set_literal(pairs):
+    """Source for a set of (dev, ino) pairs the hook's builtin-less namespace can read."""
+    return "{" + ", ".join(repr(p) for p in sorted(pairs)) + "}" if pairs else "()"
+
+
 def _install_audit_hook(banned):
     """Add an audit hook refusing ESCAPE modules, the heap walks, and `banned`.
 
@@ -1508,13 +1631,13 @@ def _install_audit_hook(banned):
     subst = {"MODS": repr(tuple(mods)), "FILES": repr(tuple(files)),
              "EVENTS": repr(_DENIED_EVENTS),
              "LOADER_NAMES": repr(tuple(mods) + _LOADER_PRIVATE),
-             "GATEWAY": repr(gateway)}
+             "GATEWAY": repr(gateway), "IDS": _set_literal(_banned_file_ids(banned))}
     src = _HOOK_TEMPLATE
     for token, text in subst.items():
         src = src.replace(token, text)
     ns = {"__builtins__": {"type": type, "str": str, "bytes": bytes, "int": int, "list": list,
                            "BaseException": BaseException, "ImportError": ImportError, "RuntimeError": RuntimeError},
-          "NSPEC": types.SimpleNamespace}
+          "NSPEC": types.SimpleNamespace, "STAT": os.stat}
     orig = {n: getattr(_imp, n) for n in _LOADER_NAMES} if gateway else {}
     ns.update(LCB=orig.get("create_builtin"), LGF=orig.get("get_frozen_object"),
               LFF=orig.get("find_frozen"))
@@ -1714,6 +1837,9 @@ _DYN_ATTRS = frozenset({"import_module", "find_spec", "load_module", "exec_modul
 _DYN_MODULES = frozenset({"importlib", "imp", "runpy", "builtins", "_imp",
                           "_frozen_importlib", "_frozen_importlib_external",
                           "zipimport", "pkgutil", "ctypes", "_ctypes"})
+# A compiled or native module is code the AST audit cannot read, and a pyc under
+# __pycache__ can stand in for a source the audit did read, so each is an offender.
+_BINARY_SUFFIXES = (".pyc", ".pyo", ".so", ".pyd", ".dylib", ".dll")
 AUDIT_MAX_FILES = 200
 AUDIT_MAX_BYTES = 1 << 20
 
@@ -1742,11 +1868,14 @@ def audit_sources(sandbox, banned):
     banned = tuple(banned)
     machinery = _DYN_MODULES | _DYN_NAMES | _DYN_ATTRS
     sources = []
+    binaries = []
     for root, dirs, files in os.walk(sandbox):
-        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
+        dirs[:] = [d for d in dirs if d != ".git"]
         for f in sorted(files):
             if f.endswith(".py"):
                 sources.append(os.path.join(root, f))
+            elif f.endswith(_BINARY_SUFFIXES):
+                binaries.append(os.path.relpath(os.path.join(root, f), sandbox))
     sources.sort()
     if len(sources) > AUDIT_MAX_FILES:
         return [f"{len(sources)} Python files in the sandbox exceeds the "
@@ -1755,7 +1884,8 @@ def audit_sources(sandbox, banned):
     def banned_name(n):
         return any(n == b or n.startswith(b + ".") for b in banned)
 
-    offenders = []
+    offenders = [f"{rel}: compiled or native module in the sandbox; the audit cannot read it"
+                 for rel in binaries]
     scanned = 0
     for path in sources:
         rel = os.path.relpath(path, sandbox)
@@ -1831,11 +1961,13 @@ class _MH:
                               "preloaded": rep["preloaded"], "mechanism": "audit-hook"})
         return rep
 
-    def enforce_bans(self, names):
+    def enforce_bans(self, names, runtime=True):
         """State a task's import ban: static audit here, audit hook in the worker.
 
         Call it before importing the candidate. A source the audit refuses ends
-        the hidden test with a FAIL line and exit 1; nothing is imported.
+        the hidden test with a FAIL line and exit 1; nothing is imported. A task
+        whose own worker needs a banned module (asyncio imports re) passes
+        runtime=False: only the static audit holds, and the record says so.
         """
         names = tuple(names)
         offenders, scanned = audit_sources(self.SANDBOX, names)
@@ -1843,6 +1975,9 @@ class _MH:
             print("FAIL: forbidden module use: " + "; ".join(offenders))
             raise SystemExit(1)
         print(f"scanned {scanned}/{scanned} Python files in the sandbox")
+        if not runtime:
+            self._ep.static_only.append(list(names))
+            return None
         return self.forbid_imports(names)
 
 
@@ -2171,9 +2306,11 @@ def _entry(argv, payload):
     deadline_s = float(timeout_s)
     if role == "worker":
         ep = WorkerEndpoint(sock, sandbox, deadline_s)
+        _EXIT_HOOK.append(ep._fatal)
         ep.run_worker()
     elif role == "checker":
         ep = CheckerEndpoint(sock, sandbox, deadline_s, report_fd)
+        _EXIT_HOOK.append(ep._fatal)
         run_checker(ep, payload.decode("utf-8"))
     else:
         sys.stderr.write(f"mh_rpc: unknown role {role!r}\n")

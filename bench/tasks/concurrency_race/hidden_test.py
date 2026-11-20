@@ -216,22 +216,41 @@ overflow = []
 stop = threading.Event()
 
 
+churn_errors = []
+samples = [0]
+
+
 def watcher():
-    while not stop.is_set():
-        n = q.qsize()
-        if n < 0 or n > 3:
-            overflow.append(n)
-        time.sleep(0)
+    # A watcher that dies proves nothing about overflow, so its death is a failure
+    # of its own (an int subclass whose comparison raises used to end it silently).
+    try:
+        while not stop.is_set():
+            n = q.qsize()
+            if type(n) is not int:
+                churn_errors.append(("watcher", "qsize returned " + type(n).__name__))
+                return
+            samples[0] += 1
+            if n < 0 or n > 3:
+                overflow.append(n)
+            time.sleep(0)
+    except BaseException as e:
+        churn_errors.append(("watcher", type(e).__name__, str(e)))
 
 
 def churn_put():
-    for i in range(80):
-        q.put(i)
+    try:
+        for i in range(80):
+            q.put(i)
+    except BaseException as e:
+        churn_errors.append(("churn_put", type(e).__name__, str(e)))
 
 
 def churn_get():
-    for _ in range(80):
-        q.get()
+    try:
+        for _ in range(80):
+            q.get()
+    except BaseException as e:
+        churn_errors.append(("churn_get", type(e).__name__, str(e)))
 
 
 wt = threading.Thread(target=watcher, daemon=True)
@@ -245,6 +264,8 @@ stop.set()
 wt.join(timeout=1)
 if not ok:
     bad += 1
+eq("churn and watcher threads ran without error", churn_errors, [])
+eq("the watcher sampled qsize", samples[0] > 0, True)
 eq("no overflow samples", overflow, [])
 eq("empty after churn", q.qsize(), 0)
 

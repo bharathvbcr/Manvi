@@ -745,8 +745,11 @@ nothing is left to reach by attribute. The static audit that three hidden tests
 each carried a copy of is one function in the checker, and also names the
 dynamic spellings. `!=` against a worker object whose data the checker cannot
 read raises, bytes subclasses are read through the type, and an `OrderedDict`
-keeps its order. `cache_invalidation_dist` and `ot_transform` fuzz against a
-model of the spec held in the checker, not one candidate answer against another;
+keeps its order. `cache_invalidation_dist` fuzzes against a model of the spec held in the checker,
+not one candidate answer against another (`ot_transform` did not: its `apply` was
+checked against a checker-side apply but its `transform` only for convergence, and
+a transform that threw both inserts away passed; it now compares `transform` with the
+spec's, op for op);
 `cache_invalidation_dist` counts its trials, so a `heal()` raising
 `StopIteration` can no longer end the loop with nothing failed.
 
@@ -777,7 +780,16 @@ finalizer that the garbage collector starts inside the load can read it
 (`sys._getframe`); the probe obtained `_sre` and passed verification. CPython
 offers no way to hide a live frame from the thread running in it, so every
 record of a task with an import ban names this under `unenforced`
-(`import-ban: loader: ...`). The `importlib`/`imp`/`runpy` bans are advisory
+(`import-ban: loader: ...`). Also named on every ban record: a banned source read
+through a symlink that another thread re-points between the hook's stat and the
+open (`import-ban: source read`), and on every worker record the temp files the
+worker leaves behind (`worker-temp`). The hook now also refuses starting another
+process (`os.exec`, `os.fork`, `os.posix_spawn`, `os.system`, `subprocess.Popen`...),
+because an `os.execv` replaced the worker with an interpreter that had no hook, and
+identifies a banned module's files by (device, inode), not by the spelling of the
+path. `ast_transformer`'s `re` ban is static only (the worker's asyncio needs `re`)
+and its record says so. Writeback of keyword arguments, of containers nested in a
+tuple/frozenset argument and of a call that raised is counted and named. The `importlib`/`imp`/`runpy` bans are advisory
 (the hook refuses the modules they would load, not the machinery). A candidate that
 writes a banned module's logic from memory is not detectable by any of this.
 
