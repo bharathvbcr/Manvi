@@ -216,51 +216,21 @@ type ReadOptions struct {
 	// see a hard link to a file outside the tree, so a store whose entries have
 	// one name asks for it. A count of zero is not a refusal: the file was
 	// replaced by rename after it was opened, and the handle is a consistent
-	// snapshot of the previous version. Publish uses an atomic no-replace rename
-	// where the OS has one, so a published entry has one name and any second link is
-	// refused outright; on a build that links instead, a second link is recounted a
-	// few times and refused if it is still there (see stillLinked).
+	// snapshot of the previous version. Any count above one is refused, on every
+	// build and with no wait or exemption: a reader cannot tell a publish in progress
+	// from a hard link to a file outside the tree by looking at the handle, the
+	// count or the neighbours, because the attacker controls all three. Publish
+	// keeps the second name to a minimum instead (an atomic rename where the OS has
+	// one, and otherwise a stage removed before the directory sync).
 	SingleLink bool
 }
 
 // openRetries bounds the retries of an open that raced a rename-replace.
 const openRetries = 3
 
-// linkRecounts bounds how often a read that found a second hard link counts it
-// again, on a build that publishes by link (see hasAtomicRename). It is a variable
-// so a test can act at that moment.
-var linkRecounts = []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond}
-
-// settle waits one step of a recount; a variable so a test can act at that moment.
-var settle = time.Sleep
-
-// stillLinked reports whether f, which had n hard links when it was opened, still
-// has more than one after the recounts this build allows.
-//
-// Where Publish has an atomic no-replace rename (hasAtomicRename), a published
-// entry has one name and a second link is never a publish in progress, so the
-// answer is yes without waiting. Nothing else is accepted: in particular a sibling
-// named like a stage is not evidence, because the reader counts once and scans the
-// directory afterwards, and an entry that is a hard link to a file outside the tree
-// can be paired with a stage-named link made and removed faster than the scan. On a
-// build that links, Publish removes its stage before it syncs the directory, so the
-// window is the time between two system calls, and a recount of the same handle that
-// finds one link is a fact about that file at that moment (the outside name does not
-// go away), so it is the only thing a reader waits for. A lock the publisher holds
-// would be the other way to close the window; Publish takes none, so the answer
-// there is to refuse what is still linked after the recounts.
-func stillLinked(f *os.File) bool {
-	if hasAtomicRename {
-		return true
-	}
-	for _, d := range linkRecounts {
-		settle(d)
-		if n, err := safefile.LinkCount(f); err == nil && n <= 1 {
-			return false
-		}
-	}
-	return true
-}
+// afterLinkCount runs between reading a handle's link count and acting on it. It
+// is a variable so a test can change the name there; nothing else assigns it.
+var afterLinkCount = func() {}
 
 // ErrUnstable marks a name that kept being replaced while it was being opened,
 // so no handle that was the name's current file could be taken. It is neither a
@@ -339,7 +309,8 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 			if err != nil {
 				return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
 			}
-			if n > 1 && stillLinked(f) {
+			afterLinkCount()
+			if n > 1 {
 				return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n)), f.Close())
 			}
 		}

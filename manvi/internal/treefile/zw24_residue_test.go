@@ -250,14 +250,10 @@ func TestTheLinkFallbackRemovesItsStageBeforeTheSlowSync(t *testing.T) {
 	}
 }
 
-// On a build with an atomic no-replace rename a published entry has one name, so
-// a link count of two is refused outright, even with a sibling named like a stage
+// A link count of two is refused outright on every build, even with a sibling named like a stage
 // that is the very same file: that pairing is what a hard link to a file outside
 // the tree plus a planted stage-named link looks like.
 func TestACountOfTwoIsRefusedEvenWithAStageNamedSibling(t *testing.T) {
-	if !hasAtomicRename {
-		t.Skip("this build publishes by link, where a second link is recounted instead")
-	}
 	anchor, _ := tree(t)
 	root, err := Open(anchor)
 	if err != nil {
@@ -322,5 +318,36 @@ func TestAHardLinkToAnOutsideFileIsNeverReadWhileAStageNamedLinkFlickers(t *test
 	<-done
 	if leaks != 0 {
 		t.Fatalf("%d of %d reads returned a file that is hard-linked outside the tree", leaks, reads)
+	}
+}
+
+// The attack on a recount: the reader has counted two links (the outside file and
+// the in-tree name) and the attacker then unlinks the in-tree name, so that any
+// later count would read one while the handle is still the outside file. The
+// decision is made on the count the handle had when it was checked, so it is refused
+// however the name is churned afterwards. (A name that is gone before the count is
+// read leaves a file with one link, which no count can tell from any other; that is
+// not something a reader of one handle can close.)
+func TestAHandleCountedWithTwoLinksIsRefusedWhateverHappensToTheNameAfter(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	saved := afterLinkCount
+	defer func() { afterLinkCount = saved }()
+	afterLinkCount = func() { _ = os.Remove(entry) }
+	data, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true})
+	if err == nil || !errors.Is(err, ErrRefused) {
+		t.Fatalf("a handle counted with two links was read (%q, %v) after its in-tree name was unlinked", data, err)
 	}
 }

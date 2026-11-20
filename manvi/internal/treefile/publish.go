@@ -154,8 +154,8 @@ var noReplaceRename = renameNoReplace
 // never reachable under two names, so a reader cannot see it with a second hard
 // link. Where it does not, the stage is linked onto the name and removed later,
 // and the entry has two links until the stage is removed, which happens before the
-// directory sync; a SingleLink reader recounts a second link and refuses one that
-// stays (see stillLinked).
+// directory sync. A SingleLink reader refuses any second link, so a fallback publish
+// can be refused in the gap between the link and the removal, which fails closed.
 func publishNew(dir *os.Root, stage, name string) error {
 	err := noReplaceRename(dir, stage, name)
 	if errors.Is(err, errNoAtomicRename) {
