@@ -87,8 +87,8 @@ func gitDiffSequential(ctx context.Context, root string) (string, []string, erro
 		// empty side of a diff and it means the same thing on every platform,
 		// whereas os.DevNull is "NUL" on Windows and git would read that as a
 		// filename.
-		added, note, err := runGitCapped(ctx, root, budget, "diff", "--no-index", "--", "/dev/null", path)
-		if err != nil && added == "" {
+		added, note, err := runGitNoIndex(ctx, root, budget, path)
+		if err != nil {
 			failedFiles = append(failedFiles, fmt.Sprintf("%s (%s)", path, renderFailure(err)))
 			continue
 		}
@@ -217,12 +217,11 @@ func (r *Registry) scopedDiffSequential(ctx context.Context, paths []string, bas
 		// The literal /dev/null, which is git's own convention for the empty
 		// side of a diff and means the same on every platform — os.DevNull is
 		// "NUL" on Windows and git would read that as a filename.
-		added, addNote, addErr := runGitCapped(ctx, r.deps.Root, budget,
-			"diff", "--no-index", "--", "/dev/null", path)
-		if addErr != nil && added == "" {
-			// --no-index exits non-zero whenever it finds a difference, which
-			// is every time here, so an error with output is the ordinary
-			// case. An error with no output is a real one.
+		added, addNote, addErr := runGitNoIndex(ctx, r.deps.Root, budget, path)
+		if addErr != nil {
+			// --no-index exits 1 whenever it finds a difference, which is
+			// every time here, so that status is accepted by name; any other
+			// failure is a real one.
 			notes = append(notes, fmt.Sprintf(
 				"scoped_diff: %s could not be rendered (%v), so the gates did not read it",
 				path, addErr))
@@ -257,8 +256,8 @@ func renderUntrackedSequential(ctx context.Context, root string, rendered []stri
 			unrendered = len(rendered) - i
 			break
 		}
-		added, note, err := runGitCapped(ctx, root, budget, "diff", "--no-index", "--", "/dev/null", path)
-		if err != nil && added == "" {
+		added, note, err := runGitNoIndex(ctx, root, budget, path)
+		if err != nil {
 			renders = append(renders, untrackedRender{path: path, err: err})
 			continue
 		}
@@ -269,4 +268,11 @@ func renderUntrackedSequential(ctx context.Context, root string, rendered []stri
 		renders = append(renders, untrackedRender{path: path, added: added, note: note})
 	}
 	return renders, unrendered
+}
+
+// runGitNoIndex is the reference renderers' one git call for an untracked file:
+// `diff --no-index` against /dev/null, whose exit 1 is the ordinary answer.
+func runGitNoIndex(ctx context.Context, root string, budget int, path string) (string, string, error) {
+	c, err := runGitCapture(ctx, root, budget, gitDiffNoIndexExit, untrackedDiffArgs(path)...)
+	return c.out, c.note, err
 }

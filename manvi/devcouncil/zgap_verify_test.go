@@ -41,8 +41,10 @@ func TestRunGitRefusesAnOutputPastTheCapRatherThanTruncatingIt(t *testing.T) {
 	root := newGitRepo(t)
 	writeOversizedFile(t, root, "huge.txt")
 
-	out, err := runGit(context.Background(), root,
-		"diff", "--no-index", "--", "/dev/null", "huge.txt")
+	// Staged, so the command exits 0: a non-zero status is refused on its own
+	// account now, before the size is ever looked at.
+	run(t, root, "add", "huge.txt")
+	out, err := runGit(context.Background(), root, "diff", "--cached")
 	if err == nil {
 		t.Fatalf("runGit returned %d bytes and no error for an output past the %d-byte cap; "+
 			"an unbounded read reported success", len(out), maxGitCaptureBytes)

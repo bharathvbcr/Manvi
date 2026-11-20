@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -606,7 +607,7 @@ func renderUntrackedPerFile(ctx context.Context, root string, paths []string, bu
 		done := make(chan speculative, 1)
 		pending[i] = done
 		wg.Go(func() {
-			c, err := runGitCapture(specCtx, root, limit, untrackedDiffArgs(paths[i])...)
+			c, err := runGitCapture(specCtx, root, limit, gitDiffNoIndexExit, untrackedDiffArgs(paths[i])...)
 			done <- speculative{capture: c, err: err}
 		})
 	}
@@ -656,10 +657,11 @@ func settleUntracked(ctx context.Context, root, path string, share int, c gitCap
 	// is not the conditions the old loop ran under, and a file skipped for a
 	// spawn that only failed under load is a file the gates never see — so
 	// both cases ask git again, exactly as the loop did.
-	added, note, err := runGitCapped(ctx, root, share, untrackedDiffArgs(path)...)
-	if err != nil && added == "" {
+	again, err := runGitCapture(ctx, root, share, gitDiffNoIndexExit, untrackedDiffArgs(path)...)
+	if err != nil {
 		return untrackedRender{path: path, err: err}
 	}
+	added, note := again.out, again.note
 	if note != "" {
 		added = trimPartialLine(added)
 	}
@@ -734,7 +736,7 @@ func runGit(ctx context.Context, root string, args ...string) (string, error) {
 // Like runGit it refuses a truncated stdout; a truncated stderr is the caller's
 // to carry (gitCapture.stderrNote).
 func runGitWhole(ctx context.Context, root string, args ...string) (gitCapture, error) {
-	c, err := runGitCapture(ctx, root, maxGitCaptureBytes, args...)
+	c, err := runGitCapture(ctx, root, maxGitCaptureBytes, gitExitOK, args...)
 	if err != nil {
 		return gitCapture{}, err
 	}
@@ -909,7 +911,7 @@ func runGitEnv(ctx context.Context, root, index string, args ...string) (string,
 // degradation channel of its own can report the shortfall and carry on with
 // the part it has. What no caller may do is treat a non-empty note as nothing.
 func runGitCapped(ctx context.Context, root string, limit int, args ...string) (string, string, error) {
-	c, err := runGitCapture(ctx, root, limit, args...)
+	c, err := runGitCapture(ctx, root, limit, gitExitOK, args...)
 	return c.out, c.note, err
 }
 
@@ -924,35 +926,51 @@ type gitCapture struct {
 	stderr, stderrNote string
 }
 
+// Exit statuses a caller accepts as git having answered. Anything else is an
+// error, whatever git wrote to stdout first: a git that printed half a diff and
+// then died (128) has not given the gates the change, and a half diff reads like
+// a whole one. Which non-zero status is an answer is the command's, so the
+// caller states it.
+var (
+	// gitExitOK is every command that signals failure by a non-zero status.
+	gitExitOK = []int{0}
+	// gitDiffNoIndexExit is `git diff --no-index`, which exits 1 when the two
+	// sides differ — the normal case for an untracked file against /dev/null.
+	// Status 1 counts only when the diff was written (see runGitCapture).
+	gitDiffNoIndexExit = []int{0, 1}
+)
+
 // runGitCapture is runGitCapped, also reporting the size of the uncapped
 // output. That size is what lets renderUntracked capture under one limit and
 // answer, byte for byte, as a capture under a smaller one would have.
-func runGitCapture(ctx context.Context, root string, limit int, args ...string) (gitCapture, error) {
+func runGitCapture(ctx context.Context, root string, limit int, accept []int, args ...string) (gitCapture, error) {
 	spec := gitSpec(root, "", args)
 	spec.stdoutLimit = limit
 	res := runProc(ctx, spec)
 	if res.timedOut {
 		return gitCapture{}, fmt.Errorf("git %s: timed out", strings.Join(args, " "))
 	}
-	out, err := string(res.stdout), res.err
+	out := string(res.stdout)
 	c := gitCapture{out: out, note: res.stdoutNote, total: len(out) + res.stdoutDropped,
 		stderr: string(res.stderr), stderrNote: res.stderrNote}
 
-	// `git diff --no-index` exits 1 when files differ, which is the normal
-	// case here rather than a failure.
-	if err != nil && len(out) > 0 {
+	err := res.err
+	if err == nil {
 		return c, nil
 	}
-	if err != nil {
-		if msg := strings.TrimSpace(string(res.stderr)); msg != "" {
-			if len(msg) > gitStderrPreview {
-				msg = msg[:gitStderrPreview] + "…"
-			}
-			return gitCapture{}, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
-		}
-		return gitCapture{}, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	// A listed non-zero status is an answer only with output behind it: "the
+	// sides differ" with nothing printed is git failing to render them (a
+	// nested repository, a directory), not a diff.
+	if !res.failedToRun() && slices.Contains(accept, res.exitCode) && (res.exitCode == 0 || c.total > 0) {
+		return c, nil
 	}
-	return c, nil
+	if msg := strings.TrimSpace(string(res.stderr)); msg != "" {
+		if len(msg) > gitStderrPreview {
+			msg = msg[:gitStderrPreview] + "…"
+		}
+		return gitCapture{}, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
+	}
+	return gitCapture{}, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 }
 
 // changedFiles extracts the post-change paths from a unified diff.
