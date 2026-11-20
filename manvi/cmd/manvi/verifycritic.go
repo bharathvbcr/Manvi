@@ -91,8 +91,8 @@ func (c *serveCritic) Judge(ctx context.Context, worktree, prompt string, criter
 	}
 	// Defence in depth: serve resolved this root before it claimed the job, but
 	// the critic is what reads it, so it asks the same canonical-root question
-	// itself. A path that is missing, passes through a symlink, or is not the top
-	// of a git work tree (the filesystem root among them) is never judged.
+	// itself. A path that is missing, or whose resolved target is not the top
+	// of a git work tree (the filesystem root among them), is never judged.
 	// A path that is a link to a work tree is the work tree: it is resolved first
 	// and the resolved root is what is checked and read (serve itself refuses a
 	// symlinked worktree, so only another caller of Judge can pass one).
