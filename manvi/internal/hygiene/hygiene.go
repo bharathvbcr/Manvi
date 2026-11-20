@@ -101,11 +101,18 @@ func EscapeLine(s string) string {
 // as encoding/json (v1) is about member names, which is what a consumer may be
 // using: a duplicate member name does not make a document text, because v1 still
 // decodes the escapes in it. A document with invalid UTF-8 in it is text.
+//
+// Whether the reply parses is not what decides whether a JSON decoder can restore
+// a hidden rune from it: encoding/json (v1) decodes a lone surrogate to U+FFFD and
+// goes on, and json.Decoder reads a stream of concatenated values, so a reply that
+// no validator accepts as one document still hands a parser its \u202e. So the
+// text path rewrites those escapes too, wherever a string could be, before it
+// escapes the raw runes, and no decode path of the output yields an Invisible rune.
 func EscapeResult(s string) string {
 	if jsontext.Value(s).IsValid(jsontext.AllowDuplicateNames(true)) {
 		return EscapeJSON(s)
 	}
-	return Escape(s)
+	return Escape(escapeJSON(s, true))
 }
 
 // EscapeJSON is Escape for text that is a JSON document, which the caller has
@@ -125,14 +132,19 @@ func EscapeResult(s string) string {
 // so it is written as the newline it stands for (CRLF as one). Everything else
 // outside strings, and every string that holds nothing Invisible, is copied as it
 // was.
-func EscapeJSON(s string) string {
+func EscapeJSON(s string) string { return escapeJSON(s, false) }
+
+// escapeJSON is EscapeJSON; text says s is not known to be one document, so the
+// carriage returns and invalid bytes that Escape handles in its own way are left
+// to it, and only what a JSON decoder could turn back into a rune is rewritten.
+func escapeJSON(s string, text bool) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	inString := false
 	for i := 0; i < len(s); {
 		c := s[i]
 		switch {
-		case !inString && c == '\r':
+		case !inString && c == '\r' && !text:
 			b.WriteByte('\n')
 			i++
 			if i < len(s) && s[i] == '\n' {
@@ -155,6 +167,8 @@ func EscapeJSON(s string) string {
 		default:
 			r, w := utf8.DecodeRuneInString(s[i:])
 			switch {
+			case r == utf8.RuneError && w == 1 && text:
+				b.WriteByte(c)
 			case r == utf8.RuneError && w == 1:
 				fmt.Fprintf(&b, "\\\\x%02x", c)
 			case Invisible(r):
