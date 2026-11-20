@@ -865,6 +865,10 @@ type Outcome struct {
 	// finished: a natural stop with text and no tool calls is otherwise
 	// completely silent, and looks identical either way.
 	Sensor SensorVerdict
+	// InterruptLogFailed is why the verify/report entry for an interrupted turn
+	// could not be written to the session log; empty when it was written or none
+	// was owed.
+	InterruptLogFailed string
 	// Bounces counts the times the checkpoint sent this turn back for another
 	// step.
 	Bounces int
@@ -909,9 +913,7 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		// either way, because the cheapest step costs 1.
 		if out.BudgetSpent >= l.cfg.MaxSteps {
 			out.TruncatedBySteps = true
-			if err := l.markCheckpointMissed(&out); err != nil {
-				return out, err
-			}
+			l.markCheckpointMissed(&out)
 			break
 		}
 
@@ -925,12 +927,12 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 
 		messages, err := l.enterStep(ctx, currentTurn, step)
 		if err != nil {
-			return out, err
+			return l.endedByError(ctx, &out, err)
 		}
 
 		response, err := l.step(ctx, messages)
 		if err != nil {
-			return out, err
+			return l.endedByError(ctx, &out, err)
 		}
 		if err := l.absorbResponse(&out, step, response); err != nil {
 			return out, err
@@ -971,7 +973,7 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		}
 		tally, err := l.dispatchCalls(ctx, &out, calls)
 		if err != nil {
-			return out, err
+			return l.endedByError(ctx, &out, err)
 		}
 		l.chargeStep(&out, len(calls), tally)
 
@@ -1652,7 +1654,8 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 	// the listeners run rather than after, so a sensor that shells out
 	// is not started either.
 	if ctx.Err() != nil {
-		return true, l.markCheckpointMissed(out)
+		l.markCheckpointMissed(out)
+		return true, nil
 	}
 	checkpoint := &TurnStopping{
 		Turn: turn, Steps: out.Steps, Response: response,
@@ -1743,13 +1746,29 @@ func OnCheck(b *bus.Bus, fn func(context.Context, *TurnStopping) error) (bus.Dis
 // entry a failed checkpoint does. Only a turn that changed something owes a
 // check, and only a loop with a registered check (OnCheck) has one to owe; a
 // verdict already reached (an earlier bounce's failure) stands.
-func (l *Loop) markCheckpointMissed(out *Outcome) error {
+//
+// A log that cannot take the entry does not change how the turn ended: the
+// original status stands and the failure rides on the outcome
+// (InterruptLogFailed), so an exit decided elsewhere is not rewritten by it.
+func (l *Loop) markCheckpointMissed(out *Outcome) {
 	if !out.Mutated || out.Sensor != SensorNone || bus.Listeners[*checkRegistered](l.bus) == 0 {
-		return nil
+		return
 	}
 	out.Sensor = SensorInterrupted
-	return l.recordCheckpointReport(out, SensorInterrupted,
-		"the turn ended before its end-of-turn check ran, so this turn's changes were never checked")
+	if err := l.recordCheckpointReport(out, SensorInterrupted,
+		"the turn ended before its end-of-turn check ran, so this turn's changes were never checked"); err != nil {
+		out.InterruptLogFailed = err.Error()
+	}
+}
+
+// endedByError is how a step's failure leaves Run. A turn that was cancelled
+// before its checkpoint, having changed something, is marked interrupted like
+// one that hit the step ceiling; the error it returns is untouched.
+func (l *Loop) endedByError(ctx context.Context, out *Outcome, err error) (Outcome, error) {
+	if ctx.Err() != nil {
+		l.markCheckpointMissed(out)
+	}
+	return *out, err
 }
 
 // recordCheckpointReport is the one writer of a checkpoint-sourced verify/report

@@ -324,3 +324,17 @@ func TestAnInterruptedCheckIsReportedAsDegraded(t *testing.T) {
 		t.Fatal("the interrupted verdict fell through to the unrecognised-value branch")
 	}
 }
+
+// A log that refused the interrupted-check record is said to have refused it.
+func TestAnInterruptLogFailureIsReportedAsDegraded(t *testing.T) {
+	ns := outcomeNotices(agent.Outcome{Sensor: agent.SensorInterrupted, InterruptLogFailed: "disk full"}, 500)
+	var found bool
+	for _, n := range ns {
+		if strings.Contains(n.Text, "disk full") && len(n.Degraded) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no degraded notice carries the log failure: %+v", ns)
+	}
+}

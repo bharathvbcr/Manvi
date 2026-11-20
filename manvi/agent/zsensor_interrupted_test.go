@@ -80,14 +80,81 @@ func TestAnInterruptedTurnOwesNoCheckWithoutAListenerOrAChange(t *testing.T) {
 	})
 }
 
-// Cancelled after the last response and before the checkpoint: the same state.
+// cancelAfterResponse cancels its context when the nth stream settles into a
+// response, so the cancel lands after the response and before the checkpoint.
+type cancelAfterResponse struct {
+	llm.Provider
+	cancel context.CancelFunc
+	on     int
+	seen   *int
+}
+
+func (p cancelAfterResponse) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	s, err := p.Provider.Stream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	*p.seen++
+	return cancelingStream{Stream: s, cancel: p.cancel, fire: *p.seen == p.on}, nil
+}
+
+type cancelingStream struct {
+	llm.Stream
+	cancel context.CancelFunc
+	fire   bool
+}
+
+func (s cancelingStream) Response() (llm.Response, error) {
+	r, err := s.Stream.Response()
+	if s.fire {
+		s.cancel()
+	}
+	return r, err
+}
+
+// Cancelled after the last response and before the checkpoint: the cancel branch
+// in closeOrBounce, which ends the turn with no error.
 func TestACancelBeforeTheCheckpointIsNotTheNoCheckVerdict(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seen := 0
+	h := build(t, []replay.Turn{
+		toolTurn("call-1", "write", `{"path":"a.go"}`),
+		textTurn("done"),
+	}, func(c *Config) {
+		c.Provider = cancelAfterResponse{Provider: c.Provider, cancel: cancel, on: 2, seen: &seen}
+	})
+	registerWriteTool(t, h)
+	asked := 0
+	if _, err := OnCheck(h.bus, func(_ context.Context, _ *TurnStopping) error { asked++; return nil }); err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	out, err := h.loop.Run(ctx, userMsg("go"))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if asked != 0 {
+		t.Fatalf("the checkpoint ran %d times despite the cancel", asked)
+	}
+	if out.Sensor != SensorInterrupted {
+		t.Fatalf("sensor = %q, want %q", out.Sensor, SensorInterrupted)
+	}
+	if !hasVerifyReport(h) {
+		t.Fatal("no verify/report entry for the interrupted turn")
+	}
+}
+
+// The ordinary cancel: Ctrl-C while the next model call is streaming, on a turn
+// that already wrote. Run returns the cancellation, unchanged, with the verdict
+// and the log entry.
+func TestACancelMidTurnAfterAWriteIsInterruptedAndKeepsItsError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	h := build(t, []replay.Turn{
 		toolTurn("call-1", "write", `{"path":"a.go"}`),
 		textTurn("done"),
 	}, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	if err := h.tools.Register(tools.Tool{
 		Schema: llm.ToolSchema{Name: "write", Description: "write"},
 		Handler: func(context.Context, tools.Call) tools.Result {
@@ -100,14 +167,55 @@ func TestACancelBeforeTheCheckpointIsNotTheNoCheckVerdict(t *testing.T) {
 	if _, err := OnCheck(h.bus, func(_ context.Context, _ *TurnStopping) error { return nil }); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-
 	out, err := h.loop.Run(ctx, userMsg("go"))
-	if err != nil {
-		t.Skipf("the provider refuses a cancelled context before the checkpoint is reached: %v", err)
+	if err == nil {
+		t.Fatalf("a cancelled turn returned no error (sensor %q)", out.Sensor)
 	}
-	if out.Sensor != SensorInterrupted {
-		t.Fatalf("sensor = %q, want %q", out.Sensor, SensorInterrupted)
+	if out.Sensor != SensorInterrupted || !hasVerifyReport(h) {
+		t.Fatalf("sensor = %q, report logged = %v; want interrupted and logged", out.Sensor, hasVerifyReport(h))
 	}
+}
+
+// With no check registered, or nothing written, a cancel owes and records nothing.
+func TestACancelOwesNothingWithoutACheckOrAWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		check   bool
+		mutates bool
+	}{{"no check", false, true}, {"nothing written", true, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			h := build(t, []replay.Turn{toolTurn("call-1", "write", `{"path":"a.go"}`), textTurn("done")}, nil)
+			if err := h.tools.Register(tools.Tool{
+				Schema: llm.ToolSchema{Name: "write", Description: "write"}, ReadOnly: !tc.mutates,
+				Handler: func(context.Context, tools.Call) tools.Result {
+					cancel()
+					return tools.Result{Text: "x"}
+				},
+			}); err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			if tc.check {
+				if _, err := OnCheck(h.bus, func(_ context.Context, _ *TurnStopping) error { return nil }); err != nil {
+					t.Fatalf("listen: %v", err)
+				}
+			}
+			out, _ := h.loop.Run(ctx, userMsg("go"))
+			if out.Sensor != SensorNone || hasVerifyReport(h) {
+				t.Fatalf("sensor = %q, logged = %v; want none and not logged", out.Sensor, hasVerifyReport(h))
+			}
+		})
+	}
+}
+
+func hasVerifyReport(h *harness) bool {
+	for _, ev := range h.log.Events() {
+		if ev.Type == session.VerifyReport {
+			return true
+		}
+	}
+	return false
 }
 
 // A listener that only watches the checkpoint is not a check: a turn it saw

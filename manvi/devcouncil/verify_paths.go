@@ -432,9 +432,9 @@ func (r *Registry) scopedDiff(ctx context.Context, paths []string, baseline Base
 			rendered++
 		}
 		if u.err != nil {
-			// --no-index exits non-zero whenever it finds a difference, which
-			// is every time here, so an error with output is the ordinary
-			// case. An error with no output is a real one.
+			// The render accepts --no-index's exit 1 (the files differ) when a
+			// diff came with it, so an error here is a real failure: another
+			// status, or exit 1 with nothing written.
 			notes = append(notes, fmt.Sprintf(
 				"scoped_diff: %s could not be rendered (%v), so the gates did not read it",
 				u.path, u.err))

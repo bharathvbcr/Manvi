@@ -88,6 +88,14 @@ func outcomeNotices(o agent.Outcome, maxSteps int) []outcomeNotice {
 		})
 	}
 
+	if o.InterruptLogFailed != "" {
+		out = append(out, outcomeNotice{
+			Text: "the session log refused the record that this turn's check never ran (" +
+				o.InterruptLogFailed + "), so the log does not say so",
+			Degraded: []string{"interrupted-check record not written"},
+		})
+	}
+
 	// A turn that had to be sent back says so even when it eventually passed:
 	// the operator asked for one answer and paid for three, and the reason is
 	// not otherwise visible anywhere in the transcript.
