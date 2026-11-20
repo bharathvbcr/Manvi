@@ -13,6 +13,10 @@ import (
 // name is taken, in one atomic step (renameat2 RENAME_NOREPLACE), so the file is
 // never reachable under two names. errNoAtomicRename means this kernel or file
 // system does not do it.
+// hasAtomicRename says Publish renames without replacing, so a published entry
+// never has a second link. See stillLinked.
+const hasAtomicRename = true
+
 func renameNoReplace(dir *os.Root, stage, name string) error {
 	d, err := dir.Open(".")
 	if err != nil {

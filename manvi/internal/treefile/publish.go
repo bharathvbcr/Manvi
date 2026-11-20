@@ -153,12 +153,20 @@ var noReplaceRename = renameNoReplace
 // the OS has an atomic no-replace rename that is the whole step, and the entry is
 // never reachable under two names, so a reader cannot see it with a second hard
 // link. Where it does not, the stage is linked onto the name and removed later,
-// and the entry has two links in between: SingleLink readers accept that one
-// extra link only when it is this store's own stage sibling (see openRegular).
+// and the entry has two links until the stage is removed, which happens before the
+// directory sync; a SingleLink reader recounts a second link and refuses one that
+// stays (see stillLinked).
 func publishNew(dir *os.Root, stage, name string) error {
 	err := noReplaceRename(dir, stage, name)
 	if errors.Is(err, errNoAtomicRename) {
-		return dir.Link(stage, name)
+		if err := dir.Link(stage, name); err != nil {
+			return err
+		}
+		// The second name goes now, before the directory sync, so the window in
+		// which a reader can see two links is the gap between two calls. A failure
+		// is left to Publish's own removal of the stage, which reports it.
+		_ = dir.Remove(stage)
+		return nil
 	}
 	return err
 }

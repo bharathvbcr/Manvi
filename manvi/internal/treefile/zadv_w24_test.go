@@ -292,14 +292,19 @@ func TestZadvW24AFailedStageRemovalByPermissionStillReportsPublished(t *testing.
 	}
 	defer func() { _ = child.Close() }()
 	t.Cleanup(func() { _ = os.Chmod(dirPath, 0o750) }) // #nosec G302 -- a path under this test's own t.TempDir
-	// The stage only outlives a publish that linked; where the OS renames without
-	// replacing, the stage is consumed and there is nothing to fail to remove.
+	// The stage only outlives a publish that linked, and a link publish removes it
+	// before the directory sync, so the unremovable stage is arranged where the name
+	// lands: the stand-in for the rename links the stage onto the name itself, makes
+	// the directory read-only, and reports success, as a rename that landed would.
 	saved := noReplaceRename
 	defer func() { noReplaceRename = saved }()
-	noReplaceRename = func(*os.Root, string, string) error { return errNoAtomicRename }
-	err = Publish(child, "entry", []byte("p"), PublishOptions{SyncDir: func(*os.Root) error {
-		return os.Chmod(dirPath, 0o500) // no removal possible // #nosec G302 -- a path under this test's own t.TempDir
-	}})
+	noReplaceRename = func(dir *os.Root, stage, name string) error {
+		if err := dir.Link(stage, name); err != nil {
+			return err
+		}
+		return os.Chmod(dirPath, 0o500) // no removal possible
+	}
+	err = Publish(child, "entry", []byte("p"), PublishOptions{})
 	if err == nil {
 		t.Fatal("an unremovable stage was not reported")
 	}

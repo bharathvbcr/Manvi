@@ -55,8 +55,13 @@ func TestAFailedStageRemovalAfterTheLinkLandedStillReportsAPublishedWrite(t *tes
 	// has the atomic rename there is no stage to fail to remove.
 	saved := noReplaceRename
 	defer func() { noReplaceRename = saved }()
-	noReplaceRename = func(*os.Root, string, string) error { return errNoAtomicRename }
-	err = Publish(root, "entry", []byte("payload"), PublishOptions{SyncDir: breakStage})
+	noReplaceRename = func(dir *os.Root, stage, name string) error {
+		if err := dir.Link(stage, name); err != nil {
+			return err
+		}
+		return breakStage(dir) // the link landed; now the stage cannot be removed
+	}
+	err = Publish(root, "entry", []byte("payload"), PublishOptions{})
 	if err == nil {
 		t.Fatal("a stage that could not be removed was not reported at all")
 	}
@@ -191,11 +196,10 @@ func TestAPublishNeverLeavesTheEntryWithASecondLink(t *testing.T) {
 	}
 }
 
-// The link fallback has a second name until the stage is removed. A reader accepts
-// that second link only as this store's own stage sibling, however long the sync
-// takes, and refuses a hard link to a file outside the tree, with or without a
-// stage-shaped name beside it.
-func TestTheLinkFallbackIsReadableOnlyThroughItsOwnStage(t *testing.T) {
+// The link fallback removes its stage before the directory sync, so a slow sync
+// is no window in which the entry has two names, and a hard link to a file outside
+// the tree is refused with or without a stage-shaped name beside it.
+func TestTheLinkFallbackRemovesItsStageBeforeTheSlowSync(t *testing.T) {
 	anchor, outside := tree(t)
 	root, err := Open(anchor)
 	if err != nil {
@@ -243,5 +247,80 @@ func TestTheLinkFallbackIsReadableOnlyThroughItsOwnStage(t *testing.T) {
 	}
 	if _, err := ReadFile(root, "two", ReadOptions{Limit: 1 << 10, SingleLink: true}); !errors.Is(err, ErrRefused) {
 		t.Fatalf("a second link that is not a stage sibling was accepted: %v", err)
+	}
+}
+
+// On a build with an atomic no-replace rename a published entry has one name, so
+// a link count of two is refused outright, even with a sibling named like a stage
+// that is the very same file: that pairing is what a hard link to a file outside
+// the tree plus a planted stage-named link looks like.
+func TestACountOfTwoIsRefusedEvenWithAStageNamedSibling(t *testing.T) {
+	if !hasAtomicRename {
+		t.Skip("this build publishes by link, where a second link is recounted instead")
+	}
+	anchor, _ := tree(t)
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := os.WriteFile(filepath.Join(anchor, "entry"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(anchor, "entry"), filepath.Join(anchor, ".entry.0123456789abcdef.tmp")); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	if _, err := ReadFile(root, "entry", ReadOptions{Limit: 10, SingleLink: true}); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a count of two with a stage-named sibling was accepted: %v", err)
+	}
+}
+
+// The attack on a stage-sibling exemption: an entry that is a hard link to a file
+// outside the tree, read while a stage-named sibling is linked and unlinked in a
+// loop. Not one read may return the outside file, whatever the interleaving.
+func TestAHardLinkToAnOutsideFileIsNeverReadWhileAStageNamedLinkFlickers(t *testing.T) {
+	anchor, outside := tree(t)
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(anchor, "entry")
+	if err := os.Link(secret, entry); err != nil {
+		t.Skipf("hard links are not available: %v", err)
+	}
+	root, err := Open(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stage := filepath.Join(anchor, ".entry.0123456789abcdef.tmp")
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if os.Link(secret, stage) == nil {
+				_ = os.Remove(stage)
+			}
+		}
+	}()
+	leaks, reads := 0, 0
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		reads++
+		if got, err := ReadFile(root, "entry", ReadOptions{Limit: 1 << 10, SingleLink: true}); err == nil {
+			leaks++
+			_ = got
+		}
+	}
+	close(stop)
+	<-done
+	if leaks != 0 {
+		t.Fatalf("%d of %d reads returned a file that is hard-linked outside the tree", leaks, reads)
 	}
 }

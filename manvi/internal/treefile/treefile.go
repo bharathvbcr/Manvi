@@ -19,7 +19,6 @@ package treefile
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -218,54 +217,49 @@ type ReadOptions struct {
 	// one name asks for it. A count of zero is not a refusal: the file was
 	// replaced by rename after it was opened, and the handle is a consistent
 	// snapshot of the previous version. Publish uses an atomic no-replace rename
-	// where the OS has one, so a published entry has one name; where it links
-	// instead, the one extra link a publish in progress has is accepted only when it
-	// is the entry's own stage sibling (see ownStageLink).
+	// where the OS has one, so a published entry has one name and any second link is
+	// refused outright; on a build that links instead, a second link is recounted a
+	// few times and refused if it is still there (see stillLinked).
 	SingleLink bool
 }
 
 // openRetries bounds the retries of an open that raced a rename-replace.
 const openRetries = 3
 
-// ownStageLink reports whether the second hard link of f, which has n links, is
-// this store's own stage for it: a sibling of name in its directory called
-// ".<name>.<16 hex>.tmp" that is the same file. A publish by link, where the OS has
-// no atomic no-replace rename, has exactly this second name for the moment before
-// it removes the stage, however slow the directory sync in between. A link to a file
-// outside the tree makes a count of 3 or more, because the file's own name is
-// outside, and one with no stage sibling is not a publish, so both are refused.
-func ownStageLink(root *os.Root, name string, f *os.File, n uint64) bool {
-	if n != 2 {
-		return false
+// linkRecounts bounds how often a read that found a second hard link counts it
+// again, on a build that publishes by link (see hasAtomicRename). It is a variable
+// so a test can act at that moment.
+var linkRecounts = []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond}
+
+// settle waits one step of a recount; a variable so a test can act at that moment.
+var settle = time.Sleep
+
+// stillLinked reports whether f, which had n hard links when it was opened, still
+// has more than one after the recounts this build allows.
+//
+// Where Publish has an atomic no-replace rename (hasAtomicRename), a published
+// entry has one name and a second link is never a publish in progress, so the
+// answer is yes without waiting. Nothing else is accepted: in particular a sibling
+// named like a stage is not evidence, because the reader counts once and scans the
+// directory afterwards, and an entry that is a hard link to a file outside the tree
+// can be paired with a stage-named link made and removed faster than the scan. On a
+// build that links, Publish removes its stage before it syncs the directory, so the
+// window is the time between two system calls, and a recount of the same handle that
+// finds one link is a fact about that file at that moment (the outside name does not
+// go away), so it is the only thing a reader waits for. A lock the publisher holds
+// would be the other way to close the window; Publish takes none, so the answer
+// there is to refuse what is still linked after the recounts.
+func stillLinked(f *os.File) bool {
+	if hasAtomicRename {
+		return true
 	}
-	dirPath, base := filepath.Split(filepath.FromSlash(name))
-	dirPath = filepath.Clean(dirPath)
-	d, err := root.Open(dirPath)
-	if err != nil {
-		return false
-	}
-	names, err := d.Readdirnames(maxAliasScan + 1)
-	_ = d.Close()
-	if err != nil || len(names) > maxAliasScan {
-		return false
-	}
-	held, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	prefix := "." + base + "."
-	for _, cand := range names {
-		if len(cand) != len(prefix)+16+len(".tmp") || !strings.HasPrefix(cand, prefix) || !strings.HasSuffix(cand, ".tmp") {
-			continue
-		}
-		if _, err := hex.DecodeString(cand[len(prefix) : len(prefix)+16]); err != nil {
-			continue
-		}
-		if info, err := root.Lstat(filepath.Join(dirPath, cand)); err == nil && os.SameFile(info, held) {
-			return true
+	for _, d := range linkRecounts {
+		settle(d)
+		if n, err := safefile.LinkCount(f); err == nil && n <= 1 {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // ErrUnstable marks a name that kept being replaced while it was being opened,
@@ -345,12 +339,8 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 			if err != nil {
 				return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
 			}
-			if n > 1 && !ownStageLink(root, name, f, n) {
-				// The publisher may have finished between the count and the
-				// look, which leaves one link.
-				if again, err := safefile.LinkCount(f); err != nil || again > 1 {
-					return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n)), f.Close())
-				}
+			if n > 1 && stillLinked(f) {
+				return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n)), f.Close())
 			}
 		}
 		if info.Size() > o.Limit {
