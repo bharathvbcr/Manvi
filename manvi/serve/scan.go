@@ -107,10 +107,12 @@ type ScanDeps struct {
 	// the category is then reported unavailable.
 	Gaps  func(root string) ScanGaps
 	Board ScanBoard
-	// Busy, when set, is asked for the scanned root and refuses the scan with
-	// its answer: a managed harness block may be in the working tree. Nil means
-	// none is known (no managed lane). See ManagedRunner.HarnessBusy.
-	Busy func(root string) *Error
+	// Lease, when set, takes the scanned root in the managed runner's checkout
+	// table for the life of the scan: it refuses the scan when a managed harness
+	// block may be in the working tree, and while the lease is held a managed
+	// harness prepare on the root is refused. Nil means none is known (no managed
+	// lane). See ManagedRunner.Lease.
+	Lease CheckoutLease
 	// Deadline bounds one scan; zero means 90 s.
 	Deadline time.Duration
 }
@@ -294,12 +296,24 @@ func (r *ScanRunner) Start(ctx context.Context, raw json.RawMessage) (any, *Erro
 		return nil, e
 	}
 	// A scan reads the working tree and diffs it; with a harness block in it the
-	// proposals would be about text the agent did not write.
-	if busy := r.deps.Busy; busy != nil {
-		if e := busy(root); e != nil {
+	// proposals would be about text the agent did not write, and a block written
+	// while it reads would be the same. The lease refuses both, and is held until
+	// the scan's goroutine ends. Every return below gives it back unless the scan
+	// started; a request that joins a running scan holds none of its own.
+	release := func() {}
+	if lease := r.deps.Lease; lease != nil {
+		held, e := lease(root)
+		if e != nil {
 			return nil, e
 		}
+		release = held
 	}
+	handedOver := false
+	defer func() {
+		if !handedOver {
+			release()
+		}
+	}()
 	if p.Since != "" {
 		if !scanRevision.MatchString(p.Since) {
 			return nil, badRequest("since is not a plain revision name")
@@ -358,7 +372,8 @@ func (r *ScanRunner) Start(ctx context.Context, raw json.RawMessage) (any, *Erro
 	r.wg.Add(1)
 	view := job.view.clone()
 	r.mu.Unlock()
-	go r.run(jobCtx, job, dm)
+	handedOver = true
+	go r.run(jobCtx, job, dm, release)
 	return view, nil
 }
 
@@ -449,8 +464,9 @@ func (s *scanState) note(category, status, detail string, hidden int) {
 	s.cov = append(s.cov, ScanCoverage{Category: category, Status: status, Detail: detail, Hidden: hidden})
 }
 
-func (r *ScanRunner) run(ctx context.Context, job *scanJob, dm ScanDevmap) {
+func (r *ScanRunner) run(ctx context.Context, job *scanJob, dm ScanDevmap, release func()) {
 	defer r.wg.Done()
+	defer release()
 	defer job.cancel()
 	st := &scanState{root: job.view.RepoRoot, since: job.view.Since}
 	steps := []struct {

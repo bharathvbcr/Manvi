@@ -87,6 +87,11 @@ type ManagedRunner struct {
 	// registration on it one step; see enterCheckout. Taken before mu and before
 	// any job's mu.
 	checkoutMu sync.Mutex
+	// readers are the verification and scan jobs holding a checkout to read its
+	// diff, each a lease from Lease; guarded by checkoutMu. A harness attempt is
+	// refused on a checkout a reader holds, and a reader is refused on a checkout
+	// a harness attempt has taken, so the block is never in a diff being read.
+	readers []*checkoutReader
 	// blocked is the checkouts whose harness block no live run holds and that
 	// has not been taken out, each with why; guarded by mu. See blockedCheckout.
 	blocked []*blockedCheckout
@@ -223,6 +228,85 @@ func harnessBusy(format string, args ...any) *Error {
 	return &Error{Code: ErrHarnessBusy, Message: fmt.Sprintf(format, args...)}
 }
 
+// checkoutReader is one lease in the checkout table: a job that reads a
+// worktree's diff, by what it is, for the refusal that names it.
+type checkoutReader struct {
+	info os.FileInfo
+	path string
+	what string
+}
+
+// CheckoutLease takes a worktree for a job that reads its diff and returns the
+// function that gives it back. The error is a refusal and nothing is held. The
+// release is idempotent and safe to call from any goroutine, and a job calls it
+// on every way it can end.
+type CheckoutLease func(worktree string) (release func(), e *Error)
+
+// Lease is the CheckoutLease for jobs of one kind, named in the refusal a
+// harness attempt gets while one is held ("verification", "scan"). A lease is
+// refused while a managed harness block may be in the worktree (HarnessBusy), or
+// while an attempt that carries a harness has claimed it: its block is about to
+// be, or already is, in the diff. The check and the claim are one step under
+// checkoutMu, the lock enterCheckout takes for the reverse check, so a reader
+// and a harness attempt that arrive together cannot both be admitted.
+//
+// A reader does not refuse an attempt without a harness: such a run writes the
+// agent's own work, which is what is verified.
+func (r *ManagedRunner) Lease(what string) CheckoutLease {
+	return func(worktree string) (func(), *Error) {
+		resolved, info, ok := resolvedCheckout(worktree)
+		if !ok {
+			return nil, badRoot("%s worktree does not exist or cannot be resolved", what)
+		}
+		r.checkoutMu.Lock()
+		defer r.checkoutMu.Unlock()
+		if e := r.HarnessBusy(resolved); e != nil {
+			return nil, e
+		}
+		if e := r.harnessClaim(resolved, info); e != nil {
+			return nil, e
+		}
+		reader := &checkoutReader{info: info, path: resolved, what: what}
+		r.readers = append(r.readers, reader)
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				r.checkoutMu.Lock()
+				defer r.checkoutMu.Unlock()
+				r.readers = slices.DeleteFunc(r.readers, func(held *checkoutReader) bool { return held == reader })
+			})
+		}, nil
+	}
+}
+
+// harnessClaim refuses a reader when a live attempt that carries a harness has
+// claimed the checkout (enterCheckout) but not yet written its block, which
+// HarnessBusy cannot see: it reports blocks written. The block is about to be in
+// the diff the reader would take. checkoutMu is held, so no attempt is between
+// its check and its claim.
+func (r *ManagedRunner) harnessClaim(resolved string, info os.FileInfo) *Error {
+	r.mu.Lock()
+	jobs := make([]*managedJob, 0, len(r.jobs))
+	for _, j := range r.jobs {
+		jobs = append(jobs, j)
+	}
+	r.mu.Unlock()
+	for _, j := range jobs {
+		select {
+		case <-j.done:
+			continue
+		default:
+		}
+		j.mu.Lock()
+		claimed := j.wantsHarness && checkoutsOverlap(j.checkoutInfo, j.checkout, info, resolved)
+		j.mu.Unlock()
+		if claimed {
+			return harnessBusy("a managed run is preparing a harness on this worktree: its block is about to be in the checkout, so a diff taken now would not be the agent's; try again when the run has ended")
+		}
+	}
+	return nil
+}
+
 // enterCheckout is what an attempt does about its checkout before anything else
 // touches it, and it does it for every attempt, with a harness or without:
 //
@@ -233,6 +317,9 @@ func harnessBusy(format string, args ...any) *Error {
 //     ends, and a second run would read it as repository content and have it in
 //     its own diff. Two attempts without a harness share a checkout as they
 //     always did. The check and the claim are one step under checkoutMu.
+//   - an attempt that asks for a harness is also refused while a verification or
+//     scan holds the checkout to read its diff (Lease): the block would be in the
+//     diff the verdict is about. The reverse is Lease's refusal.
 //   - a block a run left behind (Manvi died mid-run) is taken out, by the same
 //     exact-bytes rule as any restore, and reported in the prepare result. A block
 //     the agent edited inside, or a record that is not a block Manvi wrote, is
@@ -257,6 +344,13 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 	if reason := r.heldReason(resolved, info); reason != "" {
 		r.recheckHeld(resolved, info)
 		return harnessBusy("%s", reason)
+	}
+	if wants {
+		for _, reader := range r.readers {
+			if checkoutsOverlap(reader.info, reader.path, info, resolved) {
+				return harnessBusy("a %s is reading this checkout's diff, and an attempt with a harness would put its block in what it reads; try again when it ends", reader.what)
+			}
+		}
 	}
 	r.mu.Lock()
 	others := make([]*managedJob, 0, len(r.jobs))

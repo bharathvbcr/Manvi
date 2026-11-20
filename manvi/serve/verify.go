@@ -120,10 +120,12 @@ type VerifyDeps struct {
 	CoverageFile   string
 	// Devmap returns the code-intelligence client for a worktree.
 	Devmap func(worktree string) DevmapClient
-	// Busy, when set, is asked for the worktree and refuses the verification
-	// with its answer: a managed harness block may be in it. Nil means none is
-	// known (no managed lane). See ManagedRunner.HarnessBusy.
-	Busy func(worktree string) *Error
+	// Lease, when set, takes the worktree in the managed runner's checkout table
+	// for the life of the job: it refuses the verification when a managed harness
+	// block may be in the worktree, and while the lease is held a managed harness
+	// prepare on the worktree is refused. Nil means none is known (no managed
+	// lane). See ManagedRunner.Lease.
+	Lease CheckoutLease
 	// NewVerifier builds the path verifier for a worktree. Nil uses
 	// devcouncil.NewPathVerifier.
 	NewVerifier func(root, verifierBinary, coverageFile string) (devcouncil.PathChecker, error)
@@ -320,12 +322,25 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 		return VerifyResult{}, &store.WorkbenchError{Code: e.Code, Message: e.Message}
 	}
 	// What is verified is the agent's diff. While a managed harness block is in
-	// the worktree the diff is not, so the check refuses and does not judge it.
-	if busy := r.deps.Busy; busy != nil {
-		if e := busy(root); e != nil {
+	// the worktree the diff is not, so the check refuses and does not judge it;
+	// and while this job reads the diff, a harness prepare on the worktree is
+	// refused. The lease is the same table entry for both, held until the job
+	// ends: every return below gives it back, and the job's goroutine takes it
+	// over once it exists.
+	release := func() {}
+	if lease := r.deps.Lease; lease != nil {
+		held, e := lease(root)
+		if e != nil {
 			return VerifyResult{}, &store.WorkbenchError{Code: e.Code, Message: e.Message}
 		}
+		release = held
 	}
+	handedOver := false
+	defer func() {
+		if !handedOver {
+			release()
+		}
+	}()
 
 	// One claim at a time. The check-then-write below is not atomic in storage,
 	// so two identical requests must not both find nothing and both claim.
@@ -371,8 +386,10 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 	job := &verifyJob{cancel: cancel, done: make(chan struct{})}
 	r.jobs[params.RequestID] = job
 	r.wg.Add(1)
+	handedOver = true
 	go func() {
 		defer r.wg.Done()
+		defer release()
 		defer close(job.done)
 		defer cancel()
 		settled := r.executeSafely(jobCtx, record, item, scope)

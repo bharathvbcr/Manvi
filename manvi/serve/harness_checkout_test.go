@@ -185,8 +185,8 @@ func TestHarnessBusyReportsALiveBlockAndAnUnappliedRecord(t *testing.T) {
 	}
 }
 
-func busyAlways(string) *Error {
-	return harnessBusy("a managed harness run is in progress on this worktree")
+func busyAlways(string) (func(), *Error) {
+	return nil, harnessBusy("a managed harness run is in progress on this worktree")
 }
 
 // work.verify.task refuses while a block is in the worktree, before it reads
@@ -195,7 +195,7 @@ func TestVerifyRefusesWhileAHarnessBlockIsLive(t *testing.T) {
 	root := scanRepo(t, map[string]string{"AGENTS.md": "rules\n"})
 	runner, err := NewVerifyRunner(VerifyDeps{
 		Client: storeguard.NewClient(t, "/does/not/exist/dcstore", filepath.Join(t.TempDir(), "p.sqlite")), Critic: &scriptedCritic{},
-		Devmap: func(string) DevmapClient { return &fakeDevmap{} }, Busy: busyAlways,
+		Devmap: func(string) DevmapClient { return &fakeDevmap{} }, Lease: busyAlways,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestScanRefusesWhileAHarnessBlockIsLive(t *testing.T) {
 	runner, err := NewScanRunner(ScanDeps{
 		Devmap: func(string) ScanDevmap { return &scanFakeDevmap{} },
 		Text:   func(string) ScanText { return &scanFakeText{} },
-		Board:  &scanFakeBoard{}, Busy: busyAlways,
+		Board:  &scanFakeBoard{}, Lease: busyAlways,
 	})
 	if err != nil {
 		t.Fatal(err)
