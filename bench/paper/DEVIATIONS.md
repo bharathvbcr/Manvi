@@ -737,8 +737,10 @@ ban list. None of this was measured on a grid episode.
 **What changed.** The ban is an audit hook (`sys.addaudithook`) the worker
 installs before it reads the candidate, built so that it consults nothing a
 candidate can reach (a code constant, no closure, no module global), refusing the
-`import` event of every banned name however it is spelled and the reading of a
-banned module's source. The worker harness loads none of the banned modules, so
+`import` event of every banned name that an import statement, `__import__` or
+`importlib` spells, and the reading of a banned module's source. (An earlier
+version of this paragraph said "however it is spelled"; that was false for
+loader calls, see below.) The worker harness loads none of the banned modules, so
 nothing is left to reach by attribute. The static audit that three hidden tests
 each carried a copy of is one function in the checker, and also names the
 dynamic spellings. `!=` against a worker object whose data the checker cannot
@@ -754,10 +756,29 @@ The checker keeps the encoding it sent, fails a run whose report is withheld or
 malformed, and counts the mutations itself; a worker that reports a pristine
 copy of arguments it mutated is not detected. Every verification record that
 relied on a report lists `writeback` under `unenforced`, and so does one whose
-ban covered a module the harness had loaded. A frozen module
-loaded through `_imp` was not tested against the hook and may fire no import
-event, and the `importlib`/`imp`/`runpy` bans are advisory (the hook refuses the
-modules they would load, not the machinery). A candidate that
+ban covered a module the harness had loaded.
+
+**The loader-level hole (found 19 November 2026, closed as far as CPython
+allows).** `_imp.create_builtin` raises no `import` audit event, so the ban as
+first described did not hold: a candidate that built `_imp`, `_sre` and
+`create_builtin` from `chr` codes (the static audit sees only constants) took
+`_sre`, the C half of `re`, and passed `globmatch` verification with an empty
+`unenforced` list. `BuiltinImporter.create_module`, `_frozen_importlib._imp`, a
+pristine `_imp` returned by `create_builtin("_imp")`, `_imp.exec_builtin` on
+such a module, `_imp.get_frozen_object("runpy")` and
+`_imp.find_frozen("runpy", withdata=True)` were the same hole (`_gcd_import`,
+`init_frozen` and a `FrozenImporter` load of `runpy` were already refused, the
+last two only because they import `importlib.machinery`). The worker now
+replaces the four `_imp` loader functions with stubs that ask the audit hook
+to perform the load, and the hook refuses banned names and the interpreter's
+own import machinery; `sys._current_frames` is refused. **Still open:** while
+a load runs the real function is held in the hook's frame, and a `__del__`
+finalizer that the garbage collector starts inside the load can read it
+(`sys._getframe`); the probe obtained `_sre` and passed verification. CPython
+offers no way to hide a live frame from the thread running in it, so every
+record of a task with an import ban names this under `unenforced`
+(`import-ban: loader: ...`). The `importlib`/`imp`/`runpy` bans are advisory
+(the hook refuses the modules they would load, not the machinery). A candidate that
 writes a banned module's logic from memory is not detectable by any of this.
 
 **Effect on the reported numbers.** None was measured; no grid ran on the

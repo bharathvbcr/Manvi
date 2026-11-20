@@ -10,8 +10,10 @@ it is enforced by one call, `_mh.enforce_bans`, that does two independent things
      names the dynamic spellings (`__import__`, `builtins.__dict__[...]`,
      importlib) as well as direct imports.
   2. an audit hook in the WORKER, for the whole time the candidate runs. It
-     refuses the import event of every banned module however it is spelled, and
-     candidate code cannot remove it (see mh/rpc.py).
+     refuses the import event of every banned module that an import statement,
+     `__import__` or importlib spells, gates the loader calls that raise no such
+     event, and candidate code cannot remove it. One loader route stays open and
+     is named in every record's `unenforced` list (see mh/rpc.py).
 
 Verifier-split note (this file was adapted when the grader was split into a
 checker and a worker): the candidate is imported by name into the worker, whose

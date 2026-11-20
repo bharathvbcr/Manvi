@@ -56,7 +56,16 @@ check that decides a verdict is *computed* there:
     spelled (statement, `__import__`, importlib, `builtins.__dict__`), the
     reading of a banned module's source file, `ctypes` and the sub-interpreter
     modules (the ways round a hook), and `gc.get_objects` / `get_referrers` /
-    `get_referents` (the way to the harness's own objects). The worker harness
+    `get_referents` and `sys._current_frames` (the ways to the harness's own
+    objects). Four loader calls raise no `import` event at all
+    (`_imp.create_builtin`, `init_frozen`, `get_frozen_object`,
+    `find_frozen`), so the worker replaces them with stubs that ask the hook
+    to do the load (event `mh.loader`) and refuse the banned names and the
+    interpreter's own import machinery (a fresh `_imp` would be a pristine
+    `create_builtin`). That does not make the ban airtight: the real functions
+    sit in the hook's frame while a load runs, and a finalizer the garbage
+    collector starts inside the load can read them. Every record of a task with
+    a ban says so (`LOADER_RESIDUAL` in `unenforced`). The worker harness
     itself loads none of `re`, `queue`, `json`, `base64` or `importlib`, so there is
     no already-imported copy to reach through `sys.modules["__main__"]._g` or
     `json.decoder.re`; the `forbid` reply (sent before any candidate code has
@@ -1237,6 +1246,20 @@ _INTERNALS = (types.FrameType, types.CodeType, types.TracebackType,
               types.AsyncGeneratorType)
 
 
+# What the loader gateway (see _LOADER_WRAPPERS) cannot close in CPython, named on
+# every record of a task with an import ban. The ban refuses the import statement,
+# __import__, importlib and every call into _imp / the frozen importer, but the
+# real _imp functions are still held by the audit hook's frame while a load runs,
+# and CPython offers no way to hide a live frame from the thread that is running
+# in it: a __del__ finalizer that the garbage collector starts inside the load can
+# read it with sys._getframe and so call the real create_builtin.
+LOADER_RESIDUAL = (
+    "import-ban: loader: a candidate that runs a finalizer (__del__ via the garbage "
+    "collector) inside a loader call can read the real _imp.create_builtin from the "
+    "gateway's live frame and load a banned builtin module such as _sre; every "
+    "other spelling, including direct _imp calls, is refused")
+
+
 class CheckerEndpoint(Endpoint):
     """The checker side: serves only the callback ops of `CHECKER_OPS`."""
 
@@ -1268,6 +1291,8 @@ class CheckerEndpoint(Endpoint):
             unenforced.append(
                 f"writeback: {self.wb_oversized} container argument(s) longer than "
                 f"{MUT_WB_MAX} are not attested at all")
+        if self.bans:
+            unenforced.append(LOADER_RESIDUAL)
         for b in self.bans:
             if b["preloaded"]:
                 unenforced.append(
@@ -1341,7 +1366,10 @@ _ESCAPE_MODULES = ("ctypes", "_ctypes", "_interpreters", "_xxsubinterpreters",
                    "_testcapi", "_testinternalcapi", "_cffi_backend")
 # Audit events refused from then on: the heap walks that reach the harness's own
 # classes and the checker link.
-_DENIED_EVENTS = ("gc.get_objects", "gc.get_referrers", "gc.get_referents")
+# sys._current_frames hands a thread the live frames of every other thread, which is
+# where the loader gateway's real functions sit while a load runs.
+_DENIED_EVENTS = ("gc.get_objects", "gc.get_referrers", "gc.get_referents",
+                  "sys._current_frames", "sys._current_exceptions")
 # The C half of a ban is banned with the pure-Python half: a candidate that may
 # not use queue may not use _queue.SimpleQueue either.
 _BAN_ALIASES = {
@@ -1361,7 +1389,8 @@ _BAN_ALIASES = {
 # supplied: an event argument is used only after a type check against the exact
 # builtin type.
 _HOOK_TEMPLATE = '''
-def hook(event, args, _t=type, _s=str, _b=bytes, _i=int, _E=ImportError, _R=RuntimeError):
+def hook(event, args, _t=type, _s=str, _b=bytes, _i=int, _l=list, _E=ImportError, _R=RuntimeError,
+         _N=NSPEC, _CB=LCB, _GF=LGF, _FF=LFF):
     if _t(event) is not _s:
         return
     if event == "import":
@@ -1385,7 +1414,78 @@ def hook(event, args, _t=type, _s=str, _b=bytes, _i=int, _E=ImportError, _R=Runt
                     raise _R("reading the source of a banned module is refused")
     elif event in EVENTS:
         raise _R(event + " is not available to candidate code")
+    elif event == "mh.loader":
+        k = args[0]
+        n = args[1]
+        out = args[-1]
+        if _t(k) is not _s or _t(n) is not _s or _t(out) is not _l:
+            raise _E("malformed loader request")
+        for m in LOADER_NAMES:
+            if n == m or n.startswith(m + "."):
+                raise _E("import of " + n + " is forbidden here")
+        if GATEWAY:
+            try:
+                if k == "create_builtin":
+                    out.append(_CB(_N(name=n)))
+                elif k == "init_frozen":
+                    raise _E("init_frozen is not available to candidate code")
+                elif k == "get_frozen_object":
+                    if args[2] is None:
+                        out.append(_GF(n))
+                    elif _t(args[2]) is _b:
+                        out.append(_GF(n, args[2]))
+                    else:
+                        raise _E("malformed loader request")
+                elif k == "find_frozen":
+                    out.append(_FF(n, withdata=args[2] is True))
+                else:
+                    raise _E("malformed loader request")
+            except BaseException:
+                # A traceback keeps this frame: drop the loader functions from it.
+                _CB = _GF = _FF = None
+                raise
 '''
+
+
+# Names the loader gateway refuses whatever a task bans: the interpreter's own
+# import machinery. A fresh copy of _imp (create_builtin of "_imp" returns one)
+# is a pristine create_builtin, so none of these may be handed out.
+_LOADER_PRIVATE = ("_imp", "_frozen_importlib", "_frozen_importlib_external",
+                   "importlib._bootstrap", "importlib._bootstrap_external")
+
+# The loader entry points that raise no "import" audit event: _imp.create_builtin
+# (reached by BuiltinImporter.create_module and _gcd_import alike), get_frozen_object
+# and find_frozen(withdata=True) (the frozen module's code), and init_frozen (refused
+# outright: it would run the frozen module's code under the hook's own builtins).
+# The replacements below hold nothing: each one asks the audit hook for the load
+# by firing "mh.loader" and takes the answer from a list it passes in. The real
+# functions live only in the hook's own defaults, which no object a candidate
+# can name refers to, so a candidate that calls _imp.create_builtin (however it
+# got to _imp) gets the same refusal the import statement gives.
+_LOADER_WRAPPERS = '''
+def create_builtin(spec):
+    out = list()
+    _a("mh.loader", "create_builtin", spec.name, out)
+    return out[0]
+
+def init_frozen(name):
+    out = list()
+    _a("mh.loader", "init_frozen", name, out)
+    return out[0]
+
+def get_frozen_object(name, data=None, /):
+    out = list()
+    _a("mh.loader", "get_frozen_object", name, data, out)
+    return out[0]
+
+def find_frozen(name, /, *, withdata=False):
+    out = list()
+    _a("mh.loader", "find_frozen", name, withdata, out)
+    return out[0]
+'''
+_LOADER_GATE = []       # set once the _imp functions are replaced; a second ban must not wrap the wrappers
+_LOADER_NAMES = ("create_builtin", "init_frozen", "get_frozen_object", "find_frozen")
+assert all(n in _LOADER_WRAPPERS for n in _LOADER_NAMES)
 
 
 def _install_audit_hook(banned):
@@ -1393,8 +1493,10 @@ def _install_audit_hook(banned):
 
     Hooks cannot be removed, so this only ever tightens; a second call adds a
     second hook. Nothing is returned and nothing keeps a reference the Python
-    side can reach.
+    side can reach. The first call also puts the loader gateway (see
+    _LOADER_WRAPPERS) in front of _imp; every later hook only refuses names.
     """
+    import _imp
     mods = []
     for n in tuple(_ESCAPE_MODULES) + tuple(banned):
         if (type(n) is not str or not n
@@ -1402,13 +1504,28 @@ def _install_audit_hook(banned):
             raise ValueError(f"not a module name: {n!r}")
         mods.append(n)
     files = sorted({n.partition(".")[0] for n in banned})
-    src = (_HOOK_TEMPLATE.replace("MODS", repr(tuple(mods)))
-           .replace("FILES", repr(tuple(files)))
-           .replace("EVENTS", repr(_DENIED_EVENTS)))
-    ns = {"__builtins__": {"type": type, "str": str, "bytes": bytes, "int": int,
-                           "ImportError": ImportError, "RuntimeError": RuntimeError}}
+    gateway = not _LOADER_GATE
+    subst = {"MODS": repr(tuple(mods)), "FILES": repr(tuple(files)),
+             "EVENTS": repr(_DENIED_EVENTS),
+             "LOADER_NAMES": repr(tuple(mods) + _LOADER_PRIVATE),
+             "GATEWAY": repr(gateway)}
+    src = _HOOK_TEMPLATE
+    for token, text in subst.items():
+        src = src.replace(token, text)
+    ns = {"__builtins__": {"type": type, "str": str, "bytes": bytes, "int": int, "list": list,
+                           "BaseException": BaseException, "ImportError": ImportError, "RuntimeError": RuntimeError},
+          "NSPEC": types.SimpleNamespace}
+    orig = {n: getattr(_imp, n) for n in _LOADER_NAMES} if gateway else {}
+    ns.update(LCB=orig.get("create_builtin"), LGF=orig.get("get_frozen_object"),
+              LFF=orig.get("find_frozen"))
     exec(compile(src, "<mh audit hook>", "exec"), ns)  # noqa: S102
     sys.addaudithook(ns["hook"])
+    if gateway:
+        wns = {"__builtins__": {"list": list}, "_a": sys.audit}
+        exec(compile(_LOADER_WRAPPERS, "<mh loader gateway>", "exec"), wns)  # noqa: S102
+        for n in _LOADER_NAMES:
+            setattr(_imp, n, wns[n])
+        _LOADER_GATE.append(True)
 
 
 def _find_spec(name):

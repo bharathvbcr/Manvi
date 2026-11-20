@@ -1182,8 +1182,8 @@ _ok, _out, _rec = _verify_rec("intervals", {})
 check("C6 the intervals reference run also names writeback as worker-attested",
       any(u.startswith("writeback") for u in _rec.get("unenforced", [])), _rec)
 _ok, _out, _rec = _verify_rec("globmatch", {})
-check("C6 a run that sends no container argument names nothing unenforced",
-      _rec.get("unenforced") == [], _rec)
+check("C6 a run that sends no container argument names no writeback, only the ban's loader residual",
+      [u.split(":")[0] + ":" + u.split(":")[1] for u in _rec.get("unenforced", [])] == ["import-ban: loader"], _rec)
 
 # -- import ban: held by an audit hook the candidate cannot remove
 _GLOB_PLAIN = "\nimport fnmatch\n\ndef matches(pattern, name):\n    return fnmatch.fnmatchcase(name, pattern)\n"
@@ -1216,12 +1216,66 @@ for _label, _tail in (("ctypes", "import ctypes\n"), ("gc.get_objects", "import 
     _ok, _out, _rec = _verify_rec(
         "globmatch", {"globmatch.py": _ref_src("globmatch", "globmatch.py") + "\n" + _tail})
     check(f"C6 a candidate that reaches for {_label} is refused", not _ok, _out[:200])
+# -- loader-level bypass: names built at run time, and loader calls that raise no import event
+def _sp(s):
+    return "''.join(map(chr, " + repr([ord(c) for c in s]) + "))"
+_LD_HEAD = ("\nimport sys as _s\n"
+            "class _Spec: pass\n"
+            "def _spec(n):\n    x = _Spec(); x.name = n; x.origin = 'built-in'; return x\n"
+            "_imp = _s.modules[" + _sp("_imp") + "]\n"
+            "_fi = _s.modules[" + _sp("_frozen_importlib") + "]\n"
+            "_cb = getattr(_imp, " + _sp("create_builtin") + ")\n")
+_LD_CASES = {
+    "_imp.create_builtin('_sre')": "_cb(_spec(" + _sp("_sre") + "))",
+    "a meta_path importer's create_module('_sre')":
+        "getattr([f for f in _s.meta_path if getattr(f, '__name__', '') == " + _sp("BuiltinImporter")
+        + "][0], " + _sp("create_module") + ")(_spec(" + _sp("_sre") + "))",
+    "_frozen_importlib._imp.create_builtin('_sre')":
+        "getattr(getattr(_fi, " + _sp("_imp") + "), " + _sp("create_builtin") + ")(_spec(" + _sp("_sre") + "))",
+    "the pristine _imp that create_builtin('_imp') hands back":
+        "getattr(_cb(_spec(" + _sp("_imp") + ")), " + _sp("create_builtin") + ")(_spec(" + _sp("_sre") + "))",
+    "_imp.exec_builtin on a module made by create_builtin":
+        "getattr(_imp, " + _sp("exec_builtin") + ")(_cb(_spec(" + _sp("_sre") + ")))",
+    "_imp.get_frozen_object('runpy')": "getattr(_imp, " + _sp("get_frozen_object") + ")(" + _sp("runpy") + ")",
+    "_imp.init_frozen('runpy')": "getattr(_imp, " + _sp("init_frozen") + ")(" + _sp("runpy") + ")",
+    "_imp.find_frozen('runpy', withdata=True)":
+        "getattr(_imp, " + _sp("find_frozen") + ")(" + _sp("runpy") + ", withdata=True)",
+    "FrozenImporter.find_spec('runpy') then its loader":
+        "(lambda s: getattr(s.loader, " + _sp("exec_module") + ")(getattr(_fi, " + _sp("module_from_spec") + ")(s)))"
+        "(getattr(getattr(_fi, " + _sp("FrozenImporter") + "), " + _sp("find_spec") + ")(" + _sp("runpy") + "))",
+    "_frozen_importlib._gcd_import('_sre')": "getattr(_fi, " + _sp("_gcd_import") + ")(" + _sp("_sre") + ")",
+}
+_ld_ref = _ref_src("globmatch", "globmatch.py")
+
+
+def _ld_candidate(expr):
+    return (_LD_HEAD + "try:\n    _r = " + expr + "\n    print('MH_LOAD_OK', type(_r).__name__)\n"
+            "except BaseException as _e:\n    print('MH_LOAD_DENIED', type(_e).__name__, str(_e)[:80])\n\n" + _ld_ref)
+
+
+for _label, _expr in _LD_CASES.items():
+    _ok, _out, _rec = _verify_rec("globmatch", {"globmatch.py": _ld_candidate(_expr)})
+    _wo = _rec.get("worker_output", "")
+    check(f"C6 the import ban holds against a loader-level load: {_label}",
+          "MH_LOAD_DENIED ImportError" in _wo and "MH_LOAD_OK" not in _wo, (_wo[:160], _out[:120]))
+_ok, _out, _rec = _verify_rec("globmatch", {"globmatch.py": _ld_candidate("_cb(_spec(" + _sp("time") + "))")})
+check("C6 control: an unbanned builtin module still loads through the same call",
+      "MH_LOAD_OK module" in _rec.get("worker_output", ""), _rec.get("worker_output", "")[:160])
+# What CPython lets a candidate still do is named on the record, never read as a held ban.
+_ok, _out, _rec = _verify_rec("globmatch", {})
+check("C6 a banned task's record names the loader residual instead of reading as fully enforced",
+      _ok and any(u.startswith("import-ban: loader") for u in _rec.get("unenforced", []))
+      and "[UNENFORCED: import-ban: loader" in _out, (_rec.get("unenforced"), _out[-300:]))
+_ok, _out, _rec = _verify_rec("intervals", {})
+check("C6 a task with no ban carries no import-ban entry",
+      not any(u.startswith("import-ban") for u in _rec.get("unenforced", [])), _rec.get("unenforced"))
 for _tn in ("globmatch", "nfa_match", "concurrency_race"):
     _ok, _out, _rec = _verify_rec(_tn, {})
     _bans = _rec.get("bans") or [{}]
     check(f"C6 {_tn}: the ban is held by the audit hook and the harness preloaded none of it",
           _ok and all(b.get("mechanism") == "audit-hook" and b.get("preloaded") == [] for b in _bans)
-          and _rec.get("unenforced") == [], (_out[:120], _rec))
+          and len(_rec.get("unenforced", [])) == 1
+          and _rec["unenforced"][0].startswith("import-ban: loader"), (_out[:120], _rec))
 
 # -- the queue ban: no module reachable from the harness, and the C half is banned too
 _CQ_G = ("\nimport sys as _s\n_Q = _s.modules['__main__']._g['queue']\n"
