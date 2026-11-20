@@ -29,7 +29,10 @@ func sensorConstants(t *testing.T) []string {
 			continue
 		}
 		for _, spec := range gen.Specs {
-			vs := spec.(*ast.ValueSpec)
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
 			if id, ok := vs.Type.(*ast.Ident); ok && id.Name == "SensorVerdict" {
 				for _, n := range vs.Names {
 					names = append(names, n.Name)
@@ -84,7 +87,7 @@ func TestZadv_w24va_EverySensorValueLeavesTheExitStatusAndEscalationUnchanged(t 
 				t.Errorf("%s/%s: exit status %v, was %v without a verdict", shape, name, got, wantStatus)
 			}
 			if got := escalationEvidence(o, "an answer", 500); got != wantEvidence &&
-				!(v == agent.SensorFailed && shape == "bounced out") {
+				(v != agent.SensorFailed || shape != "bounced out") {
 				t.Errorf("%s/%s: escalation evidence %q, was %q without a verdict", shape, name, got, wantEvidence)
 			}
 		}
