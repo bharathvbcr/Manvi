@@ -909,7 +909,9 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		// either way, because the cheapest step costs 1.
 		if out.BudgetSpent >= l.cfg.MaxSteps {
 			out.TruncatedBySteps = true
-			l.markCheckpointMissed(&out)
+			if err := l.markCheckpointMissed(&out); err != nil {
+				return out, err
+			}
 			break
 		}
 
@@ -1650,8 +1652,7 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 	// the listeners run rather than after, so a sensor that shells out
 	// is not started either.
 	if ctx.Err() != nil {
-		l.markCheckpointMissed(out)
-		return true, nil
+		return true, l.markCheckpointMissed(out)
 	}
 	checkpoint := &TurnStopping{
 		Turn: turn, Steps: out.Steps, Response: response,
@@ -1668,15 +1669,8 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 		// turn closes, and closes loudly: a check that was owed and
 		// could not be completed is degraded, never a pass.
 		out.Sensor = SensorDegraded
-		if _, appendErr := l.log.Append(session.VerifyReport, session.VerifyReportData{
-			Verdict: string(SensorDegraded),
-			Source:  "checkpoint",
-			Paths:   out.Wrote,
-			Degraded: []string{
-				"the terminal checkpoint failed: " + err.Error(),
-			},
-			Bounce: out.Bounces,
-		}); appendErr != nil {
+		if appendErr := l.recordCheckpointReport(out, SensorDegraded,
+			"the terminal checkpoint failed: "+err.Error()); appendErr != nil {
 			return false, appendErr
 		}
 		return true, nil
@@ -1721,14 +1715,54 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 	return false, nil
 }
 
-// markCheckpointMissed records that the turn is ending without its terminal
-// checkpoint having judged the changes it made. Only a turn that changed
-// something owes a check, and only a loop with a listener on the checkpoint has
-// one to owe; a verdict already reached (an earlier bounce's failure) stands.
-func (l *Loop) markCheckpointMissed(out *Outcome) {
-	if out.Mutated && out.Sensor == SensorNone && bus.Listeners[*TurnStopping](l.bus) > 0 {
-		out.Sensor = SensorInterrupted
+// checkRegistered marks a bus that has a check on its checkpoint, as opposed to
+// an observer of it. It is never dispatched; only its listener count is read.
+type checkRegistered struct{}
+
+// OnCheck registers fn as the turn's end-of-turn check: it is a TurnStopping
+// listener, and it also tells the loop a check is owed, so a turn that ends
+// before the checkpoint can say the check never ran. A plain bus.OnSerial
+// listener on *TurnStopping is an observer and owes nothing.
+func OnCheck(b *bus.Bus, fn func(context.Context, *TurnStopping) error) (bus.Dispose, error) {
+	disposeFn, err := bus.OnSerial(b, fn)
+	if err != nil {
+		return nil, err
 	}
+	disposeMark, err := bus.OnSerial(b, func(context.Context, *checkRegistered) error { return nil })
+	if err != nil {
+		_ = disposeFn()
+		return nil, err
+	}
+	return func() error {
+		return errors.Join(disposeFn(), disposeMark())
+	}, nil
+}
+
+// markCheckpointMissed records that the turn is ending without its terminal
+// checkpoint having judged the changes it made, and leaves the same verify/report
+// entry a failed checkpoint does. Only a turn that changed something owes a
+// check, and only a loop with a registered check (OnCheck) has one to owe; a
+// verdict already reached (an earlier bounce's failure) stands.
+func (l *Loop) markCheckpointMissed(out *Outcome) error {
+	if !out.Mutated || out.Sensor != SensorNone || bus.Listeners[*checkRegistered](l.bus) == 0 {
+		return nil
+	}
+	out.Sensor = SensorInterrupted
+	return l.recordCheckpointReport(out, SensorInterrupted,
+		"the turn ended before its end-of-turn check ran, so this turn's changes were never checked")
+}
+
+// recordCheckpointReport is the one writer of a checkpoint-sourced verify/report
+// entry: the turn closed without a verdict from its check, and the log says why.
+func (l *Loop) recordCheckpointReport(out *Outcome, verdict SensorVerdict, reason string) error {
+	_, err := l.log.Append(session.VerifyReport, session.VerifyReportData{
+		Verdict:  string(verdict),
+		Source:   "checkpoint",
+		Paths:    out.Wrote,
+		Degraded: []string{reason},
+		Bounce:   out.Bounces,
+	})
+	return err
 }
 
 // maxNullRetries bounds how many times a turn will re-ask for a response that

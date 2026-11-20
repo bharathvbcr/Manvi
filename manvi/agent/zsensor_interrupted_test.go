@@ -7,6 +7,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -21,7 +22,7 @@ func TestAStepCeilingBeforeTheCheckpointIsNotTheNoCheckVerdict(t *testing.T) {
 	}, func(c *Config) { c.MaxSteps = 1 })
 	registerWriteTool(t, h)
 	asked := 0
-	if _, err := bus.OnSerial(h.bus, func(_ context.Context, _ *TurnStopping) error {
+	if _, err := OnCheck(h.bus, func(_ context.Context, _ *TurnStopping) error {
 		asked++
 		return nil
 	}); err != nil {
@@ -66,7 +67,7 @@ func TestAnInterruptedTurnOwesNoCheckWithoutAListenerOrAChange(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("register: %v", err)
 		}
-		if _, err := bus.OnSerial(h.bus, func(_ context.Context, _ *TurnStopping) error { return nil }); err != nil {
+		if _, err := OnCheck(h.bus, func(_ context.Context, _ *TurnStopping) error { return nil }); err != nil {
 			t.Fatalf("listen: %v", err)
 		}
 		out, err := h.loop.Run(context.Background(), userMsg("go"))
@@ -96,7 +97,7 @@ func TestACancelBeforeTheCheckpointIsNotTheNoCheckVerdict(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := bus.OnSerial(h.bus, func(_ context.Context, _ *TurnStopping) error { return nil }); err != nil {
+	if _, err := OnCheck(h.bus, func(_ context.Context, _ *TurnStopping) error { return nil }); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 
@@ -106,5 +107,28 @@ func TestACancelBeforeTheCheckpointIsNotTheNoCheckVerdict(t *testing.T) {
 	}
 	if out.Sensor != SensorInterrupted {
 		t.Fatalf("sensor = %q, want %q", out.Sensor, SensorInterrupted)
+	}
+}
+
+// A listener that only watches the checkpoint is not a check: a turn it saw
+// being cut off owes nothing, and reads as the no-check value.
+func TestAPureCheckpointObserverDoesNotMakeATurnOweACheck(t *testing.T) {
+	h := build(t, []replay.Turn{toolTurn("call-1", "write", `{"path":"a.go"}`), textTurn("done")},
+		func(c *Config) { c.MaxSteps = 1 })
+	registerWriteTool(t, h)
+	if _, err := bus.OnSerial(h.bus, func(_ context.Context, _ *TurnStopping) error { return nil }); err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	out, err := h.loop.Run(context.Background(), userMsg("go"))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if out.Sensor != SensorNone {
+		t.Fatalf("sensor = %q, want %q for a turn only observed", out.Sensor, SensorNone)
+	}
+	for _, ev := range h.log.Events() {
+		if ev.Type == session.VerifyReport {
+			t.Fatal("an observer produced a verify/report entry")
+		}
 	}
 }
