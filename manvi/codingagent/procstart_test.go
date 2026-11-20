@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 func TestProcessStartIsStableForALiveProcess(t *testing.T) {
@@ -39,6 +40,35 @@ func TestProcessStartTellsAReapedProcessFromALiveOne(t *testing.T) {
 	_ = cmd.Wait() // reaped; the kill's exit status is not under test
 	if _, err := ProcessStart(pid); !errors.Is(err, ErrNoProcess) {
 		t.Fatalf("ProcessStart(reaped child) = %v, want ErrNoProcess", err)
+	}
+}
+
+func TestProcessZombieSeesAnExitedUnreapedChild(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "exit 0") //nolint:gosec // G204: literal command
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		zombie, err := ProcessZombie(pid)
+		if err != nil {
+			t.Fatalf("ProcessZombie(exited child) = %v", err)
+		}
+		if zombie {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the exited, unreaped child never read as a zombie")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if self, err := ProcessZombie(os.Getpid()); err != nil || self {
+		t.Fatalf("ProcessZombie(self) = %v, %v", self, err)
+	}
+	_ = cmd.Wait() // reaped
+	if _, err := ProcessZombie(pid); !errors.Is(err, ErrNoProcess) {
+		t.Fatalf("ProcessZombie(reaped child) = %v, want ErrNoProcess", err)
 	}
 }
 

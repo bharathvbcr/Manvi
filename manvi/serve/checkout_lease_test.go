@@ -279,3 +279,38 @@ func TestAJoinedScanDoesNotTakeASecondLease(t *testing.T) {
 	h.wait(t, first.ScanID)
 	waitForFree(t, m, root)
 }
+
+// A critic that ignores cancellation does not hold a job, its lease, or Close
+// past the stop grace: the job settles as degraded naming the critic, and the
+// abandoned critic cannot write the record afterwards.
+func TestAJobEndsAtItsDeadlineWhateverTheCriticDoes(t *testing.T) {
+	old := verifyStopGrace
+	verifyStopGrace = 200 * time.Millisecond
+	t.Cleanup(func() { verifyStopGrace = old })
+	m := runnerWith()
+	started, release := make(chan struct{}), make(chan struct{})
+	h := newVerifyHarness(t, []string{"adds A"}, func(d *VerifyDeps) { leasedVerify(m)(d) })
+	h.critic.answer = func(ctx context.Context, prompt string, criteria int) (string, error) {
+		close(started)
+		<-release // ignores ctx
+		return allPass(ctx, prompt, criteria)
+	}
+	h.change()
+	h.start("t", "req-1")
+	awaitSignal(t, started, "the critic to be asked")
+	begun := time.Now()
+	if err := h.runner.Close(); err != nil {
+		t.Fatalf("Close = %v, want it bounded by the stop grace, not the critic", err)
+	}
+	if took := time.Since(begun); took > 5*time.Second {
+		t.Fatalf("Close took %s with a critic that ignores cancellation", took)
+	}
+	record := h.wait("t", "req-1")
+	requireDegraded(t, record, "critic did not stop")
+	waitForFree(t, m, h.repo)
+	close(release)
+	time.Sleep(100 * time.Millisecond)
+	if again := h.wait("t", "req-1"); again.Outcome != VerifyDegraded || len(again.Criteria) != len(record.Criteria) {
+		t.Fatalf("the abandoned critic changed the settled record: %+v", again)
+	}
+}

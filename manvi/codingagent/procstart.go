@@ -12,6 +12,18 @@ var ErrNoProcess = errors.New("no such process")
 // tell", never as "gone".
 var ErrProcessStartUnsupported = errors.New("reading a process's start time is not supported on this platform")
 
+// ProcessZombie says whether pid is a process that has exited and not been
+// reaped by its parent. The kernel still lists it, so ProcessStart answers for it
+// with the start time it had, but it runs nothing and will never settle anything.
+// It returns ErrNoProcess when no process has the pid and
+// ErrProcessStartUnsupported where the platform cannot answer.
+func ProcessZombie(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, ErrNoProcess
+	}
+	return processZombie(pid)
+}
+
 // ProcessStart is when pid started, in a unit that is only comparable with
 // another ProcessStart of the same pid on the same boot: clock ticks since boot
 // on Linux, microseconds since the epoch on macOS. A pid is handed out again

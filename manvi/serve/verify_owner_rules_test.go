@@ -16,7 +16,11 @@ import (
 // processes a test sets.
 func ownerRunner(t *testing.T, self verifyOwner, starts map[int]processStartResult, now time.Time) *VerifyRunner {
 	t.Helper()
-	t.Cleanup(func() { processStartOf = codingagent.ProcessStart })
+	t.Cleanup(func() {
+		processStartOf = codingagent.ProcessStart
+		processZombieOf = codingagent.ProcessZombie
+	})
+	processZombieOf = func(pid int) (bool, error) { return zombiePids[pid], nil }
 	processStartOf = func(pid int) (int64, error) {
 		got, known := starts[pid]
 		if !known {
@@ -26,6 +30,9 @@ func ownerRunner(t *testing.T, self verifyOwner, starts map[int]processStartResu
 	}
 	return &VerifyRunner{deps: VerifyDeps{Timeout: 15 * time.Minute, Now: func() time.Time { return now }}, owner: self}
 }
+
+// zombiePids are the scripted pids that have exited and not been reaped.
+var zombiePids = map[int]bool{}
 
 type processStartResult struct {
 	start int64
@@ -46,7 +53,9 @@ func TestOwnerEndedNamesItsBasis(t *testing.T) {
 		basis     string
 	}{
 		{"this process owns it", &verifyOwner{PID: 100, Start: 7}, fresh, nil, true, "this process claimed it"},
-		{"owner alive", &verifyOwner{PID: 200, Start: 9}, stale, map[int]processStartResult{200: {start: 9}}, false, ""},
+		{"owner alive, inside the deadline", &verifyOwner{PID: 200, Start: 9}, fresh, map[int]processStartResult{200: {start: 9}}, false, ""},
+		{"owner alive, past the deadline", &verifyOwner{PID: 200, Start: 9}, stale, map[int]processStartResult{200: {start: 9}}, true, "although the owner"},
+		{"owner is a zombie", &verifyOwner{PID: 200, Start: 9}, fresh, map[int]processStartResult{200: {start: 9}}, true, "zombie"},
 		{"owner gone", &verifyOwner{PID: 200, Start: 9}, fresh, map[int]processStartResult{200: {err: codingagent.ErrNoProcess}}, true, "no longer exists"},
 		{"pid reused by another process", &verifyOwner{PID: 200, Start: 9}, fresh, map[int]processStartResult{200: {start: 11}}, true, "start time 11"},
 		{"our own pid reused after a restart", &verifyOwner{PID: 100, Start: 3}, fresh, map[int]processStartResult{100: {start: 7}}, true, "start time 7"},
@@ -59,6 +68,7 @@ func TestOwnerEndedNamesItsBasis(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := ownerRunner(t, self, tc.starts, now)
+			zombiePids = map[int]bool{200: tc.name == "owner is a zombie"}
 			basis, ended := r.ownerEnded(tc.owner, tc.startedAt)
 			if ended != tc.ended || (tc.ended && !strings.Contains(basis, tc.basis)) {
 				t.Fatalf("ownerEnded = (%q, %v), want ended=%v naming %q", basis, ended, tc.ended, tc.basis)

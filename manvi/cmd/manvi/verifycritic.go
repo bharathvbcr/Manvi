@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/serve"
 )
 
 // criticBuildTimeout bounds resolving the provider and model for the critic.
@@ -31,11 +32,16 @@ type criticRuntime struct {
 // not read-only from the child's registry rather than asking the model to
 // leave them alone, so a critic that tries to write finds no such tool.
 //
-// The runtime it holds is the provider, model and role, which belong to the
-// process. What the critic reads belongs to the verification: every Judge names
-// the worktree and the sub-agent runner rebuilds the whole read surface for it
-// through Registry.ForWorktree, so one sidecar judges many worktrees and none of
-// them is the directory the sidecar started in.
+// The runtime it holds is the provider, model, role and a base tool surface built
+// once from the sidecar's project root. Per Judge, the sub-agent runner rebuilds
+// through Registry.ForWorktree the native tools that read the worktree: the file,
+// git, code-graph (devmap) and grep clients, rooted at the verification's
+// worktree. That is all that is per-worktree. Still taken from the sidecar's root
+// and shared with the base: the policy gate's rules (the copy shares the Flags,
+// Ledger, Subsystems and Matcher pointers; only the command allowlist slice is
+// copied and Root replaced), the MCP and plugin tools the base registry carries
+// (MergeMissingFrom), and Deps.Subsystems, the repository map the navigation and
+// reuse tools consult (navigate.go, reuse.go). Re-rooting those is not done here.
 type serveCritic struct {
 	mu      sync.Mutex
 	runtime *criticRuntime
@@ -70,10 +76,11 @@ func (c *serveCritic) get(ctx context.Context) (*criticRuntime, error) {
 	return runtime, nil
 }
 
-// Judge runs one read-only critic turn over worktree, a clean absolute path
-// serve has already resolved to the top of a git work tree. A critic with no
-// worktree is refused: running it would read whatever directory the process is
-// in, which is a different repository from the one being verified.
+// Judge runs one read-only critic turn over worktree, which must be the
+// canonical top of a git work tree (serve.CanonicalWorktree). A critic with no
+// worktree, or one that fails that check, is refused: running it would read
+// whatever directory the process is in, which is a different repository from the
+// one being verified.
 func (c *serveCritic) Judge(ctx context.Context, worktree, prompt string, criteria int) (string, error) {
 	if !filepath.IsAbs(worktree) || filepath.Clean(worktree) != worktree {
 		return "", fmt.Errorf("the critic needs the clean absolute worktree it is judging, got %q", worktree)
@@ -82,7 +89,24 @@ func (c *serveCritic) Judge(ctx context.Context, worktree, prompt string, criter
 	if err != nil {
 		return "", err
 	}
-	req := devcouncil.SubAgentRequest{Label: "verify-critic", Prompt: strings.TrimSpace(prompt), WorktreePath: worktree}
+	// Defence in depth: serve resolved this root before it claimed the job, but
+	// the critic is what reads it, so it asks the same canonical-root question
+	// itself. A path that is missing, passes through a symlink, or is not the top
+	// of a git work tree (the filesystem root among them) is never judged.
+	// A path that is a link to a work tree is the work tree: it is resolved first
+	// and the resolved root is what is checked and read (serve itself refuses a
+	// symlinked worktree, so only another caller of Judge can pass one).
+	resolved, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		return "", fmt.Errorf("the critic will not judge %q: %w", worktree, err)
+	}
+	checkCtx, cancelCheck := context.WithTimeout(ctx, criticBuildTimeout)
+	root, err := serve.CanonicalWorktree(checkCtx, resolved)
+	cancelCheck()
+	if err != nil {
+		return "", fmt.Errorf("the critic will not judge %q: %w", worktree, err)
+	}
+	req := devcouncil.SubAgentRequest{Label: "verify-critic", Prompt: strings.TrimSpace(prompt), WorktreePath: root}
 	// The role's own placement, prompt and surface, read-only whatever the role
 	// says: the same policy the checkpoint critic runs under.
 	devcouncil.ApplyRole(&req, runtime.def, true)
@@ -99,9 +123,8 @@ func (c *serveCritic) Judge(ctx context.Context, worktree, prompt string, criter
 
 // buildCriticRuntime assembles the provider, model and base tool surface the
 // critic runs on, using the same resolution `manvi run` uses. The base surface
-// is the parent the per-worktree one is built from (the board store, the role
-// catalogue, the MCP kernel); every tool that reads files, git or the code graph
-// is rebuilt for the worktree in each Judge.
+// is the parent the per-worktree one is built from; see serveCritic for exactly
+// what each Judge rebuilds for its worktree and what stays shared with it.
 func buildCriticRuntime(ctx context.Context, reg *flags.Registry) (*criticRuntime, error) {
 	ctx, cancel := context.WithTimeout(ctx, criticBuildTimeout)
 	defer cancel()

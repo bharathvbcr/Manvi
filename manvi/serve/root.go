@@ -19,6 +19,17 @@ func badRoot(format string, args ...any) *Error {
 	return &Error{Code: ErrBadRoot, Message: fmt.Sprintf(format, args...)}
 }
 
+// CanonicalWorktree is canonicalRepoRoot for callers outside the package that
+// are handed a worktree path and must not trust it (the serve critic): the path
+// must exist, be free of symlinks and be the top of a git work tree.
+func CanonicalWorktree(ctx context.Context, raw string) (string, error) {
+	root, e := canonicalRepoRoot(ctx, "worktree", raw)
+	if e != nil {
+		return "", e
+	}
+	return root, nil
+}
+
 // canonicalRepoRoot validates an explicit repository root: absolute, existing,
 // free of symlinks, and the top of a git work tree. A symlinked root is
 // refused rather than followed so the path a host names is the path read.

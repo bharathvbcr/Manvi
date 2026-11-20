@@ -104,8 +104,11 @@ const (
 //
 // The implementation owns read-only enforcement: it must give the critic a
 // tool registry without write tools, not a registry it is asked not to use.
-// worktree is the canonical root the verification judges; the critic's whole
-// read surface is built for that root, never for the process's directory.
+// worktree is the canonical root the verification judges. The implementation
+// rebuilds the reads of that worktree (files, git, code graph, grep) for it and
+// refuses a root that is not a git work tree; what else it takes from the
+// process (policy rules, MCP and plugin tools, the repository map) is the
+// implementation's to state.
 // criteria is the number of acceptance criteria the prompt asks it to judge, so
 // the implementation can state the verdict contract that matches.
 type VerifyCritic interface {
@@ -400,7 +403,7 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 		defer release()
 		defer close(job.done)
 		defer cancel()
-		settled := r.executeSafely(jobCtx, record, item, scope)
+		settled := r.executeBounded(jobCtx, record, item, scope)
 		// Settled on a context of its own: the job context is exactly what ended
 		// when the deadline fired or the host shut down, and the verdict that
 		// says so still has to be recorded.
@@ -416,6 +419,39 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 		r.mu.Unlock()
 	}()
 	return VerifyResult{Record: record}, nil
+}
+
+// verifyStopGrace is how long a job gets, after its context ends (the deadline,
+// Close), to hand back the record its checks settled. A check that ignores
+// cancellation (a critic stuck in a provider call) is abandoned after it.
+var verifyStopGrace = 2 * time.Second
+
+// executeBounded runs the checks so that the job, and the worktree lease it
+// holds, end at the deadline plus verifyStopGrace whatever a check does with its
+// context. When a check does not stop, the job settles as degraded naming it and
+// the abandoned goroutine is left to finish: it only returns a record over a
+// buffered channel nobody reads, so it cannot write the verdict afterwards. It
+// may still be reading the worktree, which it can only read.
+func (r *VerifyRunner) executeBounded(ctx context.Context, record VerifyRecord, item verifyItem, scope verifyScope) VerifyRecord {
+	done := make(chan VerifyRecord, 1)
+	go func() { done <- r.executeSafely(ctx, record, item, scope) }()
+	select {
+	case settled := <-done:
+		return settled
+	case <-ctx.Done():
+	}
+	grace := time.NewTimer(verifyStopGrace)
+	defer grace.Stop()
+	select {
+	case settled := <-done:
+		return settled
+	case <-grace.C:
+	}
+	record.State, record.Outcome = verifySettled, VerifyDegraded
+	record.FinishedAt = r.deps.Now().UTC().Format(time.RFC3339)
+	record.Degraded = append(record.Degraded, fmt.Sprintf(
+		"the critic did not stop within %s of the job ending (%v), so it was abandoned and nothing was concluded; the worktree was released", verifyStopGrace, ctx.Err()))
+	return record
 }
 
 // executeSafely turns a panic in a check into a degraded record. A job runs on
@@ -458,9 +494,10 @@ func (r *VerifyRunner) Get(ctx context.Context, raw json.RawMessage) (VerifyResu
 
 // lookupLocked finds the newest stored record for an item, optionally for one
 // request. A running record with no live job here is settled as degraded, and
-// the critic is not run again, only when the process that claimed it has ended
-// (ownerEnded names why); a running record whose owner is still running in
-// another process is reported as running and left alone.
+// the critic is not run again, only when ownerEnded says its owner has ended or
+// that the claim is past any job's deadline, and the degraded line names which; a
+// younger record whose owner is still running in another process is reported as
+// running and left alone.
 func (r *VerifyRunner) lookupLocked(ctx context.Context, itemID, requestID string) (*VerifyRecord, error) {
 	rows, truncated, err := r.deps.Client.EvidenceList(ctx, itemID)
 	if err != nil {
@@ -470,16 +507,15 @@ func (r *VerifyRunner) lookupLocked(ctx context.Context, itemID, requestID strin
 		if row.Type != verifyEvidenceType {
 			continue
 		}
-		var stored storedVerifyRecord
-		if err := json.Unmarshal(row.DataJSON, &stored); err != nil {
+		record, owner, err := decodeStoredVerify(row.DataJSON)
+		if err != nil {
 			continue
 		}
-		record := stored.VerifyRecord
 		if record.RequestID == "" || (requestID != "" && record.RequestID != requestID) {
 			continue
 		}
 		if record.State == verifyRunning && r.jobs[record.RequestID] == nil {
-			basis, ended := r.ownerEnded(stored.Owner, record.StartedAt)
+			basis, ended := r.ownerEnded(owner, record.StartedAt)
 			if !ended {
 				return &record, nil
 			}

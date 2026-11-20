@@ -468,14 +468,21 @@ How the block is kept safe:
   `harness`) on that worktree is refused with the same `E_HARNESS_BUSY` until the job has ended
   (settled, failed, cancelled or timed out). An attempt without a harness is not refused, and a
   verification that is already running is not stopped.
-- `work.verify.task` judges the worktree the request names: the critic's read surface (files, git,
-  policy gate, code graph, grep) is rebuilt for that worktree on every verification, never taken from
-  the directory `manvi serve` was started in.
+- `work.verify.task` judges the worktree the request names, and the critic refuses a root that is not
+  the canonical top of a git work tree. Per verification the native tools that read the worktree
+  (files, git, code graph, grep) are rebuilt for it through `Registry.ForWorktree`. Still taken from the
+  directory `manvi serve` was started in and shared with the critic: the policy gate's rules (the
+  flags, ledger, subsystem map and matcher are shared pointers; only the command allowlist is copied),
+  the MCP and plugin tools on the base registry, and the repository map the navigation and reuse tools
+  read. Re-rooting those is not done.
 - A `running` verification record is settled as "the process that was verifying this task ended" only
   by the process that claimed it, or by another process once the claimant is shown gone: its pid
-  names no process, or the pid now has a different start time. Where start times cannot be read, or a
-  record names no owner, a claim older than the job deadline plus a minute is settled on that basis.
-  The degraded line names the basis. A record whose owner is still running is returned as running.
+  names no process, the pid now has a different start time, or the process is a zombie (exited, not
+  reaped). Whatever the owner looks like, a claim older than the job deadline plus a minute is settled
+  too, as no live owner works past its deadline; the basis names whether the owner was unreadable,
+  absent or looked alive. The degraded line names the basis. A younger record whose owner is still
+  running is returned as running. A job that does not stop at its deadline (a critic ignoring
+  cancellation) is settled as degraded a grace period later and releases its worktree lease.
   The owner is kept in the stored evidence row beside the record and is not part of the wire record.
 - **Process group reaping and checkout holds**: On Unix, closing a managed coding agent
   sweeps and kills its entire process group (`SIGKILL`), then waits up to 5s for the agent to
