@@ -192,8 +192,16 @@ on_exit() {
   if (( VERDICT_REACHED == 0 )); then
     printf '\n\033[31mINCOMPLETE\033[0m verify.sh exited (status %d) before reaching a verdict.\n' "$code" >&2
     printf '           Nothing above is a pass: the gates that did not run are not gates that passed.\n' >&2
+    # An exit before the verdict is never a success, whatever status the shell
+    # handed the trap: an arithmetic `set -u` abort under macOS's /bin/bash 3.2
+    # reaches here with $? of 0. A status that is already non-zero is kept.
+    if (( code == 0 )); then
+      code=1
+    fi
   fi
-  return $code
+  # `exit`, not `return`: the status of a script is what it had when the trap
+  # began unless the trap exits, so a `return` from here changed nothing.
+  exit "$code"
 }
 trap on_exit EXIT
 

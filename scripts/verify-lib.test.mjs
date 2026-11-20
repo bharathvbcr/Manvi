@@ -603,3 +603,55 @@ test("seeding a task the store refuses is an error", () => {
   });
   assert.match(r.out, /^status=2$/m, r.out + r.err);
 });
+
+// ---------------------------------------------------------------- on_exit
+
+/**
+ * Runs verify.sh's real on_exit and its trap line in a scratch script, with the
+ * variables the trap reads and `body` as the script's remaining work. The trap
+ * is cut out of verify.sh rather than copied here, so a change to it is what
+ * this runs.
+ * @param {string} body
+ * @param {string} shell
+ */
+function runOnExit(body, shell) {
+  const lines = readFileSync(path.join(ROOT, "verify.sh"), "utf8").split("\n");
+  const start = lines.findIndex((l) => l.startsWith("on_exit() {"));
+  assert.ok(start >= 0, "verify.sh no longer defines on_exit()");
+  const end = lines.findIndex((l, i) => i > start && l === "}");
+  const trap = lines.findIndex((l, i) => i > end && l === "trap on_exit EXIT");
+  assert.ok(end > start && trap > end, "on_exit() or its trap line moved; update this test");
+  const script = [
+    "set -euo pipefail",
+    "VERDICT_REACHED=0",
+    "STEP_NAME=''",
+    "step_mark() { :; }",
+    ...lines.slice(start, trap + 1),
+    body,
+  ].join("\n");
+  const dir = mkdtempSync(path.join(tmpdir(), "on-exit-"));
+  const file = path.join(dir, "fixture.sh");
+  writeFileSync(file, script);
+  const run = spawnSync(shell, [file], { encoding: "utf8" });
+  return { status: run.status, err: run.stderr };
+}
+
+for (const shell of ["/bin/bash", "bash"]) {
+  test(`on_exit never exits 0 before a verdict: an unbound variable in arithmetic (${shell})`, () => {
+    const run = runOnExit('echo before\nx=$(( not_a_variable + 1 ))\necho after', shell);
+    assert.notEqual(run.status, 0, `the script aborted and exited 0:\n${run.err}`);
+    assert.match(run.err, /INCOMPLETE/);
+  });
+
+  test(`on_exit turns a plain exit 0 before the verdict into a failure (${shell})`, () => {
+    assert.equal(runOnExit("exit 0", shell).status, 1);
+  });
+
+  test(`on_exit keeps a non-zero status it was handed (${shell})`, () => {
+    assert.equal(runOnExit("exit 7", shell).status, 7);
+  });
+
+  test(`on_exit leaves a reached verdict's success alone (${shell})`, () => {
+    assert.equal(runOnExit("VERDICT_REACHED=1\nexit 0", shell).status, 0);
+  });
+}
