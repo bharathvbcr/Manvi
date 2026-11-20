@@ -193,9 +193,9 @@ type TurnStopping struct {
 
 // SensorVerdict is what an end-of-turn check concluded.
 //
-// Four values, not a boolean, and the distinction between the last two is the
-// whole point: a check that could not run must never report what a check that
-// ran and passed reports.
+// Five values, not a boolean, and the distinction between a check that passed
+// and the ones that did not is the whole point: a check that could not run, or
+// was never reached, must never report what a check that ran and passed reports.
 type SensorVerdict string
 
 const (
@@ -211,6 +211,11 @@ const (
 	// SensorDegraded means a check was owed and could not be completed. It is
 	// never a pass.
 	SensorDegraded SensorVerdict = "degraded"
+	// SensorInterrupted means a check was registered and owed — the turn changed
+	// something — but the turn ended before the terminal checkpoint reached it:
+	// the step ceiling cut it off, or it was cancelled. It is not SensorNone,
+	// which says no check existed; here one existed and never looked.
+	SensorInterrupted SensorVerdict = "interrupted"
 )
 
 // MaxCheckpointBounces is how many times one turn may be sent back for another
@@ -904,6 +909,7 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		// either way, because the cheapest step costs 1.
 		if out.BudgetSpent >= l.cfg.MaxSteps {
 			out.TruncatedBySteps = true
+			l.markCheckpointMissed(&out)
 			break
 		}
 
@@ -1644,6 +1650,7 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 	// the listeners run rather than after, so a sensor that shells out
 	// is not started either.
 	if ctx.Err() != nil {
+		l.markCheckpointMissed(out)
 		return true, nil
 	}
 	checkpoint := &TurnStopping{
@@ -1712,6 +1719,16 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 	}
 	out.Bounces++
 	return false, nil
+}
+
+// markCheckpointMissed records that the turn is ending without its terminal
+// checkpoint having judged the changes it made. Only a turn that changed
+// something owes a check, and only a loop with a listener on the checkpoint has
+// one to owe; a verdict already reached (an earlier bounce's failure) stands.
+func (l *Loop) markCheckpointMissed(out *Outcome) {
+	if out.Mutated && out.Sensor == SensorNone && bus.Listeners[*TurnStopping](l.bus) > 0 {
+		out.Sensor = SensorInterrupted
+	}
 }
 
 // maxNullRetries bounds how many times a turn will re-ask for a response that

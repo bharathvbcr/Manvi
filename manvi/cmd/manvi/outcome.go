@@ -67,6 +67,15 @@ func outcomeNotices(o agent.Outcome, maxSteps int) []outcomeNotice {
 				"is evidence that they are sound",
 			Degraded: []string{"end-of-turn check degraded"},
 		})
+	case agent.SensorInterrupted:
+		// Distinct from both "no check" and "check passed": the turn changed
+		// something, a check was registered, and the turn ended before the
+		// checkpoint ran it. Silence here would read as a clean turn.
+		out = append(out, outcomeNotice{
+			Text: "the turn ended before its end-of-turn check could run, so the changes it made " +
+				"were never checked",
+			Degraded: []string{"end-of-turn check never ran"},
+		})
 	default:
 		// A verdict this build does not recognise. Reported rather than
 		// ignored, and reported as a degradation: a value nobody anticipated

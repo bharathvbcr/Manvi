@@ -309,3 +309,18 @@ func llmStopForTest(field string) string {
 	}
 	return "set"
 }
+
+// A turn that changed files and ended before its registered check ran says so,
+// as a degradation, in words that are not the no-check silence.
+func TestAnInterruptedCheckIsReportedAsDegraded(t *testing.T) {
+	ns := outcomeNotices(agent.Outcome{Sensor: agent.SensorInterrupted, Mutated: true, Steps: 2}, 500)
+	if len(ns) != 1 || len(ns[0].Degraded) == 0 {
+		t.Fatalf("notices = %+v, want one degraded notice", ns)
+	}
+	if !strings.Contains(ns[0].Text, "never checked") {
+		t.Fatalf("the notice does not say the changes went unchecked: %q", ns[0].Text)
+	}
+	if ns[0].Degraded[0] == "end-of-turn check returned an unrecognised verdict" {
+		t.Fatal("the interrupted verdict fell through to the unrecognised-value branch")
+	}
+}

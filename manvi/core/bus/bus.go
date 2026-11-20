@@ -143,6 +143,19 @@ func Waterfall[E any](b *Bus, event E) (E, error) {
 	return run(0, event), nil
 }
 
+// Listeners is how many listeners are registered for E, in either mode. It
+// lets a dispatcher that publishes an event tell "nobody was listening" from
+// "listeners ran and had nothing to say", which publishing alone cannot.
+func Listeners[E any](b *Bus) int {
+	key := reflect.TypeOf((*E)(nil)).Elem()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if s, ok := b.slots[key]; ok {
+		return len(s.listeners)
+	}
+	return 0
+}
+
 // OnSerial registers an ordered, fallible listener.
 func OnSerial[E any](b *Bus, fn func(context.Context, E) error) (Dispose, error) {
 	return register[E](b, ModeSerial, fn)
