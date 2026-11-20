@@ -89,11 +89,9 @@ func (s Store) Put(p *workflow.Program) (Entry, error) {
 	defer root.Close()
 	// An identity that differs from an existing one only in case is one directory
 	// on a case-insensitive file system, and a write under it would replace the
-	// other's current.json. It is refused by name, and the existing identity is
-	// left under the spelling it was stored with.
-	if err := treefile.CheckAlias(root, c.ID); err != nil {
-		return Entry{}, fmt.Errorf("catalog identity %q: %w", c.ID, err)
-	}
+	// other's current.json. openChild refuses it by name, with the check and the
+	// creation under one lock, and the existing identity is left under the
+	// spelling it was stored with.
 	dir, err := openChild(root, c.ID, true)
 	if err != nil {
 		return Entry{}, err

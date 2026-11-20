@@ -46,6 +46,11 @@ func (s Store) open(create bool) (*os.Root, error) {
 	return root, err
 }
 
+// identityLockName is the lock file in the catalog root that serialises the
+// creation of identity directories, so two spellings of one identity cannot both be
+// made. It is not a valid identity (it starts with a dot), so listing skips it.
+const identityLockName = ".identity.lock"
+
 // openChild opens one identity directory below the catalog root.
 func openChild(root *os.Root, name string, create bool) (*os.Root, error) {
 	if !segment.MatchString(name) {
@@ -55,7 +60,10 @@ func openChild(root *os.Root, name string, create bool) (*os.Root, error) {
 	if create {
 		mode = 0o700
 	}
-	child, err := treefile.Child(root, name, mode)
+	child, err := treefile.ChildAliasSafe(root, name, identityLockName, mode)
+	if errors.Is(err, treefile.ErrAliased) {
+		return nil, fmt.Errorf("catalog identity %q: %w", name, err)
+	}
 	if errors.Is(err, treefile.ErrRefused) {
 		return nil, fmt.Errorf("catalog identity must be a real directory: %w", err)
 	}

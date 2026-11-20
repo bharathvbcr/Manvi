@@ -38,8 +38,14 @@ func TestPutRefusesAnIdentityOrRevisionThatAliasesAnExistingOne(t *testing.T) {
 	if rows, err := s.List(); err != nil || len(rows) != 1 {
 		t.Fatalf("List = %v, %v", rows, err)
 	}
-	entries, _ := os.ReadDir(s.Root)
-	if len(entries) != 1 || entries[0].Name() != "Foo" {
+	var entries []string
+	dirents, _ := os.ReadDir(s.Root)
+	for _, e := range dirents {
+		if e.Name()[0] != '.' { // the identity lock file
+			entries = append(entries, e.Name())
+		}
+	}
+	if len(entries) != 1 || entries[0] != "Foo" {
 		t.Fatalf("an identity was renamed or created beside Foo: %v", entries)
 	}
 	// Putting the same revision again under its own spelling is still the

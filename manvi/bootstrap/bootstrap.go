@@ -108,6 +108,10 @@ var Sections = []Section{
 	},
 }
 
+// ErrClimbsOutOfRoot is the refusal of a relative state or artifact path that
+// resolves outside the repository root.
+var ErrClimbsOutOfRoot = errors.New("a relative path climbs out of the repository root; only an absolute path is taken as named by the operator")
+
 // Options configures one Ensure.
 type Options struct {
 	// StateDir is the harness's own directory. Relative paths are resolved
@@ -211,7 +215,9 @@ func summarise(items []string, limit int) string {
 func Ensure(root string, opts Options) Report {
 	report := Report{Root: root}
 
-	for _, dir := range directories(root, opts) {
+	dirs, climbing := directories(root, opts)
+	report.Failures = append(report.Failures, climbing...)
+	for _, dir := range dirs {
 		_, statErr := os.Lstat(dir)
 		existed := statErr == nil
 		if err := ensureDir(root, dir); err != nil {
@@ -383,15 +389,23 @@ func dedupe(rules []string) []string {
 // directories collects the directories to ensure, in a stable order and
 // without duplicates: the state directory, and the parent of every artifact
 // path that was configured somewhere else.
-func directories(root string, opts Options) []string {
+//
+// Only an absolute path is one the operator named on purpose. A relative one is
+// whatever a setting spelled, and when it climbs out of the root it is refused
+// with ErrClimbsOutOfRoot, returned as a Failure, and never made.
+func directories(root string, opts Options) (dirs []string, refused []Failure) {
 	seen := map[string]bool{}
-	var dirs []string
 	add := func(dir string) {
 		if dir == "" {
 			return
 		}
 		if !filepath.IsAbs(dir) {
+			spelled := dir
 			dir = filepath.Join(root, dir)
+			if _, below := under(root, dir); !below && filepath.Clean(dir) != filepath.Clean(root) {
+				refused = append(refused, Failure{"a relative state path was not made", fmt.Errorf("%w: %q", ErrClimbsOutOfRoot, spelled)})
+				return
+			}
 		}
 		dir = filepath.Clean(dir)
 		// The root itself is the repository the operator is standing in. It
@@ -407,7 +421,7 @@ func directories(root string, opts Options) []string {
 	for _, path := range opts.ArtifactPaths {
 		add(filepath.Dir(path))
 	}
-	return dirs
+	return dirs, refused
 }
 
 // display renders a path the way an operator typed it: relative to the root

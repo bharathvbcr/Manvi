@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -212,7 +213,7 @@ func loadTrustStore(root string) trustStore {
 		return store
 	}
 
-	data, readErr := os.ReadFile(path)
+	data, readErr := readTrustFile(path)
 	if readErr != nil {
 		if !os.IsNotExist(readErr) {
 			store.err = fmt.Errorf("reading the authorization file %s: %w", path, readErr)
@@ -230,6 +231,43 @@ func loadTrustStore(root string) trustStore {
 		}
 	}
 	return store
+}
+
+// maxTrustFileBytes bounds the authorization file. A list of fingerprints is a few
+// hundred bytes an entry; anything near this is not one.
+const maxTrustFileBytes = 4 << 20
+
+// readTrustFile reads the authorization file as a bounded, regular file only. The
+// path is the operator's, but it may be a FIFO or a device or something enormous,
+// and this runs under a survey on every call: it is opened O_NONBLOCK so a FIFO
+// cannot hang the open, refused unless the handle is a regular file, and read
+// through a limit, so no more than the cap is ever held. Anything unreadable is an
+// error and so fails closed (the servers it covered are not started, and running
+// ones are closed, loudly).
+func readTrustFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 -- the operator's own trust file path
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file (%s)", info.Mode().Type())
+	}
+	if info.Size() > maxTrustFileBytes {
+		return nil, fmt.Errorf("%d bytes, over the %d-byte limit", info.Size(), maxTrustFileBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxTrustFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxTrustFileBytes {
+		return nil, fmt.Errorf("grew past the %d-byte limit while it was read", maxTrustFileBytes)
+	}
+	return data, nil
 }
 
 func trustFilePath() (string, error) {
@@ -1272,6 +1310,17 @@ func (m *Manager) client(ctx context.Context, name string, via access) (*Client,
 			m.mu.Unlock()
 			close(f.done)
 		}()
+		// A survey decided from one read, taken before it asked a gate or listed
+		// other servers, and that can be stale by the time a process is about to
+		// start. Starting is the one step that cannot be taken back by a later
+		// check, so it is decided again from a fresh read, once per start. A
+		// caller with no survey just read the list at the top of this call.
+		if via.trust != nil {
+			if err := m.authorize(cfg); err != nil {
+				f.err = err
+				return nil, f.err
+			}
+		}
 		f.client, f.err = m.connect(ctx, name, cfg)
 		return f.client, f.err
 	}

@@ -18,6 +18,8 @@
 package treefile
 
 import (
+	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +31,8 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/filelock"
 )
 
 var (
@@ -103,6 +107,13 @@ func Child(parent *os.Root, name string, create fs.FileMode) (*os.Root, error) {
 // the mode for directories that do not exist yet, or zero to require them. The
 // returned root is the caller's to close; root is left open.
 func descend(root *os.Root, rel string, create fs.FileMode) (*os.Root, error) {
+	return descendWith(root, rel, func(parent *os.Root, part string) (*os.Root, error) {
+		return Child(parent, part, create)
+	})
+}
+
+// descendWith is descend with the step that opens each component supplied.
+func descendWith(root *os.Root, rel string, child func(*os.Root, string) (*os.Root, error)) (*os.Root, error) {
 	rel = filepath.Clean(rel)
 	if rel == "." {
 		return root.OpenRoot(".")
@@ -112,7 +123,7 @@ func descend(root *os.Root, rel string, create fs.FileMode) (*os.Root, error) {
 	}
 	current := root
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		next, err := Child(current, part, create)
+		next, err := child(current, part)
 		if current != root {
 			err = errors.Join(err, current.Close())
 		}
@@ -134,6 +145,69 @@ func OpenDir(anchor, rel string, create fs.FileMode) (*os.Root, error) {
 	return descend(root, rel, create)
 }
 
+// aliasLockWait bounds the wait for another creator of a directory in the same
+// parent.
+const aliasLockWait = 10 * time.Second
+
+// ChildAliasSafe is Child with create for a store whose names must not alias: a
+// directory that does not exist exactly is made only after CheckAlias has passed
+// it, and the check and the make happen under the exclusive kernel lock on
+// lockName in parent (Lock, the one cross-process lock this package has), so two
+// creators of two spellings of one name, in this process or another, have one
+// winner and one ErrAliased. lockName must not be a name the store lists or
+// reads. A directory that is already there under exactly this spelling is opened
+// without the lock.
+func ChildAliasSafe(parent *os.Root, name, lockName string, create fs.FileMode) (*os.Root, error) {
+	if create == 0 {
+		return Child(parent, name, 0)
+	}
+	if _, exact, err := scanAlias(parent, name); err != nil {
+		return nil, err
+	} else if exact {
+		return Child(parent, name, create)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), aliasLockWait)
+	defer cancel()
+	unlock, err := lockParent(ctx, parent, lockName)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if err := CheckAlias(parent, name); err != nil {
+		return nil, err
+	}
+	return Child(parent, name, create)
+}
+
+// lockParent takes the exclusive kernel lock that orders the creators of
+// subdirectories of parent: on the directory itself where the kernel allows that
+// (flock on a directory leaves no file behind, and a store that owns nothing but
+// its entries keeps owning nothing else), and otherwise on the file lockName
+// through Lock. Both are internal/filelock, the one cross-process lock there is.
+func lockParent(ctx context.Context, parent *os.Root, lockName string) (func(), error) {
+	d, err := parent.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := filelock.LockFile(ctx, d)
+	if err == nil {
+		return unlock, nil
+	}
+	if ctx.Err() != nil {
+		return nil, err
+	}
+	return Lock(ctx, parent, lockName)
+}
+
+// DescendAliasSafe is descend below root whose created components are made with
+// ChildAliasSafe, locking on lockName in each parent that gains a directory.
+// root itself is not locked or checked: it is the caller's anchor.
+func DescendAliasSafe(root *os.Root, rel string, create fs.FileMode, lockName string) (*os.Root, error) {
+	return descendWith(root, rel, func(parent *os.Root, part string) (*os.Root, error) {
+		return ChildAliasSafe(parent, part, lockName, create)
+	})
+}
+
 // ReadOptions bound one read. Limit must be positive: a read with no bound is
 // not offered.
 type ReadOptions struct {
@@ -143,27 +217,56 @@ type ReadOptions struct {
 	// see a hard link to a file outside the tree, so a store whose entries have
 	// one name asks for it. A count of zero is not a refusal: the file was
 	// replaced by rename after it was opened, and the handle is a consistent
-	// snapshot of the previous version. A store that publishes by link has two
-	// links to a file for the moment between linking the name and removing the
-	// stage, so a second link is waited on (see linkSettleAttempts) before it is
-	// refused; a link that is still there then is not a publish in progress.
+	// snapshot of the previous version. Publish uses an atomic no-replace rename
+	// where the OS has one, so a published entry has one name; where it links
+	// instead, the one extra link a publish in progress has is accepted only when it
+	// is the entry's own stage sibling (see ownStageLink).
 	SingleLink bool
 }
 
 // openRetries bounds the retries of an open that raced a rename-replace.
 const openRetries = 3
 
-// linkSettleAttempts bounds how often a read that found a second hard link waits
-// for it to go. A store that publishes by link makes the link count of a file 2
-// for the moment between linking the name and removing the stage, and a read
-// that lands there is not looking at a file outside the tree. The wait is
-// 1, 2, 4 and 8 milliseconds, so a link that is still there afterwards, which is
-// what a planted one is, costs a reader at most 15 ms before it is refused.
-const linkSettleAttempts = 5
-
-// settle waits out one step of a link settling. It is a variable so a test can
-// act at that moment instead of racing a clock; nothing else assigns it.
-var settle = time.Sleep
+// ownStageLink reports whether the second hard link of f, which has n links, is
+// this store's own stage for it: a sibling of name in its directory called
+// ".<name>.<16 hex>.tmp" that is the same file. A publish by link, where the OS has
+// no atomic no-replace rename, has exactly this second name for the moment before
+// it removes the stage, however slow the directory sync in between. A link to a file
+// outside the tree makes a count of 3 or more, because the file's own name is
+// outside, and one with no stage sibling is not a publish, so both are refused.
+func ownStageLink(root *os.Root, name string, f *os.File, n uint64) bool {
+	if n != 2 {
+		return false
+	}
+	dirPath, base := filepath.Split(filepath.FromSlash(name))
+	dirPath = filepath.Clean(dirPath)
+	d, err := root.Open(dirPath)
+	if err != nil {
+		return false
+	}
+	names, err := d.Readdirnames(maxAliasScan + 1)
+	_ = d.Close()
+	if err != nil || len(names) > maxAliasScan {
+		return false
+	}
+	held, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	prefix := "." + base + "."
+	for _, cand := range names {
+		if len(cand) != len(prefix)+16+len(".tmp") || !strings.HasPrefix(cand, prefix) || !strings.HasSuffix(cand, ".tmp") {
+			continue
+		}
+		if _, err := hex.DecodeString(cand[len(prefix) : len(prefix)+16]); err != nil {
+			continue
+		}
+		if info, err := root.Lstat(filepath.Join(dirPath, cand)); err == nil && os.SameFile(info, held) {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrUnstable marks a name that kept being replaced while it was being opened,
 // so no handle that was the name's current file could be taken. It is neither a
@@ -201,7 +304,7 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 	if o.Limit <= 0 {
 		return nil, errors.New("treefile: a read needs a positive size limit")
 	}
-	for attempt, links := 0, 0; ; {
+	for attempt := 0; ; {
 		f, err := safefile.OpenNoFollow(root, filepath.FromSlash(name), os.O_RDONLY, 0)
 		if err != nil {
 			// os.Root answers "does not exist" for a dangling link it resolved
@@ -242,15 +345,12 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 			if err != nil {
 				return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
 			}
-			if n > 1 {
-				if err := f.Close(); err != nil {
-					return nil, fmt.Errorf("treefile: closing %q: %w", name, err)
+			if n > 1 && !ownStageLink(root, name, f, n) {
+				// The publisher may have finished between the count and the
+				// look, which leaves one link.
+				if again, err := safefile.LinkCount(f); err != nil || again > 1 {
+					return nil, errors.Join(refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n)), f.Close())
 				}
-				if links++; links < linkSettleAttempts {
-					settle(time.Millisecond << (links - 1))
-					continue
-				}
-				return nil, refusal(name, fmt.Sprintf("has %d hard links, so it may be a file outside the tree", n))
 			}
 		}
 		if info.Size() > o.Limit {

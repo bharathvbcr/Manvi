@@ -840,8 +840,29 @@ func (s *Store) dirFor(full string, create bool) (dir *os.Root, leaf string, err
 	if err != nil || !filepath.IsLocal(rel) {
 		return nil, "", fmt.Errorf("artifacts: %q is not inside the store", full)
 	}
-	dir, err = treefile.OpenDir(s.anchor, filepath.Join(s.rel, filepath.Dir(rel)), mode)
+	dir, err = openDirNamed(s.anchor, s.rel, filepath.Dir(rel), mode)
 	return dir, filepath.Base(rel), err
+}
+
+// dirLockName is the lock file in a directory that serialises the creation of its
+// subdirectories, so two spellings of one name cannot both be made. It has the
+// shape of the store's own temporary files, which List skips and no artifact can
+// be named, like the per-entry lock files.
+const dirLockName = "." + "dirs." + lockNonce + ".tmp"
+
+// openDirNamed opens the store directory storeRel below anchor and then sub below
+// it, making the missing directories when mode is non-zero. Those below the store
+// are made alias-safe: the check that no entry aliases the new name and the
+// creation are one step under the directory's lock, across processes
+// (treefile.ChildAliasSafe). The store directory and what leads to it are not:
+// they are the operator's, and no lock file belongs in the project root.
+func openDirNamed(anchor, storeRel, sub string, mode fs.FileMode) (*os.Root, error) {
+	store, err := treefile.OpenDir(anchor, storeRel, mode)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = store.Close() }()
+	return treefile.DescendAliasSafe(store, sub, mode, dirLockName)
 }
 
 // containedPath returns the physical path for a cleaned artifact name, creating
