@@ -96,9 +96,13 @@ func EscapeLine(s string) string {
 
 // EscapeResult is Escape for a third party's reply, which is sometimes plain
 // text and sometimes a JSON document: a reply that parses as JSON goes through
-// EscapeJSON, so what comes back still parses, and anything else through Escape.
+// EscapeJSON, so what comes back still parses and no parser can restore a hidden
+// rune from it, and anything else through Escape. "Parses as JSON" is as lenient
+// as encoding/json (v1) is about member names, which is what a consumer may be
+// using: a duplicate member name does not make a document text, because v1 still
+// decodes the escapes in it. A document with invalid UTF-8 in it is text.
 func EscapeResult(s string) string {
-	if jsontext.Value(s).IsValid() {
+	if jsontext.Value(s).IsValid(jsontext.AllowDuplicateNames(true)) {
 		return EscapeJSON(s)
 	}
 	return Escape(s)
