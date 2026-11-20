@@ -272,15 +272,24 @@ func VerifyPresent(ctx context.Context, c PathChecker, paths []string, command s
 // of 128 paths out of 200 settled as "passed". Only a report with none of the
 // three passes.
 func (p PathReport) settle() PathReport {
-	switch {
-	case len(p.Findings) > 0:
-		p.Verdict = VerdictFailed
-	case len(p.Degraded) > 0, len(p.Omitted) > 0:
-		p.Verdict = VerdictDegraded
-	default:
-		p.Verdict = VerdictPassed
-	}
+	p.Verdict = settleVerdict(len(p.Findings) > 0, len(p.Degraded) > 0 || len(p.Omitted) > 0)
 	return p
+}
+
+// settleVerdict is the one rule both verifiers settle by: a finding is a
+// failure whatever else is true, a check that was owed and did not run is
+// degraded, and only neither is a pass. The leased report and the lease-free
+// VerifyPaths each used to carry their own copy, and the two disagreed about a
+// run with no verifier.
+func settleVerdict(failed, owed bool) string {
+	switch {
+	case failed:
+		return VerdictFailed
+	case owed:
+		return VerdictDegraded
+	default:
+		return VerdictPassed
+	}
 }
 
 // partitionPaths splits a turn's changed paths three ways: what this check can

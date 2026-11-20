@@ -55,8 +55,9 @@ type Report struct {
 	// tell — this is the "a check that could not run must never look like one
 	// that ran and passed" rule, in report form.
 	Degraded []string `json:"degraded,omitempty"`
-	// Verdict is failed when a gap blocks, degraded when nothing blocks but the
-	// diff the gates read did not cover the whole change, and passed otherwise.
+	// Verdict is failed when a gap blocks, degraded when nothing blocks but a
+	// check that was owed did not run (the diff the gates read did not cover the
+	// whole change, or no verifier ran the content gates), and passed otherwise.
 	// Passed is true only for the last.
 	Verdict        string `json:"verdict"`
 	diffIncomplete bool
@@ -199,15 +200,15 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 		})
 	}
 
-	report.Passed = report.BlockingCount() == 0 && !report.diffIncomplete
-	switch {
-	case report.BlockingCount() > 0:
-		report.Verdict = VerdictFailed
-	case report.diffIncomplete:
-		report.Verdict = VerdictDegraded
-	default:
-		report.Verdict = VerdictPassed
-	}
+	// The rule VerifyPaths settles by, from the same function: a check that was
+	// owed and did not run — a capped diff, no verifier to run the content
+	// gates — is degraded, never passed. The coverage note is the one entry that
+	// is a report about inputs rather than a check that did not run.
+	owed := report.diffIncomplete || slices.ContainsFunc(report.Degraded, func(note string) bool {
+		return note != coverageUnmeasuredNote
+	})
+	report.Verdict = settleVerdict(report.BlockingCount() > 0, owed)
+	report.Passed = report.Verdict == VerdictPassed
 	return report, nil
 }
 
@@ -1072,7 +1073,10 @@ func (r *Registry) getGaps(ctx context.Context, call tools.Call) tools.Result {
 	if err != nil {
 		return unavailable("gaps", err)
 	}
-	return reported(map[string]any{"gaps": report.Gaps, "blocking": report.BlockingCount()}, report)
+	return reported(map[string]any{
+		"gaps": report.Gaps, "blocking": report.BlockingCount(),
+		"verdict": report.Verdict, "degraded": degradedOrEmpty(report),
+	}, report)
 }
 
 func (r *Registry) getNextActions(ctx context.Context, call tools.Call) tools.Result {
@@ -1080,7 +1084,20 @@ func (r *Registry) getNextActions(ctx context.Context, call tools.Call) tools.Re
 	if err != nil {
 		return unavailable("next actions", err)
 	}
-	return reported(map[string]any{"next_actions": report.NextActions}, report)
+	return reported(map[string]any{
+		"next_actions": report.NextActions,
+		"verdict":      report.Verdict, "degraded": degradedOrEmpty(report),
+	}, report)
+}
+
+// degradedOrEmpty is the report's degradations as a JSON array, never null: the
+// two projections that carry it must say "none" in the same words every time, so
+// a reader cannot take an absent field for a clean run.
+func degradedOrEmpty(report *Report) []string {
+	if report.Degraded == nil {
+		return []string{}
+	}
+	return report.Degraded
 }
 
 // reported carries a verification's degradations onto the tool result.
