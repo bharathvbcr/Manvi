@@ -23,6 +23,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **`work.assist.complete` answers a rejected Anthropic key with
+  `E_PROVIDER_AUTH`** (not retryable). Before, a revoked or wrong key came back
+  as `E_DEPENDENCY` with only the provider's text, so a host could not tell it
+  apart from an outage without reading the message. Only Anthropic's HTTP 401
+  carries the new code; a 403, other statuses and another server's 401 are
+  unchanged. The message is still the runner's redacted text.
+
 - **The Gemini adapter serves `gemini-4-hydrogen`** (GA 2026-11-12), with the
   limits its model page states: a 1,048,576-token context window and 65,536
   output tokens. Vani triages with it. `gemini-4-carbon` and `gemini-4-argon`

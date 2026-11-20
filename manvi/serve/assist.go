@@ -11,6 +11,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 )
 
 // OpWorkAssistComplete is one plain, tool-free model completion for the host's
@@ -24,6 +25,13 @@ import (
 // runner's single generation slot: a task enhancement in flight never makes an
 // explain-commit call answer busy.
 const OpWorkAssistComplete = "work.assist.complete"
+
+// ErrProviderAuth answers an assist call the model provider refused because it
+// rejected the credential itself (Anthropic: HTTP 401, a wrong, revoked or
+// disabled key). It is not retryable: the same key fails the same way until it
+// is replaced. A host branches on the code, never on the message, which stays
+// the runner's redacted provider text.
+const ErrProviderAuth = "E_PROVIDER_AUTH"
 
 // The per-call limits. A request over any of them is refused whole, never
 // truncated, so the host never sees an answer to a prompt it did not send.
@@ -189,6 +197,9 @@ func (r *EnhancementRunner) Assist(ctx context.Context, params AssistParams, sel
 		OverBudget:      assistOverBudget,
 	})
 	if err != nil {
+		if anthropic.CredentialRejected(err) {
+			return nil, &Error{Code: ErrProviderAuth, Message: r.errorText(err)}
+		}
 		return nil, r.assistError(err)
 	}
 	return &AssistResult{

@@ -368,6 +368,17 @@ func (*Adapter) RejectionUnbilled(status int) bool {
 	return false
 }
 
+// CredentialRejected reports whether err is the Messages API refusing the API
+// key itself: an HTTP 401, which the API documents as authentication_error (a
+// key that is wrong, revoked or disabled). Only this adapter's own failures
+// count, because a 401 means something else to other servers. A 403 is not
+// here: it is a valid key without permission for the request, which replacing
+// the key does not fix.
+func CredentialRejected(err error) bool {
+	var failure *transport.Error
+	return errors.As(err, &failure) && failure.Provider == Name && failure.Status == http.StatusUnauthorized
+}
+
 // AttemptGateSupported declares that every Messages API attempt, retries
 // included, goes through the shared transport admission gate: Stream's only
 // HTTP calls are PostStream on the primary or fallback client, which admits
