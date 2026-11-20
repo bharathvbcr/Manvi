@@ -134,7 +134,7 @@ jobs:
       # post step that never runs on a red job. The explicit pair below does.
       # Every leg gets Go: the bench leg's suites do not compile it, but the
       # toolchain is what `go env` below and the shared prelude assume.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: manvi/go.mod
           cache: false
@@ -481,7 +481,7 @@ jobs:
               *) echo "cargo does not see crates/$member as a workspace member" >&2; exit 1 ;;
             esac
           done
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: manvi/go.mod
           cache: false
@@ -650,7 +650,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/bharathvbcr/Jarvis.git ../Jarvis
           git -C ../Jarvis log -1 --format='Jarvis main at %H (%cs): %s'
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: manvi/go.mod
           cache: false
