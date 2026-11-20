@@ -34,6 +34,12 @@ import (
 // with the claimed record, and run on a job context of its own. Progress and
 // the verdict are read back through work.verify.get.
 //
+// Ownership. A running record names the process that claimed it, beside the
+// record and not in it (verifyOwner). Only that process settles a running record
+// as "the process ended", and any other process does so only once the owner's
+// pid and start time show it is gone (ownerEnded). A reader in a second process
+// leaves a live owner's record running.
+//
 // Outcome. passed, failed or degraded, never a quiet fourth state. Passed
 // requires every check the verification was set up to run to have run and every
 // criterion to be met; a check that could not run degrades the verdict, and a
@@ -136,10 +142,12 @@ type VerifyDeps struct {
 }
 
 // VerifyRunner owns verification jobs. Storage claims make a request replay
-// the same record after a lost reply; the in-process job table is what lets a
-// replay tell a live job from one whose process died.
+// the same record after a lost reply; the in-process job table tells a replay
+// whether this process is running the job, and the claim's owner (verifyOwner)
+// whether the process that is has ended.
 type VerifyRunner struct {
-	deps VerifyDeps
+	deps  VerifyDeps
+	owner verifyOwner
 
 	mu     sync.Mutex
 	jobs   map[string]*verifyJob // request_id -> live job
@@ -168,7 +176,7 @@ func NewVerifyRunner(deps VerifyDeps) (*VerifyRunner, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	return &VerifyRunner{deps: deps, jobs: map[string]*verifyJob{}}, nil
+	return &VerifyRunner{deps: deps, owner: currentVerifyOwner(), jobs: map[string]*verifyJob{}}, nil
 }
 
 // VerifyTaskParams is the work.verify.task request. It carries no command, no
@@ -400,7 +408,7 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 		defer settleCancel()
 		if err := r.persist(settleCtx, settled); err != nil {
 			// The running claim stays in storage. It is unresolved work, never an
-			// implicit pass; the next read settles it as degraded.
+			// implicit pass; the next read in this process settles it as degraded.
 			log.Printf("verification %s settlement unresolved: %v", settled.RequestID, err)
 		}
 		r.mu.Lock()
@@ -449,9 +457,10 @@ func (r *VerifyRunner) Get(ctx context.Context, raw json.RawMessage) (VerifyResu
 }
 
 // lookupLocked finds the newest stored record for an item, optionally for one
-// request. A running record with no live job here belongs to a process that
-// ended before it settled; it is settled as degraded rather than reported as
-// running forever, and the critic is not run again.
+// request. A running record with no live job here is settled as degraded, and
+// the critic is not run again, only when the process that claimed it has ended
+// (ownerEnded names why); a running record whose owner is still running in
+// another process is reported as running and left alone.
 func (r *VerifyRunner) lookupLocked(ctx context.Context, itemID, requestID string) (*VerifyRecord, error) {
 	rows, truncated, err := r.deps.Client.EvidenceList(ctx, itemID)
 	if err != nil {
@@ -461,18 +470,23 @@ func (r *VerifyRunner) lookupLocked(ctx context.Context, itemID, requestID strin
 		if row.Type != verifyEvidenceType {
 			continue
 		}
-		var record VerifyRecord
-		if err := json.Unmarshal(row.DataJSON, &record); err != nil {
+		var stored storedVerifyRecord
+		if err := json.Unmarshal(row.DataJSON, &stored); err != nil {
 			continue
 		}
+		record := stored.VerifyRecord
 		if record.RequestID == "" || (requestID != "" && record.RequestID != requestID) {
 			continue
 		}
 		if record.State == verifyRunning && r.jobs[record.RequestID] == nil {
+			basis, ended := r.ownerEnded(stored.Owner, record.StartedAt)
+			if !ended {
+				return &record, nil
+			}
 			record.State, record.Outcome = verifySettled, VerifyDegraded
 			record.FinishedAt = r.deps.Now().UTC().Format(time.RFC3339)
 			record.Degraded = append(record.Degraded,
-				"the process that was verifying this task ended before it recorded a verdict; nothing was concluded, start a new verification with a new request_id")
+				fmt.Sprintf("the process that was verifying this task ended before it recorded a verdict (%s); nothing was concluded, start a new verification with a new request_id", basis))
 			if err := r.persist(ctx, record); err != nil {
 				return nil, err
 			}
@@ -493,7 +507,7 @@ func (r *VerifyRunner) lookupLocked(ctx context.Context, itemID, requestID strin
 // matched against, so it is written last — a failure between the two leaves a
 // run row nothing reads, never a claim that cannot be found.
 func (r *VerifyRunner) persist(ctx context.Context, record VerifyRecord) error {
-	data, err := encodeVerifyRecord(record)
+	data, err := encodeVerifyRecord(record, &r.owner)
 	if err != nil {
 		return err
 	}
@@ -514,10 +528,11 @@ func (r *VerifyRunner) persist(ctx context.Context, record VerifyRecord) error {
 	return err
 }
 
-// encodeVerifyRecord marshals a record under maxVerifyRecordBytes, shedding
-// the bulkiest detail first and saying so. A record too large to store would
-// otherwise fail settlement and leave the verification unresolved.
-func encodeVerifyRecord(record VerifyRecord) (json.RawMessage, error) {
+// encodeVerifyRecord marshals a record, and the process that wrote it, under
+// maxVerifyRecordBytes, shedding the bulkiest detail first and saying so. A
+// record too large to store would otherwise fail settlement and leave the
+// verification unresolved.
+func encodeVerifyRecord(record VerifyRecord, owner *verifyOwner) (json.RawMessage, error) {
 	for _, step := range []func(*VerifyRecord){
 		func(*VerifyRecord) {},
 		func(v *VerifyRecord) { v.CriticSummary = devcouncil.TruncateRunes(v.CriticSummary, 1000) },
@@ -542,7 +557,7 @@ func encodeVerifyRecord(record VerifyRecord) (json.RawMessage, error) {
 		},
 	} {
 		step(&record)
-		data, err := json.Marshal(record)
+		data, err := json.Marshal(storedVerifyRecord{VerifyRecord: record, Owner: owner})
 		if err != nil {
 			return nil, err
 		}
@@ -597,8 +612,8 @@ type verifyItem struct {
 }
 
 // Close cancels running jobs and waits, bounded, for them to settle. A job
-// that ignores cancellation stays a running claim, which a later read settles
-// as degraded.
+// that ignores cancellation stays a running claim, which a later read by this
+// process (or by another once this one has exited) settles as degraded.
 func (r *VerifyRunner) Close() error {
 	r.mu.Lock()
 	r.closed = true

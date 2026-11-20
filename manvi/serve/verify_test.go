@@ -142,6 +142,8 @@ func passingChecker() *fakeChecker {
 type verifyHarness struct {
 	t      *testing.T
 	client *store.Client
+	// db is the profile store file, for a test that opens it from a second process.
+	db     string
 	runner *VerifyRunner
 	repo   string
 	base   string
@@ -164,11 +166,12 @@ func newVerifyHarness(t *testing.T, criteria []string, configure func(*VerifyDep
 	gitIn(t, repo, "commit", "-q", "-m", "base")
 	base := gitIn(t, repo, "rev-parse", "HEAD")
 
-	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	db := filepath.Join(t.TempDir(), "profile.sqlite")
+	client := storeguard.NewClient(t, testsupport.DCStore(t), db)
 	t.Cleanup(client.Close)
 	enhancementCall(t, client, "repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
 	encoded, _ := json.Marshal(criteria)
-	h := &verifyHarness{t: t, client: client, repo: repo, base: base, critic: &scriptedCritic{}, devmap: newScriptedDevmap()}
+	h := &verifyHarness{t: t, client: client, db: db, repo: repo, base: base, critic: &scriptedCritic{}, devmap: newScriptedDevmap()}
 	h.putItem("t", string(encoded))
 
 	checker := passingChecker()
