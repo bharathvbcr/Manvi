@@ -234,7 +234,7 @@ const openRetries = 3
 // it removes the stage, however slow the directory sync in between. A link to a file
 // outside the tree makes a count of 3 or more, because the file's own name is
 // outside, and one with no stage sibling is not a publish, so both are refused.
-func ownStageLink(root *os.Root, name string, f *os.File, n int) bool {
+func ownStageLink(root *os.Root, name string, f *os.File, n uint64) bool {
 	if n != 2 {
 		return false
 	}
@@ -345,7 +345,7 @@ func openRegular(root *os.Root, name string, o ReadOptions) (*os.File, error) {
 			if err != nil {
 				return nil, errors.Join(fmt.Errorf("treefile: counting the links of %q: %w", name, err), f.Close())
 			}
-			if n > 1 && !ownStageLink(root, name, f, int(n)) {
+			if n > 1 && !ownStageLink(root, name, f, n) {
 				// The publisher may have finished between the count and the
 				// look, which leaves one link.
 				if again, err := safefile.LinkCount(f); err != nil || again > 1 {

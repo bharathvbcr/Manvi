@@ -118,7 +118,7 @@ func TestZadvW24CheckAliasIgnoresAnExactEntryAnotherWriterJustMade(t *testing.T)
 func TestZadvW24CheckAliasCostInATenThousandEntryDirectory(t *testing.T) {
 	anchor, _ := tree(t)
 	for i := 0; i < 10000; i++ {
-		f, err := os.Create(filepath.Join(anchor, fmt.Sprintf("entry-%05d", i)))
+		f, err := os.Create(filepath.Join(anchor, fmt.Sprintf("entry-%05d", i))) // #nosec G304 -- a path under this test's own t.TempDir
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -251,7 +251,7 @@ func TestZadvW24PermissionFailuresAreNotRefusals(t *testing.T) {
 	if err := os.Chmod(sub, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(sub, 0o750) })
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o750) }) // #nosec G302 -- a path under this test's own t.TempDir
 	root, err := Open(anchor)
 	if err != nil {
 		t.Fatal(err)
@@ -291,14 +291,14 @@ func TestZadvW24AFailedStageRemovalByPermissionStillReportsPublished(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = child.Close() }()
-	t.Cleanup(func() { _ = os.Chmod(dirPath, 0o750) })
+	t.Cleanup(func() { _ = os.Chmod(dirPath, 0o750) }) // #nosec G302 -- a path under this test's own t.TempDir
 	// The stage only outlives a publish that linked; where the OS renames without
 	// replacing, the stage is consumed and there is nothing to fail to remove.
 	saved := noReplaceRename
 	defer func() { noReplaceRename = saved }()
 	noReplaceRename = func(*os.Root, string, string) error { return errNoAtomicRename }
 	err = Publish(child, "entry", []byte("p"), PublishOptions{SyncDir: func(*os.Root) error {
-		return os.Chmod(dirPath, 0o500) // no removal possible
+		return os.Chmod(dirPath, 0o500) // no removal possible // #nosec G302 -- a path under this test's own t.TempDir
 	}})
 	if err == nil {
 		t.Fatal("an unremovable stage was not reported")

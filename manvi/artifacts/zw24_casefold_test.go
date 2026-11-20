@@ -135,3 +135,14 @@ func visibleEntries(dir string) []string {
 	}
 	return names
 }
+
+// mustStoreUnder is NewStoreUnder that fails the test instead of handing back a
+// nil store.
+func mustStoreUnder(t *testing.T, anchor, rel string) *Store {
+	t.Helper()
+	s, err := NewStoreUnder(anchor, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}

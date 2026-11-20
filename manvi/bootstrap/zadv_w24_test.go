@@ -16,7 +16,7 @@ func TestZadvW24EnsureRefusesALinkAtEveryComponentOfAStorePath(t *testing.T) {
 			// make the components above the link for real
 			parent := filepath.Dir(linkAt)
 			if parent != "." {
-				if err := os.MkdirAll(filepath.Join(root, parent), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Join(root, parent), 0o755); err != nil { // #nosec G301 -- a directory under this test's own t.TempDir
 					t.Fatal(err)
 				}
 			}
@@ -44,7 +44,7 @@ func TestZadvW24EnsureRefusesDanglingAndInternalLinks(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "absent"), filepath.Join(root, "dangling")); err != nil {
 		t.Skip(err)
 	}
-	if err := os.Mkdir(filepath.Join(root, "real"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, "real"), 0o755); err != nil { // #nosec G301 -- a directory under this test's own t.TempDir
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "internal")); err != nil {
@@ -71,7 +71,7 @@ func TestZadvW24EnsureRefusesDanglingAndInternalLinks(t *testing.T) {
 func TestZadvW24EnsureDoesNotMakeARelativePathThatClimbsOutOfTheRoot(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "repo")
-	if err := os.Mkdir(root, 0o755); err != nil {
+	if err := os.Mkdir(root, 0o755); err != nil { // #nosec G301 -- a directory under this test's own t.TempDir
 		t.Fatal(err)
 	}
 	for name, opts := range map[string]Options{

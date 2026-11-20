@@ -44,7 +44,7 @@ func zadvDecodedStrings(t *testing.T, doc string) []string {
 // JSON that decodes (by encoding/json and by the v2 validator) to no Invisible rune.
 func TestZadvW24EscapeResultJSONRoundTripNeverReintroducesAnInvisibleRune(t *testing.T) {
 	invisibles := []string{"\u202e", "\u200b", "\u00ad", "\u0085", "\u2028", "\u2029", "\x1b", "\u0000", "\x7f", "\ufeff", "\U000e0041", "\ue000"}
-	rng := rand.New(rand.NewSource(24))
+	rng := rand.New(rand.NewSource(24)) // #nosec G404 -- a test input generator, not a secret
 	for i := 0; i < 3000; i++ {
 		var key, val strings.Builder
 		for j := 0; j < rng.Intn(6); j++ {
@@ -115,7 +115,7 @@ func TestZadvW24ADuplicateNameDocumentStillDecodesToAnInvisibleRune(t *testing.T
 }
 
 func TestZadvW24EscapeJSONEdgeInputs(t *testing.T) {
-	for name, doc := range map[string]string{
+	for name, doc := range map[string]string{ // #nosec G101 -- test data, not a credential
 		"lone high surrogate":  `"\ud800"`,
 		"lone low surrogate":   `"\udc00x"`,
 		"valid pair":           `"\ud83d\ude00"`,

@@ -77,7 +77,7 @@ func TestZadvW24SurveyClientWithoutAGateDecisionNeverStartsAnything(t *testing.T
 // A trust file of absurd size must be refused, not read whole into memory.
 func TestZadvW24AHugeTrustFileIsRefusedNotBuffered(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trust.json")
-	f, err := os.Create(path)
+	f, err := os.Create(path) // #nosec G304 -- a path under this test's own t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}

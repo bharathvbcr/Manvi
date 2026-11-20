@@ -80,8 +80,8 @@ func TestZadvW24SidecarSpellingsAreReserved(t *testing.T) {
 func TestZadvW24ConcurrentCreatesOfFoldedLeafNamesHaveOneWinner(t *testing.T) {
 	for round := 0; round < 150; round++ {
 		anchor, _ := aliasTree(t)
-		s1, _ := NewStoreUnder(anchor, "store")
-		s2, _ := NewStoreUnder(anchor, "store")
+		s1 := mustStoreUnder(t, anchor, "store")
+		s2 := mustStoreUnder(t, anchor, "store")
 		var wg sync.WaitGroup
 		var e1, e2 error
 		start := make(chan struct{})
@@ -118,8 +118,8 @@ func TestZadvW24ConcurrentCreatesOfFoldedDirectoryNamesHaveOneWinner(t *testing.
 	const rounds = 200
 	for round := 0; round < rounds; round++ {
 		anchor, _ := aliasTree(t)
-		s1, _ := NewStoreUnder(anchor, "store")
-		s2, _ := NewStoreUnder(anchor, "store")
+		s1 := mustStoreUnder(t, anchor, "store")
+		s2 := mustStoreUnder(t, anchor, "store")
 		var wg sync.WaitGroup
 		var e1, e2 error
 		start := make(chan struct{})
@@ -146,7 +146,7 @@ func TestZadvW24ConcurrentCreatesOfFoldedDirectoryNamesHaveOneWinner(t *testing.
 // aliased spelling, without panicking or writing.
 func TestZadvW24AFileWhereADirectoryComponentWouldBeIsRefusedCleanly(t *testing.T) {
 	anchor, _ := aliasTree(t)
-	s, _ := NewStoreUnder(anchor, "store")
+	s := mustStoreUnder(t, anchor, "store")
 	if _, err := s.Create("Leaf", "x", Metadata{}); err != nil {
 		t.Fatal(err)
 	}
@@ -160,13 +160,13 @@ func TestZadvW24AFileWhereADirectoryComponentWouldBeIsRefusedCleanly(t *testing.
 // One Create reads the directories on its path: bound the cost with 10k siblings.
 func TestZadvW24CreateCostInATenThousandEntryStore(t *testing.T) {
 	anchor, _ := aliasTree(t)
-	s, _ := NewStoreUnder(anchor, "store")
+	s := mustStoreUnder(t, anchor, "store")
 	dir := filepath.Join(anchor, "store")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 10000; i++ {
-		f, err := os.Create(filepath.Join(dir, fmt.Sprintf("a%05d", i)))
+		f, err := os.Create(filepath.Join(dir, fmt.Sprintf("a%05d", i))) // #nosec G304 -- a path under this test's own t.TempDir
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -194,7 +194,7 @@ func TestZadvW24CreateCostInATenThousandEntryStore(t *testing.T) {
 // spelling can exist, which is what is created here.)
 func TestZadvW24ExistingEntriesStayReadableAndUpdatable(t *testing.T) {
 	anchor, _ := aliasTree(t)
-	s, _ := NewStoreUnder(anchor, "store")
+	s := mustStoreUnder(t, anchor, "store")
 	if _, err := s.Create("Mixed/Case", "v1", Metadata{}); err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,7 @@ func TestZadvW24ATrustFileThatIsAFIFODoesNotHang(t *testing.T) {
 	// Release a blocked open at the end of the test either way.
 	t.Cleanup(func() {
 		go func() {
-			if f, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
+			if f, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil { // #nosec G304 -- a path under this test's own t.TempDir
 				_ = f.Close()
 			}
 		}()

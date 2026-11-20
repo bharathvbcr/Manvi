@@ -167,7 +167,7 @@ func (r *Registry) createArtifact(ctx context.Context, call tools.Call) tools.Re
 		return tools.Errorf("accessing artifact store: %v", err)
 	}
 
-	art, err := store.Create(args.Name, args.Content, args.Metadata)
+	art, err := store.Create(args.Name, args.Content, args.Metadata) //nolint:contextcheck // Store.Create takes no context; the directory-creation lock wait inside it is bounded by treefile.aliasLockWait, so an abandoned call cannot queue forever
 	if err != nil && !errors.Is(err, artifacts.ErrPublishedUnsynced) {
 		return tools.Errorf("creating artifact: %v", err)
 	}

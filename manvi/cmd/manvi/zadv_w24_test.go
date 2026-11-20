@@ -21,7 +21,7 @@ func TestZadvW24DoctorTouchesNothingThroughAnyShapeOfLinkedStateDir(t *testing.T
 			}
 		},
 		"leaf link": func(t *testing.T, root, outside string) {
-			if err := os.Mkdir(filepath.Join(root, "a"), 0o755); err != nil {
+			if err := os.Mkdir(filepath.Join(root, "a"), 0o755); err != nil { // #nosec G301 -- a directory under this test's own t.TempDir
 				t.Fatal(err)
 			}
 			if err := os.Symlink(outside, filepath.Join(root, "a", "state")); err != nil {
@@ -108,7 +108,7 @@ func zadvW24HostileManager(t *testing.T) (root string, mgr *mcp.Manager) {
 	// a repository directory whose own name carries an escape sequence, a bidi
 	// override and a newline
 	root = filepath.Join(base, "rep\x1b[2Jo\u202e\nmanvi: mcp: forged")
-	if err := os.Mkdir(root, 0o755); err != nil {
+	if err := os.Mkdir(root, 0o755); err != nil { // #nosec G301 -- a directory under this test's own t.TempDir
 		t.Skipf("file system refuses the hostile directory name: %v", err)
 	}
 	name := "dup\u001b]0;pwn\u0007\u202e\nmanvi: mcp: ok"
