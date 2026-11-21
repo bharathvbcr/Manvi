@@ -23,6 +23,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- The end-of-turn check now selects the tests a turn's changes reach, through the
+  code index's `affected` query, and reports them on `verify.report`
+  (`test_selection`, `selected_tests`) and in the bounce text as "selected, not
+  run": up to 20 names plus the total, the index generation, and whether the
+  index is stale. Selection only: no test is executed, the verdict is unchanged,
+  and `MANVI_VERIFY_COMMAND` still runs exactly as before. When the index is
+  unavailable, stale, or does not contain a changed file, the report says the
+  selection did not run or may be incomplete, never "no affected tests".
+
 - `devcouncil_write_file` and `devcouncil_patch_file` end their result with a bounded impact line from the code index: up to 10 callers outside the written file, labelled with the index generation and stated stale when the index has not seen the write, or one line saying the check did not run. `devcouncil_code` opens with `index_notice` when the index is behind the tree, naming the paths this session wrote that it has not seen, and hoists completeness fields that are identical on every sub-envelope into one `shared_envelope` (differing values are left in place).
 
 - **Tool offering is operator-settable on every provider.** `harness.core_tools_only`

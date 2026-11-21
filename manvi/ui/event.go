@@ -178,6 +178,10 @@ type Event struct {
 	Paths    []string `json:"paths,omitempty"`
 	Findings []string `json:"findings,omitempty"`
 	Bounce   int      `json:"bounce,omitempty"`
+	// TestSelection and SelectedTests are the verify report's test selection:
+	// tests the index reaches from the changed files, selected and never run.
+	TestSelection string   `json:"test_selection,omitempty"`
+	SelectedTests []string `json:"selected_tests,omitempty"`
 
 	// Diagnostic fields. Type is the session record's name ("system/prompt_assembled",
 	// "context/overflow", ...) and Data is that record's own payload, so the

@@ -172,6 +172,15 @@ type (
 		// Degraded names checks that could not run, and is why a passed
 		// verdict is still not a clean one.
 		Degraded []string `json:"degraded,omitempty"`
+		// TestSelection is the code index's answer to "which tests does this
+		// change reach", in words: "selected, not run" with the index
+		// generation and staleness, or that the selection did not run. It is
+		// information beside the verdict. Nothing it names was executed.
+		TestSelection string `json:"test_selection,omitempty"`
+		// SelectedTests are the selected test files, capped; SelectedTotal is
+		// how many the index reached, so a capped list is never read as whole.
+		SelectedTests []string `json:"selected_tests,omitempty"`
+		SelectedTotal int      `json:"selected_total,omitempty"`
 		// Bounce is which attempt this was within the turn: 0 for the first
 		// check, 1 for the one after an inject, and so on.
 		Bounce int `json:"bounce"`

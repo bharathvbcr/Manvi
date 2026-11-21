@@ -36,10 +36,12 @@ func newStubIndex(t *testing.T, f *fixture, generation int, fresh bool) *stubInd
 	s := &stubIndex{dir: t.TempDir()}
 	script := "#!/bin/sh\n" +
 		"case \" $* \" in *\" --help \"*) printf '      --graph-output <PATH>\\n'; exit 0;; esac\n" +
+		"echo \"$2\" >> " + filepath.Join(s.dir, "calls") + "\n" +
 		"case \"$2\" in\n" +
 		"  status) cat " + filepath.Join(s.dir, "status") + ";;\n" +
 		"  explore) cat " + filepath.Join(s.dir, "explore") + ";;\n" +
 		"  impact) cat " + filepath.Join(s.dir, "impact") + ";;\n" +
+		"  affected) cat " + filepath.Join(s.dir, "affected") + "; if [ -f " + filepath.Join(s.dir, "affected.fail") + " ]; then exit 1; fi;;\n" +
 		"  search) echo '{\"items\":[],\"hidden\":0}';;\n" +
 		"  *) echo '{}'; exit 1;;\n" +
 		"esac\n"

@@ -254,6 +254,8 @@ func Project(e session.Event) []Event {
 		base.Paths = data.Paths
 		base.Findings = data.Findings
 		base.Degraded = data.Degraded
+		base.TestSelection = data.TestSelection
+		base.SelectedTests = data.SelectedTests
 		base.Bounce = data.Bounce
 		return []Event{base}
 
