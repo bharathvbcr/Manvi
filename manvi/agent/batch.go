@@ -354,7 +354,10 @@ func batchKeep(slot *batchSlot, budget int) (text string, whole bool) {
 			continue
 		}
 		matched++
-		if shown >= slot.limit {
+		// Once a line has not fit, nothing after it is shown: keeping a later,
+		// shorter line would leave a gap the model reads as consecutive text.
+		// Matches are still counted so the filter note stays accurate.
+		if clipped || shown >= slot.limit {
 			continue
 		}
 		if kept.Len()+len(line) > budget {
@@ -368,7 +371,7 @@ func batchKeep(slot *batchSlot, budget int) (text string, whole bool) {
 		}
 	}
 	if clipped {
-		fmt.Fprintf(&kept, "[the rest of this answer passed the batch's byte bound; call the tool on its own for it]\n")
+		fmt.Fprintf(&kept, "[the answer stops after %d line(s): the next one passed the batch's byte bound, and nothing after it is shown; call the tool on its own for the rest]\n", shown)
 	}
 	switch {
 	case slot.filter != nil:

@@ -321,8 +321,8 @@ func TestBatchBoundsBytesAsWellAsLines(t *testing.T) {
 	if len(text) > maxBatchCallBytes+1024 {
 		t.Errorf("a one-line answer of %d bytes produced a %d-byte batch result", 4*maxBatchCallBytes, len(text))
 	}
-	if !strings.Contains(text, "byte bound") || !strings.Contains(text, "second line") {
-		t.Errorf("the clip must be named and the lines that fit kept:\n%.300s", text)
+	if !strings.Contains(text, "byte bound") || strings.Contains(text, "second line") {
+		t.Errorf("the clip must be named and nothing after the line that did not fit kept:\n%.300s", text)
 	}
 }
 

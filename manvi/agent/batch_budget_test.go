@@ -144,3 +144,23 @@ func TestBatchBudgetAdaptsToWhatRemains(t *testing.T) {
 		t.Errorf("committed %d marks, want 16: %v", len(shown), shown)
 	}
 }
+
+// A line that does not fit the byte budget ends what the batch shows. Skipping
+// it and keeping a later, shorter line left a hole the model could not see: the
+// kept lines read as consecutive.
+func TestBatchKeepStopsAtTheFirstLineThatDoesNotFit(t *testing.T) {
+	slot := &batchSlot{limit: 100, result: tools.Result{Text: "one\n" + strings.Repeat("x", 200) + "\nthree\n"}}
+	text, whole := batchKeep(slot, 50)
+	if whole {
+		t.Error("an answer cut at the byte bound was reported whole")
+	}
+	if !strings.Contains(text, "one\n") {
+		t.Errorf("the line before the oversized one was dropped:\n%s", text)
+	}
+	if strings.Contains(text, "three") {
+		t.Errorf("a line after the one that did not fit was kept, leaving a silent hole:\n%s", text)
+	}
+	if !strings.Contains(text, "1 of 3 lines shown") || !strings.Contains(text, "stops after 1 line(s)") {
+		t.Errorf("the note does not say where the answer stopped and why:\n%s", text)
+	}
+}
