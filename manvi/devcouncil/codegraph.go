@@ -262,8 +262,11 @@ func codeQueryFor(kind, query, to string, targets []string, depth, budget int) (
 	return q, nil
 }
 
-// sourceKeys are the envelope fields that carry file content.
-var sourceKeys = []string{"source", "source_span"}
+// sourceKeys are the envelope fields that carry file content: devmap's
+// published list (devmap_query::model::CONTENT_BEARING_KEYS, documented in
+// DevCouncil's docs/devmap/HOST_INTEGRATION.md). evidence.source shares a name
+// with source and is provenance; resolutionSources below lets it through.
+var sourceKeys = []string{"source", "source_span", "source_indent", "signature", "value"}
 
 // resolutionSources are the values of devmap's ResolutionSource
 // (devmap-resolve model.rs), which an edge's evidence object carries under

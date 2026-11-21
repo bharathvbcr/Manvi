@@ -622,3 +622,23 @@ func TestAPatchKeepsTheGuardOnlyAfterAFullRead(t *testing.T) {
 		t.Fatal("a patch on a file never read in full counted as reading it")
 	}
 }
+
+// devmap publishes which JSON keys carry file text (devmap_query
+// CONTENT_BEARING_KEYS: source, source_span, source_indent, signature, value;
+// evidence.source is provenance). Each of them passes the read gate, not only
+// the two this adapter first knew of.
+func TestCodeGraphGatesEveryPublishedContentKey(t *testing.T) {
+	raw := []byte(`{"items":[{"file_path":"secrets/k.go","signature":"func K() string","value":"TOKEN","source_indent":"\\t","source":"x"}]}`)
+	out, withheld, err := withholdGraphSources(raw, func(string) string { return "path.secret_read" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{"func K() string", "TOKEN"} {
+		if strings.Contains(string(out), leaked) {
+			t.Errorf("%q passed the read gate: %s", leaked, out)
+		}
+	}
+	if withheld != 4 {
+		t.Errorf("withheld %d content fields, want 4: %s", withheld, out)
+	}
+}
