@@ -254,10 +254,22 @@ data: {"type":"message_stop"}
 	}
 }
 
-func TestAServerOnlyMessageSurvivesTheNeutralPredicate(t *testing.T) {
+// A message holding only server blocks has no neutral content, so the shared
+// predicate (the one the encoder, the projection and the notice placement all
+// use) calls it hollow and it is omitted, with search on or off. The turn is
+// re-asked rather than continued. This test holds that agreement: see
+// TestAdvFixBHollowShapesFromARealStream, which fails if the predicate and the
+// encoder part ways.
+func TestAServerOnlyMessageIsHollowToEveryone(t *testing.T) {
 	msg := llm.Message{Role: llm.RoleAssistant, Provenance: &llm.AssistantProvenance{Provider: Name, ReplayState: json.RawMessage(`{"version":1}`)}}
-	if !msg.HasSendableContent() {
-		t.Error("an assistant message carried by its replay state alone was treated as empty and would be dropped from the history")
+	if msg.HasSendableContent() {
+		t.Error("the shared predicate and the encoder must agree that a message with no neutral content is not sent")
+	}
+	adapter, server := searchAdapter(t, minimalStream, 3)
+	req := request()
+	req.Messages = []llm.Message{userMsg("q"), msg, userMsg("again")}
+	if body := sendOne(t, adapter, server, req); strings.Count(body, `"role":"assistant"`) != 0 {
+		t.Errorf("a hollow assistant message reached the wire: %s", body)
 	}
 }
 

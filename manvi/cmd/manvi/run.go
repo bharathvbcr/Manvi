@@ -504,7 +504,7 @@ func outcomeStatus(outcome agent.Outcome) error {
 	// or a CI step reads. This harness's cardinal rule is that a check that did
 	// not run must never report the same result as one that ran and passed, and
 	// an exit status is a check's result.
-	if outcome.StopReason == llm.StopOther || outcome.StopReason == llm.StopRefusal {
+	if outcome.StopReason == llm.StopOther || outcome.StopReason == llm.StopRefusal || outcome.StopReason == llm.StopPause {
 		return errUnfinished
 	}
 	return nil

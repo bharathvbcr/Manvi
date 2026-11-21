@@ -217,6 +217,16 @@ var operatorScopeRules = []operatorScopeRule{
 				path, serialLookupsKey, flags.EnvKey(serialLookupsKey), serialLookupsKey)
 		},
 	},
+	{
+		matches: isWebSearchKey,
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: web search sends the query text the model writes "+
+				"to a third party outside this machine, and this file ships with a clone and can be written by an "+
+				"agent under a relaxed posture. Remove those lines; set %s in the environment, in %s, or with "+
+				"'manvi flags set %s on'",
+				path, strings.Join(keys, ", "), flags.EnvKey(keys[0]), userConfigHint(), webSearchKey)
+		},
+	},
 	{matches: isEndpointKey, refusal: refuseEndpointKeys},
 }
 

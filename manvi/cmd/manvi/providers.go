@@ -63,6 +63,9 @@ func buildProvider(ctx context.Context, name string, reg *flags.Registry, resolv
 		if err := armAnthropicFallback(adapter, resolver, notes); err != nil {
 			return nil, err
 		}
+		if err := applyWebSearch(adapter, reg); err != nil {
+			return nil, err
+		}
 		return meterAnthropic(ctx, adapter)
 	case xai.Name:
 		base, _, err := reg.String(flags.LLMXAIBaseURL)

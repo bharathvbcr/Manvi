@@ -291,12 +291,6 @@ func BlockSendable(block ContentBlock) bool {
 // predicate the log's projection, its wire state, the stale-reasoning pass and
 // the Anthropic encoder share, so they agree on which messages exist.
 func (m Message) HasSendableContent() bool {
-	// An assistant turn whose only content was provider-hosted (a paused web
-	// search holds nothing but server blocks) is carried entirely by its replay
-	// state, and omitting it would send the provider a history that lost the work.
-	if m.Role == RoleAssistant && m.Provenance != nil && len(m.Provenance.ReplayState) > 0 {
-		return true
-	}
 	return slices.ContainsFunc(m.Content, BlockSendable)
 }
 
