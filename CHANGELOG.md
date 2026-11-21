@@ -41,6 +41,7 @@ under **Unreleased** in the same commit as the code.
   no `load()`, files, network, clock or randomness. A `read_file` inside a script never counts as read for the
   overwrite guard. A step with a script call resets the serial-lookup run. `harness.batch_tool: off` withholds it
   with the batch tool. Native tool count 53 to 54 (53 in a repository with no skills, from 52).
+- `bench/batching/`: a paired three-arm benchmark of the batching policy (batch tool off, on with serial lookups off, on with the default) that drives the built `manvi run --json` live and reuses the bench's bootstrap statistics. Pre-registration, tasks, driver, unit tests, raw rows and a results summary are included. No setting or tool changed.
 
 - `devcouncil_write_file` and `devcouncil_patch_file` end their result with a bounded impact line from the code index: up to 10 callers outside the written file, labelled with the index generation and stated stale when the index has not seen the write, or one line saying the check did not run. `devcouncil_code` opens with `index_notice` when the index is behind the tree, naming the paths this session wrote that it has not seen, and hoists completeness fields that are identical on every sub-envelope into one `shared_envelope` (differing values are left in place).
 
