@@ -14,7 +14,6 @@ import argparse
 import itertools
 import json
 import os
-import random
 import re
 import subprocess
 import sys

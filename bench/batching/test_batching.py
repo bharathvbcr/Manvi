@@ -110,4 +110,10 @@ class Pairing(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    # verify.sh reads the count from the last line, so a run that collected
+    # nothing is told apart from one that passed.
+    result = unittest.TextTestRunner(verbosity=1).run(
+        unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]))
+    failed = len(result.failures) + len(result.errors)
+    print(f"{result.testsRun - failed} passed, {failed} failed")
+    sys.exit(0 if result.wasSuccessful() and result.testsRun > 0 else 1)
