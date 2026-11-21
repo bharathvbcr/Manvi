@@ -83,8 +83,15 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	// Containment is built after the gate and before anything runs, and an
+	// argv that could not be contained is never run uncontained.
+	argv, err := r.containedShellArgv(cmdCtx, args.Command)
+	if err != nil {
+		return tools.Errorf("%v", err)
+	}
+
 	start := time.Now()
-	outText, exitCode, timedOut, runErr := runShell(cmdCtx, r.deps.Root, args.Command)
+	outText, exitCode, timedOut, runErr := runArgv(cmdCtx, r.deps.Root, argv)
 	elapsed := time.Since(start)
 
 	res := r.commandResult(args.Command, decision, outText, exitCode, timedOut, runErr, elapsed)
@@ -141,8 +148,14 @@ func (r *Registry) commandResult(command string, decision policy.Decision, outTe
 // foreground work completed reports success even when leftover descendants
 // were cut off holding the pipes.
 func runShell(ctx context.Context, dir, command string) (string, int, bool, error) {
+	return runArgv(ctx, dir, []string{"sh", "-c", command})
+}
+
+// runArgv is runShell for an argv the caller has already built, which is how a
+// contained command reaches the one child-process owner.
+func runArgv(ctx context.Context, dir string, argv []string) (string, int, bool, error) {
 	res := runProc(ctx, procSpec{
-		argv: []string{"sh", "-c", command}, dir: dir, env: sanitizedEnv(dir),
+		argv: argv, dir: dir, env: sanitizedEnv(dir),
 		stdoutLimit: 1024 * 1024, combined: true,
 	})
 	output := string(res.stdout)

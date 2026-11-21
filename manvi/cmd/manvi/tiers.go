@@ -218,6 +218,15 @@ var operatorScopeRules = []operatorScopeRule{
 		},
 	},
 	{
+		matches: func(key string) bool { return key == execContainmentKey },
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: it decides whether agent-authored shell commands "+
+				"are denied the repository's secret files, and this file ships with a clone and can be written by an "+
+				"agent under a relaxed posture. Remove that line; set it with %s or 'manvi flags set %s MODE'",
+				path, execContainmentKey, flags.EnvKey(execContainmentKey), execContainmentKey)
+		},
+	},
+	{
 		matches: isToolOfferingKey,
 		refusal: func(path string, keys []string) error {
 			return fmt.Errorf("%s sets %s, which is operator scope: it decides which tools the agent is offered, "+

@@ -55,6 +55,14 @@ func harnessFlagDefs() []flags.Def {
 			"devcouncil_batch is offered: refuse notes the third and refuses the fifth once (sent again, it runs), " +
 			"note only notes every third, off does neither.",
 	}, {
+		Key: execContainmentKey, Kind: flags.KindEnum, Default: execContainmentOff,
+		Values: []string{execContainmentOff, execContainmentSecrets}, Mutable: flags.HumanOnly,
+		Description: "Whether devcouncil_exec_command runs under a macOS seatbelt profile (sandbox-exec) that denies " +
+			"reading the repository's secret files (DevCouncil's policy.SecretPathPatterns), so grep -r, rg or a " +
+			"program the agent builds cannot read what a command naming the path would be refused. secrets turns it " +
+			"on; where sandbox-exec is unavailable the command is refused, never run uncontained. Operator scope: " +
+			"never read from the repository's config.yaml.",
+	}, {
 		Key: coreToolsOnlyKey, Kind: flags.KindBool, Default: "false", Mutable: flags.HumanOnly,
 		Description: "Offer only the core tool set, whichever provider is in use: task lifecycle, sub-agent, " +
 			"artifact and other extended tools are left out of every request. llm.local.core_tools_only does the " +
@@ -73,6 +81,28 @@ func harnessFlagDefs() []flags.Def {
 			"prompt's line about it, and with it the batching rule that harness.serial_lookups enforces. " +
 			"Operator scope: never read from the repository's config.yaml.",
 	}}...)
+}
+
+// execContainmentKey names the switch for secret-file containment of shell
+// commands; see devcouncil.Deps.ExecContainment. Off unless the operator turns
+// it on, which is the behaviour of every release before it.
+const execContainmentKey = "harness.exec_containment"
+
+// Values of execContainmentKey.
+const (
+	execContainmentOff     = "off"
+	execContainmentSecrets = "secrets"
+)
+
+// execContainmentMode is the configured mode. A registry that cannot answer,
+// which only one built without harnessFlagDefs can be, is off: that is the
+// behaviour before the switch existed.
+func execContainmentMode(reg *flags.Registry) string {
+	mode, _, err := reg.String(execContainmentKey)
+	if err != nil || mode == "" {
+		return execContainmentOff
+	}
+	return mode
 }
 
 // serialLookupsKey names the batching rule's mode; see agent.SerialLookups.
