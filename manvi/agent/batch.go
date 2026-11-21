@@ -49,18 +49,18 @@ const (
 	maxBatchBytes = 128 << 10
 )
 
-// batchCallBudget is the byte budget each admitted call gets. It is fixed
-// before any call runs, and it is both the MaxBytes a handler is told in its
-// View and the bound batchKeep cuts at. A handler that records an answer as
-// shown whole — read_file marking a file read, which the write guard trusts —
-// is told the same number the fold applies, so the fold can never cut an answer
-// the handler was told would be shown in full. It used to be told 32 KiB while
-// the fold gave a later call only what the earlier ones had left of the batch.
-func batchCallBudget(admitted int) int {
-	if admitted < 1 {
-		return maxBatchCallBytes
-	}
-	return min(maxBatchCallBytes, maxBatchBytes/admitted)
+// batchCallBudget is the byte budget the call whose turn it is gets in the
+// fold: its own bound, or what the calls before it left of the batch, whichever
+// is less. Sixteen small answers therefore do not shrink each other's room, and
+// one large answer gets the full per-call bound when the rest are small.
+//
+// It is decided as the fold proceeds, in call order, so a handler running
+// concurrently cannot know it; the MaxBytes in its View is the per-call bound,
+// an upper limit. A handler whose side effect depends on its answer being shown
+// whole defers it on Result.OnShown, and runBatch commits that only after
+// batchKeep has said the answer was kept in full.
+func batchCallBudget(remaining int) int {
+	return max(0, min(maxBatchCallBytes, remaining))
 }
 
 type batchItem struct {
@@ -101,14 +101,6 @@ func (l *Loop) runBatch(ctx context.Context, out *Outcome, tally *stepTally, cal
 		slot.refusal = l.admitBatchItem(slot)
 	}
 
-	admitted := 0
-	for _, slot := range slots {
-		if slot.refusal == "" {
-			admitted++
-		}
-	}
-	budget := batchCallBudget(admitted)
-
 	// Run what was admitted, bounded. Only the handlers run concurrently;
 	// nothing here touches loop state.
 	var wg sync.WaitGroup
@@ -127,7 +119,7 @@ func (l *Loop) runBatch(ctx context.Context, out *Outcome, tally *stepTally, cal
 				return
 			}
 			defer func() { <-sem }()
-			view := tools.View{MaxLines: slot.limit, MaxBytes: budget, Filtered: slot.filter != nil}
+			view := tools.View{MaxLines: slot.limit, MaxBytes: maxBatchCallBytes, Filtered: slot.filter != nil}
 			slot.result = l.tools.Run(tools.WithView(ctx, view),
 				tools.Call{ID: slot.id, Name: slot.item.Tool, Arguments: []byte(slot.item.Args)})
 		}(slot)
@@ -138,6 +130,7 @@ func (l *Loop) runBatch(ctx context.Context, out *Outcome, tally *stepTally, cal
 	// exactly as if the calls had been made one after another.
 	var text strings.Builder
 	fmt.Fprintf(&text, "%d call(s):\n", len(slots))
+	remaining := maxBatchBytes
 	for i, slot := range slots {
 		fmt.Fprintf(&text, "\n## [%d] %s", i+1, slot.item.Tool)
 		if slot.refusal != "" {
@@ -153,7 +146,14 @@ func (l *Loop) runBatch(ctx context.Context, out *Outcome, tally *stepTally, cal
 			text.WriteString(" — error")
 		}
 		text.WriteString("\n")
-		text.WriteString(batchKeep(slot, budget))
+		kept, whole := batchKeep(slot, batchCallBudget(remaining))
+		text.WriteString(kept)
+		remaining -= len(kept)
+		// Committed only for an answer the model was shown in full: a file
+		// the fold cut is not a file read, whatever the handler hoped.
+		if whole && !slot.result.IsError && slot.result.OnShown != nil {
+			slot.result.OnShown()
+		}
 	}
 	return tools.Result{Text: text.String()}
 }
@@ -311,10 +311,11 @@ func (l *Loop) admitBatchItem(slot *batchSlot) string {
 
 // batchKeep is the part of one answer the call asked to keep, and a line that
 // says what was left out. A filtered answer that did not say so would read as
-// the whole answer.
-func batchKeep(slot *batchSlot, budget int) string {
+// the whole answer. whole is true only when nothing at all was left out: no
+// filter, no line cap reached, no byte bound reached.
+func batchKeep(slot *batchSlot, budget int) (text string, whole bool) {
 	if len(slot.result.Content) > 0 {
-		return "[this answer is not text and was left out of the batch; call the tool on its own]\n"
+		return "[this answer is not text and was left out of the batch; call the tool on its own]\n", false
 	}
 	lines := strings.SplitAfter(slot.result.Text, "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
@@ -351,5 +352,5 @@ func batchKeep(slot *batchSlot, budget int) string {
 	case shown < total:
 		fmt.Fprintf(&kept, "[%d of %d lines shown; raise max_lines or read the rest on its own]\n", shown, total)
 	}
-	return kept.String()
+	return kept.String(), slot.filter == nil && !clipped && shown == total
 }

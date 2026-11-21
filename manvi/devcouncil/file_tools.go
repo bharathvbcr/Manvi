@@ -2,6 +2,7 @@ package devcouncil
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -224,18 +225,58 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	// Recorded only for a whole file the model will actually see: a refused or
 	// failed read is not an inspection, and neither is a range or a batch view
 	// that cuts the answer — the overwrite guard (inspect.go) reads this, and
-	// "read one line of it" is not "read it".
+	// "read one line of it" is not "read it". What is recorded is the digest of
+	// these bytes, so the mark lapses when the file changes.
+	//
+	// Under a View this handler cannot tell whether its answer will survive the
+	// cut (the bytes left in a batch depend on the calls before it), so the
+	// mark is returned on the result and the agent loop commits it once it has
+	// shown the answer whole. See tools.Result.OnShown.
 	if args.Offset == 0 && args.Limit == 0 {
-		if view, cut := tools.ViewFrom(ctx); !cut || view.Whole(textLines(string(data)), len(data)) {
-			r.inspected.mark(rel)
+		result := annotate(tools.Result{Text: string(data)}, decision)
+		sum := sha256.Sum256(data)
+		if _, inView := tools.ViewFrom(ctx); inView {
+			result.OnShown = func() { r.inspected.mark(rel, sum) }
+		} else {
+			r.inspected.mark(rel, sum)
 		}
-		return annotate(tools.Result{Text: string(data)}, decision)
+		return result
 	}
 	text, err := lineRange(string(data), args.Offset, args.Limit)
 	if err != nil {
 		return tools.Errorf("reading %s: %v", args.Path, err)
 	}
 	return annotate(tools.Result{Text: text}, decision)
+}
+
+// overwriteRefusal is the audit-first rule for write_file over an existing
+// file: the agent must have read it in full, and what it read must still be what
+// is on disk. nil means the overwrite may go ahead. A file that cannot be read
+// back to compare is refused, not waved through: a check that could not run is
+// not a check that passed.
+func (r *Registry) overwriteRefusal(ctx context.Context, path, normalized string) *tools.Result {
+	seen, ok := r.inspected.digest(normalized)
+	if !ok {
+		res := tools.Errorf("%s exists and has not been read in full in this session, so it was "+
+			"not overwritten: write_file replaces every byte. Read the whole file with "+
+			"devcouncil_read_file first (no offset or limit), or change part of it with "+
+			"devcouncil_patch_file", path)
+		return &res
+	}
+	current, err := readContained(ctx, r.deps.Root, normalized, maxToolReadBytes)
+	if err != nil {
+		res := tools.Errorf("%s was not overwritten: it could not be read back to check it is unchanged "+
+			"since you read it (%v). Read it again with devcouncil_read_file, or change part of it with "+
+			"devcouncil_patch_file", path, err)
+		return &res
+	}
+	if sha256.Sum256(current) != seen {
+		res := tools.Errorf("%s has changed since you read it, so it was not overwritten: write_file "+
+			"replaces every byte and would drop what was added. Read the whole file again with "+
+			"devcouncil_read_file (no offset or limit), or change part of it with devcouncil_patch_file", path)
+		return &res
+	}
+	return nil
 }
 
 // lineRange returns lines [offset, offset+limit) of text, 1-based, under a
@@ -314,11 +355,10 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	// repository: an outside path is reachable only with the hard rules off,
 	// and devcouncil_read_file cannot read one, so the rule could never be
 	// satisfied there. See inspect.go.
-	if !outside && !creating && !r.inspected.has(normalized) {
-		return tools.Errorf("%s exists and has not been read in full in this session, so it was "+
-			"not overwritten: write_file replaces every byte. Read the whole file with "+
-			"devcouncil_read_file first (no offset or limit), or change part of it with "+
-			"devcouncil_patch_file", args.Path)
+	if !outside && !creating {
+		if refusal := r.overwriteRefusal(ctx, args.Path, normalized); refusal != nil {
+			return *refusal
+		}
 	}
 
 	full, err := r.resolvePath(args.Path)
@@ -346,7 +386,7 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	// because none of them changed a file and a checker handed a path that was
 	// never written would report on the wrong thing — or, worse, report a pass
 	// for a write the gate refused.
-	r.inspected.mark(normalized)
+	r.inspected.mark(normalized, sha256.Sum256([]byte(args.Content)))
 	result := annotate(
 		tools.Result{
 			Text:  fmt.Sprintf("wrote %s (%d bytes)", decision.Target, len(args.Content)),
@@ -1688,16 +1728,4 @@ func (r *Registry) findFiles(ctx context.Context, call tools.Call) tools.Result 
 			"excluded by ignore rules. Re-run with include_ignored to find out which."
 	}
 	return ok(payload)
-}
-
-// textLines counts lines the way a batch view does: a final line without a
-// newline counts, a trailing newline does not start another. Counting "\n"+1
-// made a 200-line file read as 201 and never count as shown whole under a
-// 200-line view.
-func textLines(s string) int {
-	n := strings.Count(s, "\n")
-	if s != "" && !strings.HasSuffix(s, "\n") {
-		n++
-	}
-	return n
 }

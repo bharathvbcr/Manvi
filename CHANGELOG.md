@@ -38,8 +38,13 @@ under **Unreleased** in the same commit as the code.
   stays out of the repeat ledger and is charged as one step, not a stall.
   `harness.serial_lookups` (`refuse`, the default; `note`; `off`) sets it. It is
   operator scope: a repository `config.yaml` that sets it is refused at startup.
-  Inside a batch, every call gets the same fixed byte budget that its handler is
-  told, so `read_file` never marks as read a file the batch then cut.
+  Inside a batch each call gets the lesser of 32 KiB and what the earlier calls
+  left of the batch's 128 KiB, decided as the fold proceeds, so sixteen small
+  answers do not shrink each other's room. `read_file` does not mark a file
+  read inside a batch; it returns the mark on its result (`Result.OnShown`) and
+  the loop commits it only for an answer it showed in full. The tool's
+  description names the lookups the surface marks batchable, generated rather
+  than hand-listed.
 - **`devcouncil_code`: the code graph's explore, impact, trace and affected
   questions in one tool**, through DevCouncil's `devmap.Client.Advanced`. It is
   a core tool whenever a navigator is attached, so a session with a code map
@@ -54,6 +59,12 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **`devcouncil_write_file` also refuses a file that changed after it was
+  read.** The session records a SHA-256 of exactly the bytes a full read showed
+  (or that it wrote itself) and compares it with the file on disk before
+  overwriting; a mismatch, or a file that cannot be read back, is refused with
+  "has changed since you read it". Another writer's addition is no longer
+  silently dropped.
 - **`devcouncil_write_file` refuses to overwrite an existing file this
   session has not read.** The refusal names the remedy (read it, or patch it)
   and carries no policy rule, because the gate did not make it. A file the

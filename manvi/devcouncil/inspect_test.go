@@ -322,12 +322,23 @@ func TestAPartialReadDoesNotSatisfyTheOverwriteGuard(t *testing.T) {
 		t.Fatal("a read whose answer a batch filtered satisfied the overwrite guard")
 	}
 
+	// Inside a batch the handler cannot know the answer survives the cut, so it
+	// returns its mark on the result and the loop commits it once the answer was
+	// shown whole.
 	whole := tools.WithView(context.Background(), tools.View{MaxLines: 200, MaxBytes: 1 << 15})
-	if res := f.pipe.Run(whole, tools.Call{ID: "c3", Name: "devcouncil_read_file", Arguments: []byte(`{"path":"src/calc.go"}`)}); res.IsError {
+	res := f.pipe.Run(whole, tools.Call{ID: "c3", Name: "devcouncil_read_file", Arguments: []byte(`{"path":"src/calc.go"}`)})
+	if res.IsError {
 		t.Fatalf("batched whole read: %s", res.Text)
 	}
+	if res.OnShown == nil {
+		t.Fatal("a read under a batch view carried no pending mark")
+	}
+	if res := write(); !res.IsError {
+		t.Fatal("a batched read satisfied the overwrite guard before the loop showed it whole")
+	}
+	res.OnShown()
 	if res := write(); res.IsError {
-		t.Fatalf("a whole read inside a batch view did not satisfy the guard: %s", res.Text)
+		t.Fatalf("a whole read inside a batch view did not satisfy the guard once committed: %s", res.Text)
 	}
 }
 
@@ -468,10 +479,106 @@ func TestAFileThatFillsTheViewCountsAsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	view := tools.WithView(context.Background(), tools.View{MaxLines: 200, MaxBytes: 1 << 15})
-	if res := f.pipe.Run(view, tools.Call{ID: "c1", Name: "devcouncil_read_file", Arguments: []byte(`{"path":"src/calc.go"}`)}); res.IsError {
-		t.Fatalf("read: %s", res.Text)
+	read := f.pipe.Run(view, tools.Call{ID: "c1", Name: "devcouncil_read_file", Arguments: []byte(`{"path":"src/calc.go"}`)})
+	if read.IsError || read.OnShown == nil {
+		t.Fatalf("read: %+v", read)
 	}
+	read.OnShown() // what runBatch does for an answer batchKeep showed whole
 	if res := f.call("devcouncil_write_file", map[string]string{"path": "src/calc.go", "content": "package calc\n"}); res.IsError {
 		t.Fatalf("a file shown whole under a 200-line view did not count as read: %s", res.Text)
+	}
+}
+
+// A file that changed on disk after the agent read it is not one it has seen:
+// write_file would replace every byte, silently dropping whatever the other
+// writer added. The read has to be of the bytes that are there now.
+func TestWriteFileRefusesAFileChangedSinceItWasRead(t *testing.T) {
+	f := newFixture(t)
+	if out := f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"}); out["acquired"] != true {
+		t.Fatalf("checkout = %v", out)
+	}
+	target := filepath.Join(f.root, "src", "calc.go")
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("package calc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write := func(content string) tools.Result {
+		return f.call("devcouncil_write_file", map[string]string{"path": "src/calc.go", "content": content})
+	}
+	if res := f.call("devcouncil_read_file", map[string]string{"path": "src/calc.go"}); res.IsError {
+		t.Fatalf("read: %s", res.Text)
+	}
+	other := "package calc\n\nfunc Added() {}\n"
+	if err := os.WriteFile(target, []byte(other), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := write("package calc\n\nfunc Mine() {}\n")
+	if !res.IsError || !strings.Contains(res.Text, "changed since") {
+		t.Fatalf("an overwrite of a file changed after the read was not refused: %+v", res)
+	}
+	if res.Blocked || res.Rule != "" {
+		t.Errorf("the gate did not make this refusal, so it must carry no rule: %+v", res)
+	}
+	if got, _ := os.ReadFile(target); string(got) != other {
+		t.Fatalf("the refused write changed the file: %q", got)
+	}
+
+	// Reading again is what the refusal asks for, and it works.
+	if res := f.call("devcouncil_read_file", map[string]string{"path": "src/calc.go"}); res.IsError {
+		t.Fatalf("re-read: %s", res.Text)
+	}
+	if res := write("package calc\n\nfunc Mine() {}\n"); res.IsError {
+		t.Fatalf("the overwrite after a fresh read was refused: %s", res.Text)
+	}
+	// The agent's own write is what it knows now: a second overwrite needs no
+	// read, but a change by someone else after it does.
+	if res := write("package calc\n\nfunc Mine2() {}\n"); res.IsError {
+		t.Fatalf("a second overwrite of what the agent wrote was refused: %s", res.Text)
+	}
+	if err := os.WriteFile(target, []byte(other), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := write("package calc\n"); !res.IsError || !strings.Contains(res.Text, "changed since") {
+		t.Fatalf("a change after the agent's own write was not refused: %+v", res)
+	}
+}
+
+// The batch tool's description names the lookups a model may send. It is built
+// from the surface's own Batchable flags, so it names exactly them: a tool added
+// to the set appears, and none is promised that the loop would refuse.
+func TestBatchDescriptionNamesExactlyTheBatchableTools(t *testing.T) {
+	f := newFixture(t)
+	var desc string
+	batchable := map[string]bool{}
+	for _, tool := range f.reg.Tools() {
+		if tool.Schema.Name == tools.BatchToolName {
+			desc = tool.Schema.Description
+		}
+		if tool.Batchable {
+			batchable[tool.Schema.Name] = true
+		}
+	}
+	if desc == "" || len(batchable) == 0 {
+		t.Fatalf("surface has no batch tool or no batchable tools (desc %q, %d batchable)", desc, len(batchable))
+	}
+	const marker = "may carry: "
+	_, rest, found := strings.Cut(desc, marker)
+	list, _, _ := strings.Cut(rest, ". ")
+	if !found || list == "" {
+		t.Fatalf("the description does not list the tools after %q: %s", marker, desc)
+	}
+	named := map[string]bool{}
+	for _, name := range strings.Split(list, ", ") {
+		named[name] = true
+		if !batchable[name] {
+			t.Errorf("the description names %s, which is not Batchable", name)
+		}
+	}
+	for name := range batchable {
+		if !named[name] {
+			t.Errorf("batchable tool %s is missing from the batch description", name)
+		}
 	}
 }
