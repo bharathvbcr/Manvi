@@ -262,7 +262,7 @@ func replayServer(msg llm.Message) ([]wireBlock, bool, error) {
 			if err := json.Unmarshal(e.Raw, &cited); err != nil {
 				return nil, false, fmt.Errorf("anthropic: cited text in replay state: %w", err)
 			}
-			if cited.Text == block.(llm.TextBlock).Text {
+			if text, ok := block.(llm.TextBlock); ok && cited.Text == text.Text {
 				wire = wireBlock{raw: e.Raw}
 			}
 		}

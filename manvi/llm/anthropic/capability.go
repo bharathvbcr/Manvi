@@ -268,7 +268,7 @@ func validateRequest(req llm.Request, mode ThinkingMode, continuePaused bool) er
 	// A last-assistant-turn prefill is rejected by every current model. It is
 	// worth catching here because the replacement is structural (structured
 	// output, or a system-prompt instruction) rather than a parameter tweak.
-	if n := len(sent); n > 0 && sent[n-1].Role == llm.RoleAssistant && !(continuePaused && hasServerState(sent[n-1])) {
+	if n := len(sent); n > 0 && sent[n-1].Role == llm.RoleAssistant && (!continuePaused || !hasServerState(sent[n-1])) {
 		return fmt.Errorf("anthropic: %s rejects a trailing assistant message (prefill); "+
 			"use a structured output format or a system-prompt instruction instead", req.Model)
 	}

@@ -73,7 +73,6 @@ type scriptRun struct {
 	out      *Outcome
 	tally    *stepTally
 	id       llm.CallID
-	ctx      context.Context
 	maxCalls int
 	calls    int
 	output   strings.Builder
@@ -122,7 +121,7 @@ func (l *Loop) runScript(ctx context.Context, out *Outcome, tally *stepTally, ca
 
 	ctx, cancel := context.WithTimeout(ctx, scriptWallTime)
 	defer cancel()
-	run := &scriptRun{l: l, out: out, tally: tally, id: call.ID, ctx: ctx, maxCalls: maxCalls}
+	run := &scriptRun{l: l, out: out, tally: tally, id: call.ID, maxCalls: maxCalls}
 
 	thread := &starlark.Thread{Name: tools.ScriptToolName}
 	thread.Print = run.print
@@ -142,13 +141,13 @@ func (l *Loop) runScript(ctx context.Context, out *Outcome, tally *stepTally, ca
 		defer watcher.Done()
 		select {
 		case <-ctx.Done():
-			reason := run.ctxReason()
+			reason := ctxReason(ctx)
 			run.setBreach(reason)
 			thread.Cancel(reason)
 		case <-done:
 		}
 	}()
-	_, err := starlark.ExecFileOptions(scriptOptions, thread, "script.star", args.Script, run.predeclared())
+	_, err := starlark.ExecFileOptions(scriptOptions, thread, "script.star", args.Script, run.predeclared(ctx))
 	close(done)
 	watcher.Wait()
 
@@ -156,8 +155,8 @@ func (l *Loop) runScript(ctx context.Context, out *Outcome, tally *stepTally, ca
 }
 
 // ctxReason names why the script's context ended.
-func (r *scriptRun) ctxReason() string {
-	if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
+func ctxReason(ctx context.Context) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return fmt.Sprintf("the script ran past its %s wall-time bound", scriptWallTime)
 	}
 	return "the script was cancelled"
@@ -167,14 +166,14 @@ func (r *scriptRun) ctxReason() string {
 // registry's tools, each a function, and json. A name that is not a plain
 // identifier, or that would shadow a universe name, cannot be written in the
 // language and is left out.
-func (r *scriptRun) predeclared() starlark.StringDict {
+func (r *scriptRun) predeclared(ctx context.Context) starlark.StringDict {
 	names := starlark.StringDict{"json": starjson.Module}
 	for _, schema := range r.l.tools.Schemas() {
 		name := schema.Name
 		if !scriptIdent.MatchString(name) || starlark.Universe.Has(name) || names.Has(name) {
 			continue
 		}
-		names[name] = r.toolFunc(name)
+		names[name] = r.toolFunc(ctx, name)
 	}
 	return names
 }
@@ -202,13 +201,13 @@ func (r *scriptRun) print(thread *starlark.Thread, msg string) {
 // catch an error: text is the answer (cut at the per-call byte bound),
 // error is true when the call failed or was refused, refused is true when it was
 // not run, truncated is true when text was cut.
-func (r *scriptRun) toolFunc(name string) *starlark.Builtin {
+func (r *scriptRun) toolFunc(ctx context.Context, name string) *starlark.Builtin {
 	return starlark.NewBuiltin(name, func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		if len(args) > 0 {
 			return nil, fmt.Errorf("%s takes keyword arguments only, for example %s(pattern=\"x\")", name, name)
 		}
-		if err := r.ctx.Err(); err != nil {
-			reason := r.ctxReason()
+		if err := ctx.Err(); err != nil {
+			reason := ctxReason(ctx)
 			r.setBreach(reason)
 			return nil, errors.New(reason)
 		}
@@ -229,7 +228,7 @@ func (r *scriptRun) toolFunc(name string) *starlark.Builtin {
 
 		id := llm.CallID(fmt.Sprintf("%s#%d", r.id, r.calls))
 		view := tools.View{MaxLines: maxBatchLines, MaxBytes: maxBatchCallBytes}
-		result := r.l.tools.Run(tools.WithView(r.ctx, view), tools.Call{ID: id, Name: name, Arguments: []byte(callArgs)})
+		result := r.l.tools.Run(tools.WithView(ctx, view), tools.Call{ID: id, Name: name, Arguments: []byte(callArgs)})
 		r.out.ToolCalls++
 		r.l.account(r.out, r.tally, name, result)
 		if err := r.l.recordPolicy(r.out, id, name, result); err != nil {

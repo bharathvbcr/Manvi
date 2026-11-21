@@ -25,7 +25,8 @@ func TestCodeAnswerHoistsIdenticalEnvelopeFields(t *testing.T) {
 	}
 	shared, _ := payloadOf(t, res)["shared_envelope"].(map[string]any)
 	fresh, _ := shared["source_freshness"].(map[string]any)
-	if fresh == nil || !strings.Contains(fresh["reason"].(string), sharedFreshness) {
+	reason, _ := fresh["reason"].(string)
+	if fresh == nil || !strings.Contains(reason, sharedFreshness) {
 		t.Fatalf("shared_envelope lacks source_freshness: %v", shared)
 	}
 	if _, hoisted := shared["walk_incomplete"]; hoisted {

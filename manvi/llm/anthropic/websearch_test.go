@@ -143,7 +143,8 @@ func TestServerBlocksRoundTripByteForByte(t *testing.T) {
 	assistant := wireContent(t, body)[1]
 	var types []string
 	for _, b := range assistant {
-		types = append(types, b["type"].(string))
+		kind, _ := b["type"].(string)
+		types = append(types, kind)
 	}
 	if strings.Join(types, ",") != "text,server_tool_use,web_search_tool_result,text" {
 		t.Fatalf("assistant blocks = %v", types)

@@ -45,12 +45,20 @@ func webSearchFlagDefs() []flags.Def {
 func isWebSearchKey(key string) bool { return key == webSearchKey || key == webSearchMaxUsesKey }
 
 // applyWebSearch turns the adapter's hosted search tool on as the registry says.
-// A registry that cannot answer leaves it off, the safe direction for a setting
-// that widens network reach; a value that is on and out of range is refused
-// rather than clamped, because the bound is what the operator is paying for.
+// A registry that does not define the setting (the bare harness registry) leaves
+// it off, the safe direction for a setting that widens network reach; one that
+// defines it and cannot read it is an error, so a broken setting is seen. A value
+// that is on and out of range is refused rather than clamped, because the bound
+// is what the operator is paying for.
 func applyWebSearch(adapter *anthropic.Adapter, reg *flags.Registry) error {
+	if _, defined := reg.Def(webSearchKey); !defined {
+		return nil
+	}
 	mode, _, err := reg.String(webSearchKey)
-	if err != nil || mode != webSearchOn {
+	if err != nil {
+		return fmt.Errorf("%s: %w", webSearchKey, err)
+	}
+	if mode != webSearchOn {
 		return nil
 	}
 	uses, _, err := reg.Int(webSearchMaxUsesKey)
