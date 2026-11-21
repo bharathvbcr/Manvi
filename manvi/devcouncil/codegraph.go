@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -301,11 +302,9 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 	walk = func(v any, parent string) {
 		switch node := v.(type) {
 		case map[string]any:
-			for key, child := range node {
-				if text, ok := child.(string); ok && key != "receiver" {
-					node[key] = prose.redact(text)
-				}
-			}
+			// Judged first, from the object as devmap wrote it: nothing below
+			// may have touched a path key before the gate reads it.
+			path := nodePath(node)
 			for _, key := range sourceKeys {
 				value, ok := node[key].(string)
 				if !ok {
@@ -314,7 +313,6 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 				if parent == "evidence" && key == "source" && resolutionSources[value] {
 					continue
 				}
-				path := nodePath(node)
 				rule := "source not attributable to a file"
 				if path != "" {
 					rule = refuse(path)
@@ -323,6 +321,11 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 					delete(node, key)
 					node["withheld"] = rule
 					withheld++
+				}
+			}
+			for key, child := range node {
+				if text, ok := child.(string); ok && key != "receiver" && !isPathKey(key) {
+					node[key] = prose.redact(text)
 				}
 			}
 			for name, child := range node {
@@ -342,10 +345,16 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 	return out, withheld, nil
 }
 
-// nodePath is the file an envelope object names, under any of the three keys
-// devmap uses: file_path, path, and source_file (an unresolved call site).
+// pathKeys are the keys under which an envelope object names its file:
+// file_path, path, and source_file (an unresolved call site). The gate reads a
+// path from these, so no redaction may rewrite their values.
+var pathKeys = []string{"file_path", "path", "source_file"}
+
+func isPathKey(key string) bool { return slices.Contains(pathKeys, key) }
+
+// nodePath is the file an envelope object names, under any of the pathKeys.
 func nodePath(node map[string]any) string {
-	for _, key := range []string{"file_path", "path", "source_file"} {
+	for _, key := range pathKeys {
 		if path, _ := node[key].(string); path != "" {
 			return path
 		}
