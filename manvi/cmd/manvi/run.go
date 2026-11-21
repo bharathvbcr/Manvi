@@ -100,8 +100,9 @@ Exit status:
      which of the three it was. Retrying helps a dropped connection and does
      not help a refusal.
  10  the turn changed files, and the end-of-turn check ran over them and found
-     something still standing when the turn ended (the bounce limit, or the step
-     ceiling). The findings are in the verify.report event. Fix the code.
+     something still standing when the turn ended (the bounce limit was reached).
+     A turn the step ceiling ended exits 2 whatever the check found; the
+     findings are in the verify.report event either way. Fix the code.
  11  the turn changed files and the end-of-turn check could not be completed —
      no verifier, a command-made change with no MANVI_VERIFY_COMMAND, a
      timeout, or a turn that ended before the check ran. Nothing here is
