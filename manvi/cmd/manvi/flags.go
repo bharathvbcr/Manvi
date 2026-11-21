@@ -133,7 +133,7 @@ func durableAdvice(key, raw string) string {
 	case isTierKey(key) || isEndpointKey(key):
 		return fmt.Sprintf("%s, or write %s: %s into %s (the user config; %s refuses it in the repository config)",
 			env, key, raw, userConfigHint(), key)
-	case key == harnessSpecKey:
+	case key == harnessSpecKey || key == serialLookupsKey:
 		return fmt.Sprintf("%s (%s is refused in config files, so the environment is the only durable place)", env, key)
 	}
 	return fmt.Sprintf("%s, or write %s: %s into %s", env, key, raw, configPath())

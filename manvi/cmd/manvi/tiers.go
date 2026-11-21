@@ -208,6 +208,15 @@ var operatorScopeRules = []operatorScopeRule{
 				path, harnessSpecKey, flags.EnvKey(harnessSpecKey), harnessSpecKey, harness.SpecsDir)
 		},
 	},
+	{
+		matches: func(key string) bool { return key == serialLookupsKey },
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: it decides whether the agent loop enforces "+
+				"batching, and this file ships with a clone and can be written by an agent under a relaxed posture. "+
+				"Remove that line; set it with %s or 'manvi flags set %s MODE'",
+				path, serialLookupsKey, flags.EnvKey(serialLookupsKey), serialLookupsKey)
+		},
+	},
 	{matches: isEndpointKey, refusal: refuseEndpointKeys},
 }
 

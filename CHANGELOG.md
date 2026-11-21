@@ -23,6 +23,45 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **`devcouncil_batch`: several independent lookups in one step.** Up to 16
+  calls to allowlisted read-only tools (file reads, grep, find/list, the graph
+  tools, git reads, get_diff) run concurrently, at most four at once, and come
+  back as one result holding only the lines each call kept (`match`, an RE2
+  filter; `max_lines`, default 200). The agent loop expands the batch itself,
+  so each inner call passes the offered-set check, the repeat ledger, progress
+  accounting and gate-evidence recording exactly as a top-level call does, and
+  no inner call becomes a wire message. Calls cannot use each other's results:
+  this is batching, not scripting. While the batch tool is offered, the loop
+  enforces it: after three consecutive steps of one lookup each (a one-call
+  batch counts as one) it appends a note, and the lookup that would make five
+  in a row is refused once without running; sent again, it runs. The refusal
+  stays out of the repeat ledger and is charged as one step, not a stall.
+  `harness.serial_lookups` (`refuse`, the default; `note`; `off`) sets it. It is
+  operator scope: a repository `config.yaml` that sets it is refused at startup.
+  Inside a batch, every call gets the same fixed byte budget that its handler is
+  told, so `read_file` never marks as read a file the batch then cut.
+- **`devcouncil_code`: the code graph's explore, impact, trace and affected
+  questions in one tool**, through DevCouncil's `devmap.Client.Advanced`. It is
+  a core tool whenever a navigator is attached, so a session with a code map
+  holds it without activating anything. Source excerpts in the answer pass the
+  read gate; an excerpt that names no file is withheld.
+- **`devcouncil_read_file` reads a line range** with `offset` and `limit`.
+  The reference already documented both parameters; the handler now accepts
+  them, and a ranged answer starts with the range and the file's line count.
+- **An operating contract in every prompt**: audit first, batch independent
+  lookups (only when the batch tool is offered), verify before claiming.
+  Essential, in both densities, and held under 120 estimated tokens by a test.
+
+### Changed
+
+- **`devcouncil_write_file` refuses to overwrite an existing file this
+  session has not read.** The refusal names the remedy (read it, or patch it)
+  and carries no policy rule, because the gate did not make it. A file the
+  session wrote itself may be overwritten again. A resumed session and each
+  sub-agent start with nothing read. `devcouncil_patch_file` is unaffected: it
+  already has to quote the text it replaces.
+- The native tool count is 53 (52 in a repository with no skills).
+
 - **The Gemini adapter serves `gemini-4-hydrogen`** (GA 2026-11-12), with the
   limits its model page states: a 1,048,576-token context window and 65,536
   output tokens. Vani triages with it. `gemini-4-carbon` and `gemini-4-argon`

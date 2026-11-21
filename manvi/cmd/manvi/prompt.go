@@ -32,6 +32,10 @@ type PromptOptions struct {
 	// to reach for something that does not exist, and a refusal it cannot act
 	// on is worse than silence.
 	TaskToolsOffered bool
+	// BatchOffered reports whether devcouncil_batch is in the offered set, by
+	// the same rule as TaskToolsOffered: the operating contract tells the
+	// model to batch only when there is a batch tool to call.
+	BatchOffered bool
 	// DynamicTools reports whether the offered set can grow during the turn.
 	//
 	// It changes what is true about an unlisted tool, which the tool contract
@@ -236,6 +240,16 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 		return text
 	})
 
+	// The operating contract: what every turn does regardless of the task,
+	// short enough to be essential. Each line is a behaviour the harness also
+	// enforces or measures somewhere — the overwrite guard refuses an unread
+	// file, the loop notes serial lookups — so the prompt states a rule the
+	// model will meet, not a wish. The batch line follows the tool, like every
+	// other line that names one.
+	r.Vary("operating-contract", 12, true, func(prompt.RouterConfig) string {
+		return operatingContractSection(opts.BatchOffered)
+	})
+
 	r.Vary("codebase-review", 22, false, func(cfg prompt.RouterConfig) string {
 		if cfg.Density == prompt.DensityCompact {
 			return "Systematic Review & Core Reuse:\n" +
@@ -427,8 +441,10 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	// had not been given it.
 	navGuidance := func(prompt.RouterConfig) string {
 		return "Dev map navigation:\n" +
-			"  - devcouncil_graph_query and devcouncil_graph_context resolve exact symbol\n" +
-			"    relationships. Prefer them to grep for \"who calls this\" and \"what breaks\".\n" +
+			"  - devcouncil_code answers from the code graph: explore (definitions with callers\n" +
+			"    and callees), impact (what depends on it), trace (how A reaches B) and affected\n" +
+			"    (which tests reach it). Ask it before grep for \"who calls this\", \"what\n" +
+			"    breaks\" and \"which tests cover this\".\n" +
 			"  - The graph is built from an index that can be stale. When it disagrees with\n" +
 			"    the file you just read, the file wins."
 	}
@@ -622,6 +638,17 @@ func whyMissing(report prompt.Report, source string) string {
 		}
 	}
 	return "the assembly report does not say why"
+}
+
+// operatingContractSection is the behaviour every turn owes, whatever the task.
+func operatingContractSection(batch bool) string {
+	text := "Operating contract:\n" +
+		"  - Audit first: read what you will change and what calls it. Never assume a path,\n" +
+		"    API or result you have not seen in this session.\n"
+	if batch {
+		text += "  - Put independent lookups in one devcouncil_batch call.\n"
+	}
+	return text + "  - Verify before you claim; say what you checked and what you could not."
 }
 
 // environmentSection states the facts a model cannot infer and will otherwise

@@ -140,6 +140,8 @@ type Registry struct {
 	// work is the board adapter, built on first use from Deps.Work.
 	workMu sync.Mutex
 	work   *workAPI
+	// inspected is what this agent has read or written; see inspect.go.
+	inspected inspectedSet
 }
 
 // New builds the tool surface.
@@ -306,11 +308,13 @@ func (r *Registry) Tools() []tools.Tool {
 		},
 		{
 			Schema: schema("devcouncil_read_file",
-				"Read a file from the repository.",
-				`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
-			ReadOnly: true,
-			Group:    tools.GroupCore,
-			Handler:  r.readFile,
+				"Read a file from the repository. Pass offset and limit to read only a line range; "+
+					"the answer then starts with the range and the file's line count.",
+				`{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":1,"description":"1-based first line"},"limit":{"type":"integer","minimum":1,"description":"number of lines"}},"required":["path"]}`),
+			ReadOnly:  true,
+			Group:     tools.GroupCore,
+			Handler:   r.readFile,
+			Batchable: true,
 		},
 		{
 			Schema: schema(loadSkillToolName,
@@ -360,9 +364,10 @@ func (r *Registry) Tools() []tools.Tool {
 					"directory as it is on disk. With recursive, enumerates exactly the files "+
 					"devcouncil_grep would search — ignore rules apply, and include_ignored lifts them.",
 				`{"type":"object","properties":{"path":{"type":"string","description":"directory path (default: root)"},"recursive":{"type":"boolean","description":"recursively enumerate the repository under this path, honouring ignore rules"},"include_ignored":{"type":"boolean","description":"with recursive, also list files the ignore rules exclude (default: false)"}},"required":[]}`),
-			ReadOnly: true,
-			Group:    tools.GroupCore,
-			Handler:  r.listDir,
+			ReadOnly:  true,
+			Group:     tools.GroupCore,
+			Handler:   r.listDir,
+			Batchable: true,
 		},
 		{
 			Schema: schema("devcouncil_find_files",
@@ -370,9 +375,10 @@ func (r *Registry) Tools() []tools.Tool {
 					"Lists exactly the files devcouncil_grep would search: ignore rules apply by default, so "+
 					".gitignore'd and hidden files are excluded unless include_ignored is set.",
 				`{"type":"object","properties":{"pattern":{"type":"string","description":"glob pattern to match"},"path":{"type":"string","description":"directory path to search within (default: root)"},"max_results":{"type":"integer","description":"maximum results to return (default: 100)"},"include_ignored":{"type":"boolean","description":"also list files the ignore rules exclude, hidden files included (default: false)"}},"required":["pattern"]}`),
-			ReadOnly: true,
-			Group:    tools.GroupCore,
-			Handler:  r.findFiles,
+			ReadOnly:  true,
+			Group:     tools.GroupCore,
+			Handler:   r.findFiles,
+			Batchable: true,
 		},
 		{
 			Schema: schema("devcouncil_grep",
@@ -382,9 +388,10 @@ func (r *Registry) Tools() []tools.Tool {
 					"them anyway. Every reply says how many files were searched and how many were "+
 					"skipped, so a result is never mistaken for full coverage.",
 				`{"type":"object","properties":{"pattern":{"type":"string","description":"regular expression to search for (RE2 syntax; an invalid one is an error, never an empty result)"},"path":{"type":"string","description":"directory or file path to search within (default: root)"},"max_results":{"type":"integer","description":"maximum matches to return (default: 50)"},"include_ignored":{"type":"boolean","description":"also search files the ignore rules exclude, hidden files included (default: false)"},"case_insensitive":{"type":"boolean","description":"match without regard to case; the inline (?i) prefix also works (default: false)"}},"required":["pattern"]}`),
-			ReadOnly: true,
-			Group:    tools.GroupCore,
-			Handler:  r.grepSearch,
+			ReadOnly:  true,
+			Group:     tools.GroupCore,
+			Handler:   r.grepSearch,
+			Batchable: true,
 		},
 		{
 			Schema: schema("devcouncil_search_tools",
@@ -441,9 +448,10 @@ func (r *Registry) Tools() []tools.Tool {
 			Schema: schema("devcouncil_get_diff",
 				"Show the working-tree changes for the current task, with the files each touches.",
 				`{"type":"object","properties":{}}`),
-			ReadOnly: true,
-			Group:    tools.GroupCore,
-			Handler:  r.getDiff,
+			ReadOnly:  true,
+			Group:     tools.GroupCore,
+			Handler:   r.getDiff,
+			Batchable: true,
 		},
 		{
 			Schema: schema("devcouncil_verify_task",
@@ -505,6 +513,8 @@ func (r *Registry) Tools() []tools.Tool {
 	set = append(set, r.webTools()...)
 	// The board tools. Contributes nothing without a Work binding.
 	set = append(set, r.workTools()...)
+	// Several lookups in one step; the agent loop runs it. See agent/batch.go.
+	set = append(set, tools.BatchTool())
 	return set
 }
 

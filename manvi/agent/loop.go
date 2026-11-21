@@ -287,6 +287,10 @@ type Config struct {
 	// AssertInvariant enables the model-visible-means-logged check before every
 	// dispatch. Mirrors flags.LogModelVisibleAssert.
 	AssertInvariant bool
+	// SerialLookups is what the loop does when consecutive steps each make a
+	// single read-only lookup while devcouncil_batch is offered. Empty means
+	// SerialLookupsRefuse; see agent/batch.go.
+	SerialLookups SerialLookups
 	// Price, when set, prices one response's usage in nano-USD. Nil means the
 	// model has no price table here, and every step is counted as unpriced.
 	//
@@ -324,6 +328,9 @@ type Loop struct {
 	log     *session.Log
 	tools   *tools.Registry
 	repeats *repeatTracker
+	// serialLookups counts consecutive steps that each made exactly one
+	// batchable lookup; see nudgeSerialLookups. Per-turn state.
+	serialLookups int
 	// progress decides whether a step got anywhere. It is rebuilt per turn,
 	// after tool registration, because it reads the registry to learn which
 	// tools are allowed to mutate.
@@ -397,6 +404,9 @@ func NewLoop(cfg Config, b *bus.Bus, log *session.Log, registry *tools.Registry)
 	}
 	if cfg.MaxSteps <= 0 {
 		return nil, errors.New("agent: MaxSteps must be positive; an unbounded turn is not a turn")
+	}
+	if !serialLookupModes[cfg.SerialLookups] {
+		return nil, fmt.Errorf("agent: SerialLookups %q is not off, note or refuse", cfg.SerialLookups)
 	}
 
 	plan, err := planEffort(cfg)
@@ -1101,6 +1111,7 @@ func (l *Loop) announceTurnEnd(ctx context.Context) {
 func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
 	l.repeats = newRepeatTracker()
 	l.progress = newProgressTracker(l.tools)
+	l.serialLookups = 0
 	l.overflowed = false
 	l.openCalls = nil
 	turnEvent, err := l.log.Append(session.TurnStart, nil)
@@ -1300,12 +1311,20 @@ type stepTally struct {
 	// observable progress. It is per step rather than per call so a step
 	// that refused three calls climbs one rung, not three.
 	circling bool
+	// serialRefused records that the step's one call was refused for being
+	// another lone lookup. The harness made that call, not the model's
+	// circling, so chargeStep charges it as one step rather than as a stall.
+	serialRefused bool
 }
 
 // dispatchCalls runs one response's tool calls in order, recording each call,
 // what the gate made of it, and its result.
 func (l *Loop) dispatchCalls(ctx context.Context, out *Outcome, calls []llm.ToolCallBlock) (stepTally, error) {
 	var tally stepTally
+	single := l.singleLookup(calls)
+	if !single {
+		l.serialLookups = 0
+	}
 	for _, call := range calls {
 		if _, err := l.log.Append(session.ToolCall, session.ToolCallData{
 			ID: call.ID, Name: call.Name, Arguments: call.Arguments,
@@ -1313,7 +1332,15 @@ func (l *Loop) dispatchCalls(ctx context.Context, out *Outcome, calls []llm.Tool
 			return tally, err
 		}
 
-		result := l.runCall(ctx, out, &tally, call)
+		result, refused := l.refuseSerialLookup(single)
+		if refused {
+			tally.serialRefused = true
+		} else {
+			result = l.runCall(ctx, out, &tally, call)
+			if single {
+				result = l.noteSerialLookup(result)
+			}
+		}
 		out.ToolCalls++
 
 		if err := l.recordCall(out, call, result); err != nil {
@@ -1419,32 +1446,45 @@ func (l *Loop) runCall(ctx context.Context, out *Outcome, tally *stepTally, call
 				NoProgressLimit, call.Name),
 		}
 
+	case call.Name == tools.BatchToolName:
+		// Expanded here, not in a handler: every inner call has to pass the
+		// same offered-set, repeat and accounting path as a top-level one,
+		// and those live on the loop. See batch.go.
+		result = l.runBatch(ctx, out, tally, call)
+
 	default:
 		result = l.tools.Run(ctx, tools.Call{
 			ID: call.ID, Name: call.Name, Arguments: call.Arguments,
 		})
-		tally.ran++
-		if l.progress.observe(call.Name, result) {
-			tally.progressed = true
-		}
-		// Recorded here rather than derived later, and only for calls
-		// that actually ran: a refused call changed nothing, and a
-		// repeat or stall refusal above never reached a handler.
-		if l.progress.mutated(call.Name, result) {
-			out.Mutated = true
-			// A call that changed something and named no path leaves
-			// effects nothing downstream can enumerate. Recorded here,
-			// beside Mutated, because this is the only place that knows
-			// both facts about the same call: by the time the paths are
-			// merged into out.Wrote, a shell command that wrote nothing
-			// is indistinguishable from a native write that reported.
-			if len(result.Wrote) == 0 {
-				out.UnenumeratedEffects = true
-			}
-		}
-		out.Wrote, out.WroteTruncated = tools.MergeWrites(out.Wrote, out.WroteTruncated, result.Wrote)
+		l.account(out, tally, call.Name, result)
 	}
 	return result
+}
+
+// account folds one call that actually ran into the step's tally and the
+// turn's outcome. Shared by top-level calls and the calls inside a batch, so
+// the two cannot disagree about what counts as progress or as a mutation.
+func (l *Loop) account(out *Outcome, tally *stepTally, name string, result tools.Result) {
+	tally.ran++
+	if l.progress.observe(name, result) {
+		tally.progressed = true
+	}
+	// Recorded here rather than derived later, and only for calls
+	// that actually ran: a refused call changed nothing, and a
+	// repeat or stall refusal above never reached a handler.
+	if l.progress.mutated(name, result) {
+		out.Mutated = true
+		// A call that changed something and named no path leaves
+		// effects nothing downstream can enumerate. Recorded here,
+		// beside Mutated, because this is the only place that knows
+		// both facts about the same call: by the time the paths are
+		// merged into out.Wrote, a shell command that wrote nothing
+		// is indistinguishable from a native write that reported.
+		if len(result.Wrote) == 0 {
+			out.UnenumeratedEffects = true
+		}
+	}
+	out.Wrote, out.WroteTruncated = tools.MergeWrites(out.Wrote, out.WroteTruncated, result.Wrote)
 }
 
 func schemaNames(schemas []llm.ToolSchema) map[string]struct{} {
@@ -1512,6 +1552,25 @@ func (l *Loop) notOfferedText(name string) string {
 // recordCall records what the gate made of one call, any grant it applied,
 // and the result the model is shown.
 func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Result) error {
+	if err := l.recordPolicy(out, call.ID, call.Name, result); err != nil {
+		return err
+	}
+
+	if _, err := l.log.Append(session.ToolResult, session.ToolResultData{
+		ToolCallID: call.ID, Text: result.Text, Content: result.Content, IsError: result.IsError,
+	}); err != nil {
+		return err
+	}
+	l.answered(call.ID)
+	return nil
+}
+
+// recordPolicy writes what the gate made of one call — a denial, a
+// qualification, a grant — as its own events. They are evidence, not wire: the
+// session projection never turns them into messages, so a call inside a batch,
+// which has no tool_use block of its own, can be recorded here under its
+// derived ID without leaving an orphan for a provider to reject.
+func (l *Loop) recordPolicy(out *Outcome, id llm.CallID, name string, result tools.Result) error {
 	// A gate decision is recorded as its own event *in addition to*
 	// the tool result, so the evidence trail explains the outcome
 	// without the model-facing result having to carry policy detail.
@@ -1547,7 +1606,7 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 		// keeps that true. The claim it makes is exactly right here:
 		// this outcome was not reached by the rules running cleanly.
 		if _, err := l.log.Append(session.PolicyQualified, session.QualificationData{
-			ToolCallID: call.ID, Tool: call.Name,
+			ToolCallID: id, Tool: name,
 			Reason: result.Text, Degraded: result.Degraded,
 		}); err != nil {
 			return err
@@ -1555,7 +1614,7 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 	case result.Blocked:
 		out.Denied++
 		if _, err := l.log.Append(session.PolicyDenied, session.DenialData{
-			ToolCallID: call.ID, Tool: call.Name,
+			ToolCallID: id, Tool: name,
 			Rule: result.Rule, Severity: result.Severity, Reason: result.Text,
 		}); err != nil {
 			return err
@@ -1563,7 +1622,7 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 	case result.Qualified():
 		out.Qualified++
 		if _, err := l.log.Append(session.PolicyQualified, session.QualificationData{
-			ToolCallID: call.ID, Tool: call.Name,
+			ToolCallID: id, Tool: name,
 			Rule: result.Rule, Severity: result.Severity, Reason: result.Text,
 			Demoted: result.Demoted, Widened: result.Widened, Degraded: result.Degraded,
 		}); err != nil {
@@ -1573,18 +1632,11 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 	if result.GrantID != "" {
 		if _, err := l.log.Append(session.GrantApplied, session.GrantData{
 			GrantID: result.GrantID, GrantedBy: result.GrantedBy,
-			Rule: result.Rule, Target: call.Name, Reason: result.Text,
+			Rule: result.Rule, Target: name, Reason: result.Text,
 		}); err != nil {
 			return err
 		}
 	}
-
-	if _, err := l.log.Append(session.ToolResult, session.ToolResultData{
-		ToolCallID: call.ID, Text: result.Text, Content: result.Content, IsError: result.IsError,
-	}); err != nil {
-		return err
-	}
-	l.answered(call.ID)
 	return nil
 }
 
@@ -1593,6 +1645,11 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 func (l *Loop) chargeStep(out *Outcome, calls int, tally stepTally) {
 	// The step is charged here, before any path that leaves the iteration,
 	// so no route through the loop can take a step without paying for it.
+	if tally.serialRefused && tally.ran == 0 {
+		// The only call was refused by refuseSerialLookup: nothing ran, and
+		// the step is charged like a text-only one, not as waste.
+		calls = 0
+	}
 	cost, noProgress := l.progress.endStep(calls, tally.ran, tally.progressed)
 	out.BudgetSpent += cost
 	if noProgress {

@@ -180,9 +180,10 @@ func TestEveryContentReaderAppliesTheReadGate(t *testing.T) {
 	}
 	// graph_query returns source spans from the index, which needs the DevMap
 	// binary; its gate is asserted at the source below.
-	sourceGated := map[string]string{"devcouncil_graph_query": "navigate.go"}
+	sourceGated := map[string]string{"devcouncil_graph_query": "navigate.go", "devcouncil_code": "codegraph.go"}
 	noContent := map[string]string{
 		"devcouncil_activate_tools":     "tool catalogue",
+		"devcouncil_batch":              "runs only Batchable tools, each classified here; adds no bytes of its own",
 		"devcouncil_code_dead":          "symbol names and paths, no source",
 		"devcouncil_dev_inspect":        "devbridge runs a fixed read of the DevCouncil store, not the tree",
 		"devcouncil_find_files":         "names only",

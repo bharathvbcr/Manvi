@@ -11,6 +11,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
@@ -46,7 +47,28 @@ func harnessFlagDefs() []flags.Def {
 			".devcouncil/harness/<name>.json. Empty runs none. A spec cannot set flags, tiers, posture, " +
 			"the verify command, fetch hosts or MCP servers, and cannot widen a role. Operator scope: " +
 			"never read from the repository's config.yaml.",
+	}, {
+		Key: serialLookupsKey, Kind: flags.KindEnum, Default: string(agent.SerialLookupsRefuse),
+		Values:  []string{string(agent.SerialLookupsOff), string(agent.SerialLookupsNote), string(agent.SerialLookupsRefuse)},
+		Mutable: flags.HumanOnly,
+		Description: "What the agent loop does when consecutive steps each make a single read-only lookup while " +
+			"devcouncil_batch is offered: refuse notes the third and refuses the fifth once (sent again, it runs), " +
+			"note only notes every third, off does neither.",
 	}}
+}
+
+// serialLookupsKey names the batching rule's mode; see agent.SerialLookups.
+const serialLookupsKey = "harness.serial_lookups"
+
+// serialLookupMode is the configured mode. A registry that cannot answer, which
+// only a registry built without harnessFlagDefs can be, gets the default and
+// strictest mode rather than none.
+func serialLookupMode(reg *flags.Registry) agent.SerialLookups {
+	mode, _, err := reg.String(serialLookupsKey)
+	if err != nil {
+		return agent.SerialLookupsRefuse
+	}
+	return agent.SerialLookups(mode)
 }
 
 // specIdentity is what the log records about the spec a prompt carried. Both

@@ -179,9 +179,16 @@ const ungatedToolSentence = "devcouncil_read_file, devcouncil_grep, " +
 func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		Path string `json:"path"`
+		// Offset and Limit select a line range: Offset is the 1-based first
+		// line, Limit the number of lines. Both zero is the whole file.
+		Offset int `json:"offset"`
+		Limit  int `json:"limit"`
 	}
 	if err := decode(call, &args); err != nil {
 		return tools.Errorf("bad arguments: %v", err)
+	}
+	if args.Offset < 0 || args.Limit < 0 {
+		return tools.Errorf("offset and limit must not be negative")
 	}
 	rel, contained := r.containedRel(args.Path)
 	if !contained {
@@ -214,7 +221,45 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	if err != nil {
 		return tools.Errorf("reading %s: %v", args.Path, err)
 	}
-	return annotate(tools.Result{Text: string(data)}, decision)
+	// Recorded only for a whole file the model will actually see: a refused or
+	// failed read is not an inspection, and neither is a range or a batch view
+	// that cuts the answer — the overwrite guard (inspect.go) reads this, and
+	// "read one line of it" is not "read it".
+	if args.Offset == 0 && args.Limit == 0 {
+		if view, cut := tools.ViewFrom(ctx); !cut || view.Whole(textLines(string(data)), len(data)) {
+			r.inspected.mark(rel)
+		}
+		return annotate(tools.Result{Text: string(data)}, decision)
+	}
+	text, err := lineRange(string(data), args.Offset, args.Limit)
+	if err != nil {
+		return tools.Errorf("reading %s: %v", args.Path, err)
+	}
+	return annotate(tools.Result{Text: text}, decision)
+}
+
+// lineRange returns lines [offset, offset+limit) of text, 1-based, under a
+// header that says which lines they are and how many the file has. A range
+// that starts past the end is an error rather than an empty answer: an empty
+// slice reads as an empty file.
+func lineRange(text string, offset, limit int) (string, error) {
+	lines := strings.SplitAfter(text, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	total := len(lines)
+	if offset == 0 {
+		offset = 1
+	}
+	if offset > total {
+		return "", fmt.Errorf("offset %d is past the end: the file has %d lines", offset, total)
+	}
+	end := total
+	if limit > 0 && offset-1+limit < total {
+		end = offset - 1 + limit
+	}
+	return fmt.Sprintf("[lines %d-%d of %d]\n", offset, end, total) +
+		strings.Join(lines[offset-1:end], ""), nil
 }
 
 func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result {
@@ -262,6 +307,19 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 		}
 		decision = escalated
 	}
+	// Audit before overwrite, asked after the gate so a write the policy
+	// refuses is reported as the policy's refusal — the evidence trail records
+	// what the gate decided, and this rule must not hide it. A plain error and
+	// no Rule, because the gate did not make this decision. Only inside the
+	// repository: an outside path is reachable only with the hard rules off,
+	// and devcouncil_read_file cannot read one, so the rule could never be
+	// satisfied there. See inspect.go.
+	if !outside && !creating && !r.inspected.has(normalized) {
+		return tools.Errorf("%s exists and has not been read in full in this session, so it was "+
+			"not overwritten: write_file replaces every byte. Read the whole file with "+
+			"devcouncil_read_file first (no offset or limit), or change part of it with "+
+			"devcouncil_patch_file", args.Path)
+	}
 
 	full, err := r.resolvePath(args.Path)
 	if err != nil {
@@ -288,6 +346,7 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	// because none of them changed a file and a checker handed a path that was
 	// never written would report on the wrong thing — or, worse, report a pass
 	// for a write the gate refused.
+	r.inspected.mark(normalized)
 	result := annotate(
 		tools.Result{
 			Text:  fmt.Sprintf("wrote %s (%d bytes)", decision.Target, len(args.Content)),
@@ -1629,4 +1688,16 @@ func (r *Registry) findFiles(ctx context.Context, call tools.Call) tools.Result 
 			"excluded by ignore rules. Re-run with include_ignored to find out which."
 	}
 	return ok(payload)
+}
+
+// textLines counts lines the way a batch view does: a final line without a
+// newline counts, a trailing newline does not start another. Counting "\n"+1
+// made a 200-line file read as 201 and never count as shown whole under a
+// 200-line view.
+func textLines(s string) int {
+	n := strings.Count(s, "\n")
+	if s != "" && !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
 }

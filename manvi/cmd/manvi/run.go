@@ -287,6 +287,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	promptOpts := PromptOptions{
 		Provider:         provider.Name(),
 		TaskToolsOffered: taskToolsOffered(pipeline, coreOnly),
+		BatchOffered:     batchToolOffered(pipeline, coreOnly),
 		DynamicTools:     dynamic,
 		ActiveGroups:     pipeline.ActiveGroups(),
 		CodeMapAvailable: codeMapAvailable(caps, pipeline, dynamic, coreOnly),
@@ -343,6 +344,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		systemPrompt:    systemPrompt,
 		coreToolsOnly:   coreOnly,
 		assertInvariant: assertInvariant(reg),
+		serialLookups:   serialLookupMode(reg),
 		log:             log, tools: pipeline,
 	})
 	if err != nil {

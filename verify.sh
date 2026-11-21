@@ -726,8 +726,10 @@ export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
 # plane's engine check, the panic-firewall self-test against the archive this
 # repository links, and the serve package's policy path, all with cgo on.
 step "Go — gusset engine (cgo)"
-# Release binaries are this configuration, so cmd/manvi (buildGate hands its
-# gate the engine matcher) runs here too.
+# Release binaries are this configuration, so cmd/manvi runs here too. Its gate
+# leaves Matcher nil and decides patterns with fnmatch (cmd/manvi/gate.go, and
+# DevCouncil's docs/gusset-candidates.md); this step proves the linked archive
+# loads and contains a panic, not that policy runs on it.
 (eval "$ENGINE_EXPORTS" && cd manvi && go test -count=1 ./gussetcheck ./serve ./cmd/manvi \
   && go run ./cmd/manvi gusset-check) || fail "gusset engine with cgo on"
 

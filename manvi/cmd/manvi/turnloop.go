@@ -47,6 +47,7 @@ type turnDeps struct {
 	systemPrompt    string
 	coreToolsOnly   bool
 	assertInvariant bool
+	serialLookups   agent.SerialLookups
 	log             *session.Log
 	tools           *tools.Registry
 }
@@ -78,6 +79,7 @@ func newTurnLoop(face turnFace, deps turnDeps) (*agent.Loop, error) {
 		ChatOnly:        face.chatOnly,
 		CoreToolsOnly:   deps.coreToolsOnly,
 		AssertInvariant: deps.assertInvariant,
+		SerialLookups:   deps.serialLookups,
 		Price:           stepPrice(deps.provider, deps.model),
 	}, loopBus, deps.log, deps.tools)
 	if err != nil {
@@ -202,12 +204,27 @@ const taskCheckoutTool = "devcouncil_checkout_task"
 // prompt and the offered tools cannot drift apart again without the loop's own
 // selection changing with them.
 func taskToolsOffered(pipeline *tools.Registry, coreOnly bool) bool {
+	return toolOffered(pipeline, coreOnly, taskCheckoutTool)
+}
+
+// batchToolOffered reports whether devcouncil_batch is in the profile the
+// model is handed, so the prompt names it only when it can be called.
+func batchToolOffered(pipeline *tools.Registry, coreOnly bool) bool {
+	return toolOffered(pipeline, coreOnly, tools.BatchToolName)
+}
+
+// toolOffered reports whether name is in the schemas the profile offers: the
+// whole registry, or its core when core_tools_only narrows it.
+func toolOffered(pipeline *tools.Registry, coreOnly bool, name string) bool {
+	if pipeline == nil {
+		return false
+	}
 	offered := pipeline.Schemas()
 	if coreOnly {
 		offered = pipeline.CoreSchemas()
 	}
 	for _, s := range offered {
-		if s.Name == taskCheckoutTool {
+		if s.Name == name {
 			return true
 		}
 	}

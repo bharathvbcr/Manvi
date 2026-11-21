@@ -1,6 +1,6 @@
 # DevCouncil Native Tool Suite Reference
 
-MANVI implements the DevCouncil development tool suite natively in Go and Rust — **50 core tools**, as reported by `manvi tools` in a repository with no skills: 40 `devcouncil_*` tools, 4 `mcp_*` tools and 6 `work_*` board tools, plus `devcouncil_load_skill` when the repository has skills (51 with it). That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
+MANVI implements the DevCouncil development tool suite natively in Go and Rust — **52 core tools**, as reported by `manvi tools` in a repository with no skills: 42 `devcouncil_*` tools, 4 `mcp_*` tools and 6 `work_*` board tools, plus `devcouncil_load_skill` when the repository has skills (53 with it). That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
 
 ---
 
@@ -9,11 +9,11 @@ MANVI implements the DevCouncil development tool suite natively in Go and Rust �
 | Category | Count | Primary Purpose |
 |---|---|---|
 | **Task Lifecycle** | 5 | Discover tasks, manage exclusive SQLite leases, and track progress. |
-| **Guarded Mutation & Workspace** | 10 | Read/write files, apply exact-match patches, run audited commands, and query directories. |
+| **Guarded Mutation & Workspace** | 11 | Read/write files, apply exact-match patches, run audited commands, query directories, and batch independent lookups into one step. |
 | **Multi-Agent Coordination** | 1 | Dispatch and coordinate concurrent sub-agent execution pools. |
 | **Override Seam** | 1 | Request audited Human or Agent overrides for soft policy denials. |
 | **Verification & Evidence** | 4 | Inspect git diffs, run verification rigor gates, and obtain typed repair actions. |
-| **Code Graph & Navigation** | 3 | Query AST symbol definitions, detect dead code, and analyze blast radii. |
+| **Code Graph & Navigation** | 4 | Explore definitions, impact, traces and affected tests; query AST symbol definitions, detect dead code, and analyze blast radii. |
 | **Git Integration** | 6 | Structured version-control reads (status, log, branches, show) plus gate-arbitrated staging and committing. |
 | **External CLI Bridge** | 1 | Optional pin (`MANVI_DEVCOUNCIL_BINARY`) for a status/gaps/check inspect binary. The Python `dev` CLI is deleted; Go `devcouncil` does not implement those sections. Prefer native tools. |
 | **Tool Discovery & Activation** | 2 | Search the registry by capability and pull tools or whole groups into the model's active context. |
@@ -28,7 +28,7 @@ it is registered only when an operator sets `MANVI_FETCH_HOSTS`, so an
 unconfigured harness offers the counted set and a configured one offers exactly
 one more. See [Documentation lookup](#documentation-lookup).
 
-The fourteen rows above sum to the 51 tools `manvi tools` reports when the repository has skills: the 50 core tools, plus `devcouncil_load_skill`.
+The fourteen rows above sum to the 53 tools `manvi tools` reports when the repository has skills: the 52 core tools, plus `devcouncil_load_skill`.
 
 `devcouncil_load_skill` is the one tool counted above that is **registered only
 when the repository has skills**. It is decided once, when a session opens: the
@@ -79,6 +79,7 @@ schema means.
 | `devcouncil_list_dir` | Read-only | `path` (string), `recursive` (bool, optional), `include_ignored` (bool, optional) | Without `recursive`, reports the literal directory as it is on disk — no ignore rules, because "what is in this directory" is a different question. With `recursive`, enumerates **exactly the files `devcouncil_grep` would search**, honouring ignore rules unless `include_ignored` is set. |
 | `devcouncil_find_files` | Read-only | `pattern` (string), `path` (string, optional), `max_results` (int, optional), `include_ignored` (bool, optional) | Glob matching (`*.go`, `src/**/*.rs`) over **exactly the files `devcouncil_grep` would search** — one walk, one set of ignore rules, so the two tools cannot describe different repositories. Globs are matched by the harness's own `fnmatch`, pinned to the 775-case CPython parity fixture. Reports `files_considered` and flags a truncated candidate list separately from a truncated match list. |
 | `devcouncil_grep` | Read-only | `pattern` (string), `path` (string, optional), `max_results` (int, optional), `include_ignored` (bool, optional), `case_insensitive` (bool, optional) | Regular-expression search across the workspace, on ripgrep's engine in the analysis plane. Honours `.gitignore`, `.ignore`, `.git/info/exclude` and hidden files unless `include_ignored` is set; never reads `.git` or `.devcouncil`. Reports files searched and files skipped, so a result is never mistaken for full coverage. Files the read gate refuses (credential paths, hard-linked files) are never opened by the search; they are listed under `withheld` from the file set alone, so no field of the reply depends on what is inside them. An unparseable pattern is an error, never an empty match list. |
+| `devcouncil_batch` | Read-only | `calls` (array of up to 16 `{tool, args, match, max_lines}`) | Runs independent lookups in one step, concurrently (at most 4 at once), and returns one result holding only the lines each call kept (`match`: RE2 filter; `max_lines`: default 200, at most 2000), with a line saying what was left out. The agent loop expands it, so every inner call passes the same offered-set check, repeat ledger, progress accounting and gate-evidence recording as a top-level call; inner calls are never wire messages. Only tools on an explicit allowlist run inside it (file reads, `grep`, `find_files`, `list_dir`, the graph tools, git reads, `get_diff`); writes, commands, activation, sub-agents, nested batches and `devcouncil_fetch_url` are refused per call. Calls cannot use each other's results. |
 
 ---
 
@@ -113,6 +114,7 @@ schema means.
 
 | Native Tool | Access | Parameters | Description |
 |---|---|---|---|
+| `devcouncil_code` | Read-only | `kind` (`explore`\|`impact`\|`trace`\|`affected`), `query`, `to`, `targets`, `depth` (1–8, default 2), `budget` (default 3000 tokens) | Asks the code graph through DevCouncil's `devmap.Client.Advanced`, the same generation-qualified query `manvi serve` uses. Returns devmap's envelope with its completeness fields (`truncated`, `walk_incomplete`, unresolved namesakes) intact; every source excerpt is passed through the read gate, and one that cannot be attributed to a file is withheld. Core whenever a navigator is attached, Extended otherwise. |
 | `devcouncil_graph_query` | Read-only | `symbol` (string), `kind` (string, optional) | Searches AST symbol definitions and references with file paths and line spans. |
 | `devcouncil_code_dead` | Read-only | `path` (string, optional) | Identifies callerless dead code functions and structs with exemption annotations. |
 | `devcouncil_graph_context` | Read-only | `path` (string) | Performs blast-radius analysis: lists incoming callers and outgoing dependencies. |

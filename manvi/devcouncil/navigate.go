@@ -28,26 +28,30 @@ import (
 
 func (r *Registry) navigationTools() []tools.Tool {
 	return []tools.Tool{
+		r.codeTool(),
 		{
-			ReadOnly: true,
-			Extended: true,
-			Group:    tools.GroupNav,
-			Schema:   schema("devcouncil_graph_query", "Find symbols by name or path in the code graph, with the file and the source span of each hit.", `{"type":"object","properties":{"query":{"type":"string","description":"symbol name, partial name, or path"}},"required":["query"]}`),
-			Handler:  r.graphQuery,
+			ReadOnly:  true,
+			Extended:  true,
+			Group:     tools.GroupNav,
+			Schema:    schema("devcouncil_graph_query", "Find symbols by name or path in the code graph, with the file and the source span of each hit.", `{"type":"object","properties":{"query":{"type":"string","description":"symbol name, partial name, or path"}},"required":["query"]}`),
+			Handler:   r.graphQuery,
+			Batchable: true,
 		},
 		{
-			ReadOnly: true,
-			Extended: true,
-			Group:    tools.GroupNav,
-			Schema:   schema("devcouncil_code_dead", "List symbols with no discovered callers. Each carries a confidence and, where one applies, the reason it is exempt — a symbol reached only through a build tag, a registry, or reflection looks callerless to any static analyser.", `{"type":"object","properties":{"include_exempt":{"type":"boolean","description":"include symbols already judged exempt (default false)"}}}`),
-			Handler:  r.codeDead,
+			ReadOnly:  true,
+			Extended:  true,
+			Group:     tools.GroupNav,
+			Schema:    schema("devcouncil_code_dead", "List symbols with no discovered callers. Each carries a confidence and, where one applies, the reason it is exempt — a symbol reached only through a build tag, a registry, or reflection looks callerless to any static analyser.", `{"type":"object","properties":{"include_exempt":{"type":"boolean","description":"include symbols already judged exempt (default false)"}}}`),
+			Handler:   r.codeDead,
+			Batchable: true,
 		},
 		{
-			ReadOnly: true,
-			Extended: true,
-			Group:    tools.GroupNav,
-			Schema:   schema("devcouncil_graph_context", "For a set of files, what they depend on and what depends on them. Use before editing to see the blast radius.", `{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"},"description":"repo-relative paths"}},"required":["files"]}`),
-			Handler:  r.graphContext,
+			ReadOnly:  true,
+			Extended:  true,
+			Group:     tools.GroupNav,
+			Schema:    schema("devcouncil_graph_context", "For a set of files, what they depend on and what depends on them. Use before editing to see the blast radius.", `{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"},"description":"repo-relative paths"}},"required":["files"]}`),
+			Handler:   r.graphContext,
+			Batchable: true,
 		},
 	}
 }

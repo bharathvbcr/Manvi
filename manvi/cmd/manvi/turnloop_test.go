@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -205,5 +206,73 @@ func TestHeadlessRunLeavesTheOutputBoundToTheAdapterAndChecksTheTurn(t *testing.
 	}
 	if !verified {
 		t.Fatal("the saved session records no end-of-turn check")
+	}
+}
+
+// lookupsThenDone is a model that makes five single find_files lookups, one
+// per step, and then answers.
+func lookupsThenDone() *replay.Provider {
+	turns := []replay.Turn{}
+	for i, pattern := range []string{"*.go", "*.md", "*.txt", "*.json", "*.yaml"} {
+		id := llm.CallID(fmt.Sprintf("f%d", i+1))
+		args := []byte(fmt.Sprintf(`{"pattern":%q}`, pattern))
+		turns = append(turns, replay.Turn{
+			Chunks: []llm.Chunk{{Kind: llm.ChunkToolCallStart, ToolCallID: id, ToolName: "devcouncil_find_files"}},
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+				llm.ToolCallBlock{ID: id, Name: "devcouncil_find_files", Arguments: args},
+			}},
+			StopReason: llm.StopToolUse,
+			Usage:      llm.Usage{InputTokens: 10, OutputTokens: 5},
+		})
+	}
+	turns = append(turns, replay.Turn{
+		Chunks:     []llm.Chunk{{Kind: llm.ChunkText, Text: "done"}},
+		Message:    llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: "done"}}},
+		StopReason: llm.StopEndTurn,
+		Usage:      llm.Usage{InputTokens: 10, OutputTokens: 5},
+	})
+	return replay.New(replay.Fixture{
+		Provider: "replay",
+		Capabilities: []llm.Capability{{
+			Provider: "replay", Model: "m", ContextWindow: 32768,
+			MaxOutputTokens: 16384, SupportsTools: true, SupportsStreaming: true,
+		}},
+		Turns: turns,
+	})
+}
+
+// The setting reaches the loop a face builds: on the default the fifth lone
+// lookup in a row comes back refused, and with the operator's "off" it runs.
+// Observed from what the model was sent, not read off the plumbing.
+func TestTheFaceHandsTheSerialLookupModeToTheLoop(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		set     map[string]string
+		refused bool
+	}{
+		{"default", nil, true},
+		{"off", map[string]string{serialLookupsKey: "off"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reqs := tuiTurn(t, lookupsThenDone(), c.set)
+			if len(reqs) == 0 {
+				t.Fatal("the model was never asked")
+			}
+			var sent strings.Builder
+			for _, m := range reqs[len(reqs)-1].Messages {
+				for _, b := range m.Content {
+					if r, ok := b.(llm.ToolResultBlock); ok {
+						for _, part := range r.Content {
+							if tb, ok := part.(llm.TextBlock); ok {
+								sent.WriteString(tb.Text)
+							}
+						}
+					}
+				}
+			}
+			if got := strings.Contains(sent.String(), "refused, not run"); got != c.refused {
+				t.Fatalf("fifth lookup refused = %v, want %v", got, c.refused)
+			}
+		})
 	}
 }
