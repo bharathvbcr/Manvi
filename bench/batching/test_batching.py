@@ -28,7 +28,13 @@ class Parse(unittest.TestCase):
         m = rb.parse_stream(lines)
         self.assertEqual((m["batch_calls"], m["batch_inner_calls"], m["tool_calls"]), (1, 3, 2))
         self.assertEqual((m["refusals"], m["refused_steps"], m["steps"], m["bad_lines"]), (1, 5, 2, 1))
-        self.assertEqual((m["input_tokens"], m["cost_nano_usd"], m["final_text"]), (100, 900, "last"))
+        self.assertEqual((m["input_tokens"], m["cost_nano_usd"], m["final_text"]), (100, 900, "firstlast"))
+
+    def test_final_text_joins_stream_chunks_after_the_last_tool_result(self):
+        lines = [ev(kind="assistant.text", text="plan"), ev(kind="tool.result", text="x"),
+                 ev(kind="assistant.text", text="The "), ev(kind="assistant.text", text="answer"),
+                 ev(kind="step.usage")]
+        self.assertEqual(rb.parse_stream(lines)["final_text"], "The answer")
 
     def test_child_usage_is_not_counted_twice(self):
         m = rb.parse_stream([ev(kind="turn.usage", input_tokens=5, agent="child"), ev(kind="turn.usage", input_tokens=7)])

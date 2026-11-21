@@ -83,7 +83,7 @@ def parse_stream(lines):
          "tool_counts": {}, "batch_calls": 0, "batch_inner_calls": 0,
          "refusals": 0, "refused_steps": 0, "notices": [], "errors": [],
          "turn_usage_events": 0, "writes": 0, "bad_lines": 0}
-    texts = []
+    final = []  # assistant.text arrives as stream chunks; the answer is those after the last tool result
     for raw in lines:
         raw = raw.strip()
         if not raw:
@@ -115,6 +115,7 @@ def parse_stream(lines):
             if name in ("devcouncil_write_file", "devcouncil_patch_file", "devcouncil_edit_file"):
                 m["writes"] += 1
         elif k == "tool.result":
+            final = []
             hit = REFUSAL_RE.search(e.get("text", "") or "")
             if hit:
                 m["refusals"] += 1
@@ -124,8 +125,8 @@ def parse_stream(lines):
         elif k == "error":
             m["errors"].append((e.get("text", "") or "")[:200])
         elif k == "assistant.text":
-            texts.append(e.get("text", "") or "")
-    m["final_text"] = texts[-1] if texts else ""
+            final.append(e.get("text", "") or "")
+    m["final_text"] = "".join(final)
     return m
 
 
@@ -145,6 +146,30 @@ def run_one(binary, repo, prompt, arm, scratch, timeout_s):
     m["wall_s"] = round(wall, 1)
     m["stderr_tail"] = p.stderr[-300:]
     return m
+
+
+def cmd_reparse(a):
+    """Rebuild every row of runs.jsonl from its saved NDJSON, keeping the run's
+    identity (task, rep, arm, order) and grading it again. Used when only the
+    parser or the grader changed, so no run is repeated or paid for twice."""
+    spec = load_tasks()
+    by_id = {t["id"]: t for t in spec["tasks"]}
+    path = os.path.join(a.out, "runs.jsonl")
+    rows = [json.loads(l) for l in open(path)]
+    out = []
+    for r in rows:
+        raw = os.path.join(a.scratch, "raw", "%s-r%d-%s.ndjson" % (r["task"], r["rep"], r["arm"]))
+        m = parse_stream(open(raw).read().splitlines())
+        for k in ("exit_code", "wall_s", "stderr_tail"):
+            m[k] = r[k]
+        n_ok, flags = grade(m["final_text"], by_id[r["task"]]["facts"])
+        out.append(dict(m, task=r["task"], rep=r["rep"], arm=r["arm"], order=r["order"],
+                        facts=len(flags), correct=n_ok, fact_flags=flags))
+    with open(path, "w") as f:
+        for r in out:
+            f.write(json.dumps(r) + "\n")
+    print("reparsed %d rows" % len(out))
+    return 0
 
 
 def cmd_run(a):
@@ -246,6 +271,8 @@ def analyze(rows):
 
 def cmd_analyze(a):
     rows = [json.loads(l) for l in open(os.path.join(a.out, "runs.jsonl"))]
+    if a.max_rep is not None:
+        rows = [r for r in rows if r["rep"] <= a.max_rep]
     rep = analyze(rows)
     total = sum(r["cost_nano_usd"] for r in rows) / 1e9
     rep["total_spend_usd_all_runs"] = total
@@ -267,11 +294,15 @@ def main():
     r.add_argument("--reps", type=int, default=3)
     r.add_argument("--budget-usd", type=float, default=1.6)
     r.add_argument("--timeout", type=int, default=700)
+    q = sub.add_parser("reparse")
+    q.add_argument("--out", required=True)
+    q.add_argument("--scratch", required=True)
     n = sub.add_parser("analyze")
     n.add_argument("--out", required=True)
     n.add_argument("--json-out")
+    n.add_argument("--max-rep", type=int, help="keep only reps 0..N (the pre-registered batch is reps 0-2)")
     a = ap.parse_args()
-    return cmd_run(a) if a.cmd == "run" else cmd_analyze(a)
+    return {"run": cmd_run, "reparse": cmd_reparse, "analyze": cmd_analyze}[a.cmd](a)
 
 
 if __name__ == "__main__":
