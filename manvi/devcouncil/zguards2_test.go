@@ -139,7 +139,7 @@ func TestOverwriteGuardFollowsThePinnedTargetNotTheEarlierExistenceCheck(t *test
 	if !res.IsError || !strings.Contains(res.Text, "has not been read in full") {
 		t.Fatalf("a file that appeared after the existence check was overwritten unread: %+v", res)
 	}
-	if got, _ := os.ReadFile(target); string(got) != theirs {
+	if got, _ := os.ReadFile(target); string(got) != theirs { // #nosec G304 -- under this test's own t.TempDir
 		t.Fatalf("the unread file was overwritten: %q", got)
 	}
 }

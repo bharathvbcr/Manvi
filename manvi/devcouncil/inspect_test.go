@@ -658,7 +658,7 @@ func TestCodeGraphGatesReceiverTextFromSecretPaths(t *testing.T) {
 		return ""
 	}
 	for _, name := range []string{"devmap_impact_secret_receiver.json", "devmap_ask_secret_receiver.json"} {
-		raw, err := os.ReadFile(filepath.Join("testdata", name))
+		raw, err := os.ReadFile(filepath.Join("testdata", name)) // #nosec G304 -- a fixed testdata name
 		if err != nil {
 			t.Fatal(err)
 		}

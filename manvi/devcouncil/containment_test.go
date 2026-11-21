@@ -412,7 +412,7 @@ func TestContainmentStopsRenameAndLinkLive(t *testing.T) {
 			t.Errorf("%s: the command succeeded under containment: %q", name, out)
 		}
 		for _, secret := range []string{".env", "cfg/.env"} {
-			if body, err := os.ReadFile(filepath.Join(root, secret)); err != nil || string(body) != fakeToken {
+			if body, err := os.ReadFile(filepath.Join(root, secret)); err != nil || string(body) != fakeToken { // #nosec G304 -- under this test's own t.TempDir
 				t.Errorf("%s: %s was moved or changed by a contained command: %q, %v", name, secret, body, err)
 			}
 		}
