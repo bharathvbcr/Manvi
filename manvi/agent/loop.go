@@ -1465,6 +1465,11 @@ func (l *Loop) runCall(ctx context.Context, out *Outcome, tally *stepTally, call
 		// and those live on the loop. See batch.go.
 		result = l.runBatch(ctx, out, tally, call)
 
+	case call.Name == tools.ScriptToolName:
+		// Expanded here for the same reason as the batch: every call the
+		// script makes passes the loop's own admission and accounting.
+		result = l.runScript(ctx, out, tally, call)
+
 	default:
 		result = l.tools.Run(ctx, tools.Call{
 			ID: call.ID, Name: call.Name, Arguments: call.Arguments,

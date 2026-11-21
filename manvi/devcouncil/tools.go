@@ -46,7 +46,8 @@ type Deps struct {
 	// WithholdBatch leaves devcouncil_batch out of the surface. The operator's
 	// harness.batch_tool=off sets it; everything that names the batch tool —
 	// the prompt line, the loop's serial-lookup rule — reads the offered set,
-	// so withholding it here withholds them too.
+	// so withholding it here withholds them too. devcouncil_script, which
+	// chains lookups the way the batch runs them side by side, goes with it.
 	WithholdBatch bool
 	Store         *store.Client
 	Gate          *gate.Gate
@@ -532,7 +533,7 @@ func (r *Registry) Tools() []tools.Tool {
 				batchable = append(batchable, tool.Schema.Name)
 			}
 		}
-		set = append(set, tools.BatchTool(batchable...))
+		set = append(set, tools.BatchTool(batchable...), tools.ScriptTool(batchable...))
 	}
 	return set
 }

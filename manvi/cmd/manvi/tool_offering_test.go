@@ -102,8 +102,11 @@ func TestBatchToolSwitchWithholdsTheToolTheLineAndTheRule(t *testing.T) {
 	if strings.Contains(off.System, "devcouncil_batch") {
 		t.Error("harness.batch_tool=off left devcouncil_batch in the system prompt")
 	}
-	if len(off.Tools) != len(on.Tools)-1 {
-		t.Errorf("off withheld %d tools, want exactly the batch tool", len(on.Tools)-len(off.Tools))
+	if offeredNames(off)[tools.ScriptToolName] {
+		t.Error("harness.batch_tool=off still offered devcouncil_script, the batch tool's chaining companion")
+	}
+	if len(off.Tools) != len(on.Tools)-2 {
+		t.Errorf("off withheld %d tools, want exactly the batch tool and the script tool", len(on.Tools)-len(off.Tools))
 	}
 
 	reqs := tuiTurn(t, lookupsThenDone(), set)

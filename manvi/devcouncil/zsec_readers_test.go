@@ -184,6 +184,7 @@ func TestEveryContentReaderAppliesTheReadGate(t *testing.T) {
 	noContent := map[string]string{
 		"devcouncil_activate_tools":     "tool catalogue",
 		"devcouncil_batch":              "runs only Batchable tools, each classified here; adds no bytes of its own",
+		"devcouncil_script":             "runs only Batchable tools, each classified here; adds no bytes of its own",
 		"devcouncil_code_dead":          "symbol names and paths, no source",
 		"devcouncil_dev_inspect":        "devbridge runs a fixed read of the DevCouncil store, not the tree",
 		"devcouncil_find_files":         "names only",
