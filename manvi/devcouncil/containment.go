@@ -188,27 +188,59 @@ func sortedPaths(set map[string]bool) []string {
 	return out
 }
 
+// ancestorDirs are the directories above every denied path, up to but not
+// including "/". Renaming a directory needs unlink on its own name, so a command
+// that may not touch .env can still move it by moving cfg/ or the repository
+// itself; denying unlink on each ancestor closes that.
+func (d secretDenials) ancestorDirs() []string {
+	set := map[string]bool{}
+	for _, p := range append(append([]string{}, d.literals...), d.subpaths...) {
+		for dir := filepath.Dir(p); dir != "/" && dir != "." && !set[dir]; dir = filepath.Dir(dir) {
+			set[dir] = true
+		}
+	}
+	return sortedPaths(set)
+}
+
 // seatbeltProfile renders denials as an SBPL profile: everything allowed,
-// reading the named paths denied. Without a rule list the profile is just the
-// allow, since an empty deny form does not parse.
+// reading the named paths denied, and writing, linking or unlinking them too,
+// with unlink also denied on every directory above them so neither the file nor
+// a parent can be renamed away from the deny. Without a rule list the profile is
+// just the allow, since an empty deny form does not parse.
 func seatbeltProfile(d secretDenials) (string, error) {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n")
-	if len(d.literals)+len(d.subpaths) > 0 {
-		b.WriteString("(deny file-read*")
-		for _, group := range []struct {
-			filter string
-			paths  []string
-		}{{"literal", d.literals}, {"subpath", d.subpaths}} {
+	render := func(operations string, groups ...struct {
+		filter string
+		paths  []string
+	}) error {
+		b.WriteString("(deny " + operations)
+		for _, group := range groups {
 			for _, p := range group.paths {
 				quoted, err := sbplString(p)
 				if err != nil {
-					return "", err
+					return err
 				}
 				b.WriteString("\n  (" + group.filter + " " + quoted + ")")
 			}
 		}
 		b.WriteString(")\n")
+		return nil
+	}
+	type group = struct {
+		filter string
+		paths  []string
+	}
+	if len(d.literals)+len(d.subpaths) > 0 {
+		secrets := []group{{"literal", d.literals}, {"subpath", d.subpaths}}
+		for _, operations := range []string{"file-read*", "file-write*", "file-link"} {
+			if err := render(operations, secrets...); err != nil {
+				return "", err
+			}
+		}
+		if err := render("file-write-unlink", group{"literal", d.ancestorDirs()}); err != nil {
+			return "", err
+		}
 	}
 	if b.Len() > maxProfileBytes {
 		return "", fmt.Errorf("the containment profile is %d bytes for %d secret paths, over the %d byte bound",

@@ -1,6 +1,9 @@
 # Shell command containment of secret paths: findings and design
 
-Status: design only, nothing implemented. Written 2026-11-20 on lane/secrets.
+Status: the darwin seatbelt seam is implemented (`manvi/devcouncil/containment.go`,
+`harness.exec_containment`); the text below is the original design and finding. See
+"Implemented profile and its remaining gaps" at the end for what is contained now.
+Written 2026-11-20 on lane/secrets.
 
 ## Finding (verified)
 
@@ -87,3 +90,35 @@ defaulting on in `strict`, off in `dev`, after the owner decides items 1-2.
 Neither was built in this lane because the redaction half is blocked on
 DevCouncil and the containment half is a new subsystem with an opt-out policy
 the owner should choose.
+
+## Implemented profile and its remaining gaps
+
+The profile, rendered per command from the secret files found under the real
+repository root, is `(allow default)` plus four deny forms, each verified live
+with `sandbox-exec` on darwin (`TestContainmentStopsRenameAndLinkLive`):
+
+| deny form | on | stops |
+|---|---|---|
+| `file-read*` | each secret file (literal), each secret directory (subpath) | `cat`, `grep -r`, `cp`, a program that opens it |
+| `file-write*` | same | writing, appending, `chmod`, `rm`, and renaming the file itself |
+| `file-link` | same | `ln .env y` (a hard link under another name) |
+| `file-write-unlink` | every directory above a secret path, up to `/` exclusive | `mv cfg cfg2`, `mv repo repo2`: a rename needs unlink on the source name |
+
+An earlier version denied only `file-read*`; `mv .env y && cat y` and
+`mv cfg cfg2 && cat cfg2/.env` printed the token because the moved file no
+longer matched a denied path. The unlink deny is on the ancestor directories
+only, not a write deny on them, so creating, editing and renaming other files
+in the repository still works.
+
+Remaining gaps (not contained):
+
+- A secret-named file created *outside a secret directory* while the command
+  runs (`echo $T > .env && cat .env`): the profile is built before the command,
+  so the new name is not in it. Secret directories are denied as subtrees and
+  do cover files created inside them.
+- Writing, linking or deleting a secret file is denied too, so a contained
+  command cannot edit `.env`; legitimate tooling that does fails with EPERM.
+- `sandbox-exec` is deprecated by Apple and still shipped; each macOS release
+  must be re-verified. Where it is missing the command is refused, not run.
+- The verify command is not contained.
+- Linux and Windows have no seam.

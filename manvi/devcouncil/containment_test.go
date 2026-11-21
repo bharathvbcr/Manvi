@@ -112,6 +112,19 @@ func unescapeSBPL(s string) string {
 	return b.String()
 }
 
+// readDenyBlock is the file-read* deny form of a rendered profile: the rules
+// that name secret files, apart from the write, link and unlink forms that
+// protect them from being moved.
+func readDenyBlock(t *testing.T, profile string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(profile, "(deny file-read*")
+	if !ok {
+		t.Fatalf("the profile has no file-read* deny:\n%s", profile)
+	}
+	block, _, _ := strings.Cut(rest, "\n(deny ")
+	return block
+}
+
 // The profile must deny exactly the files the policy matcher calls secret, no
 // more and no fewer, over a tree built from DevCouncil's own fold fixture (the
 // rows its Go and Rust engines are held to) plus ordinary files.
@@ -173,7 +186,7 @@ func TestProfileDeniesExactlyWhatTheMatcherMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	var literals, subpaths []string
-	for _, m := range profileRule.FindAllStringSubmatch(profile, -1) {
+	for _, m := range profileRule.FindAllStringSubmatch(readDenyBlock(t, profile), -1) {
 		if m[1] == "literal" {
 			literals = append(literals, unescapeSBPL(m[2]))
 		} else {
@@ -365,5 +378,49 @@ func TestExecCommandRunsContainedLive(t *testing.T) {
 	res = f.call("devcouncil_exec_command", map[string]string{"command": "grep -r SUPERSECRET ."})
 	if strings.Contains(res.Text, fakeToken) {
 		t.Fatalf("grep -r leaked through the registry under containment: %s", res.Text)
+	}
+}
+
+// A read deny alone is bypassed by moving the secret out from under its name:
+// rename the file, rename a directory above it, or hard-link it. Each of those
+// must fail under containment and leave the token unread, while an ordinary
+// write beside them still works.
+func TestContainmentStopsRenameAndLinkLive(t *testing.T) {
+	requireSeatbelt(t)
+	fresh := func() string {
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTree(t, root, map[string]string{".env": fakeToken, "cfg/.env": fakeToken, "src/a.go": "package a\n"})
+		return root
+	}
+	attacks := map[string]string{
+		"rename the file":                "mv .env y && cat y",
+		"rename the file out of its dir": "mv cfg/.env y && cat y",
+		"rename the parent directory":    "mv cfg cfg2 && cat cfg2/.env",
+		"rename the repository root":     "cd .. && b=$(basename \"$OLDPWD\") && mv \"$b\" \"$b-moved\" && cat \"$b-moved/.env\"",
+		"hard link the file":             "ln .env y && cat y",
+		"hard link the nested file":      "ln cfg/.env y && cat y",
+		"copy the file":                  "cp .env y && cat y",
+		"delete the file":                "rm .env && echo deleted",
+	}
+	for name, command := range attacks {
+		root := fresh()
+		out, _ := runContained(t, root, command)
+		if strings.Contains(out, fakeToken) || strings.Contains(out, "deleted") {
+			t.Errorf("%s: the command succeeded under containment: %q", name, out)
+		}
+		for _, secret := range []string{".env", "cfg/.env"} {
+			if body, err := os.ReadFile(filepath.Join(root, secret)); err != nil || string(body) != fakeToken {
+				t.Errorf("%s: %s was moved or changed by a contained command: %q, %v", name, secret, body, err)
+			}
+		}
+	}
+	// Ordinary work is untouched: write, create, rename and remove elsewhere.
+	root := fresh()
+	out, code := runContained(t, root, "echo edit >> src/a.go && touch src/new.go && mkdir src/d && mv src/new.go src/d/n.go && rm src/d/n.go && cat src/a.go")
+	if code != 0 || !strings.Contains(out, "edit") {
+		t.Fatalf("an ordinary write under containment failed (exit %d): %s", code, out)
 	}
 }

@@ -59,9 +59,13 @@ func harnessFlagDefs() []flags.Def {
 		Values: []string{execContainmentOff, execContainmentSecrets}, Mutable: flags.HumanOnly,
 		Description: "Whether devcouncil_exec_command runs under a macOS seatbelt profile (sandbox-exec) that denies " +
 			"reading the repository's secret files (DevCouncil's policy.SecretPathPatterns), so grep -r, rg or a " +
-			"program the agent builds cannot read what a command naming the path would be refused. secrets turns it " +
-			"on; where sandbox-exec is unavailable the command is refused, never run uncontained. Operator scope: " +
-			"never read from the repository's config.yaml.",
+			"program the agent builds cannot read what a command naming the path would be refused. The same " +
+			"profile denies writing, hard-linking and deleting those files, and renaming any directory above them " +
+			"(up to the repository root and its parents), so a secret cannot be moved out from under its deny; " +
+			"ordinary files are unaffected. Not contained: a secret-named file created outside a secret directory " +
+			"while the command runs, the verify command, and a host where Apple removes the deprecated " +
+			"sandbox-exec. secrets turns it on; where sandbox-exec is unavailable the command is refused, never " +
+			"run uncontained. Operator scope: never read from the repository's config.yaml.",
 	}, {
 		Key: coreToolsOnlyKey, Kind: flags.KindBool, Default: "false", Mutable: flags.HumanOnly,
 		Description: "Offer only the core tool set, whichever provider is in use: task lifecycle, sub-agent, " +
