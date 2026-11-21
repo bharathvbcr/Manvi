@@ -49,8 +49,14 @@ type Deps struct {
 	// so withholding it here withholds them too. devcouncil_script, which
 	// chains lookups the way the batch runs them side by side, goes with it.
 	WithholdBatch bool
-	Store         *store.Client
-	Gate          *gate.Gate
+	// ExecContainment is the operator's harness.exec_containment: "" or "off"
+	// runs devcouncil_exec_command as before, "secrets" runs it under a
+	// seatbelt profile denying reads of the repository's secret files (see
+	// containment.go) and refuses the command where that cannot be arranged.
+	// Only exec_command is contained; the verify command is the operator's own.
+	ExecContainment string
+	Store           *store.Client
+	Gate            *gate.Gate
 	// Root is the repository the tools read and write inside.
 	Root string
 	// LeaseTTL is how long a checkout lasts before it must be renewed.
