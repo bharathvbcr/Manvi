@@ -142,6 +142,9 @@ type Registry struct {
 	work   *workAPI
 	// inspected is what this agent has read or written; see inspect.go.
 	inspected inspectedSet
+	// written is the paths this session wrote and the index generation current
+	// at each write; see writeimpact.go.
+	written writtenSet
 }
 
 // New builds the tool surface.

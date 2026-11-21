@@ -356,7 +356,7 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	if creating {
 		result = annotateReuse(result, r.checkReuse(ctx, reusePath))
 	}
-	return result
+	return r.noteWriteImpact(ctx, result, decision.Target)
 }
 
 // writeFailure is the result of a write that did not complete. When the failure
@@ -1525,12 +1525,12 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 		}
 	}
 
-	return annotate(
+	return r.noteWriteImpact(ctx, annotate(
 		tools.Result{
 			Text:  fmt.Sprintf("patched %s (%d bytes)", decision.Target, len(content)),
 			Wrote: []string{decision.Target},
 		},
-		decision)
+		decision), decision.Target)
 }
 
 // matchCandidates keeps the paths that match pattern, either whole or by their

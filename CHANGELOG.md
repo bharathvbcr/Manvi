@@ -23,6 +23,8 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `devcouncil_write_file` and `devcouncil_patch_file` end their result with a bounded impact line from the code index: up to 10 callers outside the written file, labelled with the index generation and stated stale when the index has not seen the write, or one line saying the check did not run. `devcouncil_code` opens with `index_notice` when the index is behind the tree, naming the paths this session wrote that it has not seen, and hoists completeness fields that are identical on every sub-envelope into one `shared_envelope` (differing values are left in place).
+
 - **`devcouncil_batch`: several independent lookups in one step.** Up to 16
   calls to allowlisted read-only tools (file reads, grep, find/list, the graph
   tools, git reads, get_diff) run concurrently, at most four at once, and come
