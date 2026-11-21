@@ -170,16 +170,19 @@ func maxSteps(reg *flags.Registry) int {
 	return n
 }
 
-// coreToolsOnly reports whether to offer the reduced tool surface. It applies
-// to the local provider only: the setting is about a smaller model choosing
-// from a long list, and it names that provider for the same reason every other
-// llm.local.* setting does.
+// coreToolsOnly reports whether to offer the reduced tool surface. The
+// operator's harness.core_tools_only asks for it on any provider;
+// llm.local.core_tools_only asks for it on the local provider alone, because
+// that setting is about a smaller model choosing from a long list and names
+// that provider for the same reason every other llm.local.* setting does.
 func coreToolsOnly(reg *flags.Registry, provider string) bool {
+	if harnessBool(reg, coreToolsOnlyKey) {
+		return true
+	}
 	if provider != local.Name {
 		return false
 	}
-	on, _, err := reg.Bool(flags.LLMLocalCoreToolsOnly)
-	return err == nil && on
+	return harnessBool(reg, flags.LLMLocalCoreToolsOnly)
 }
 
 // taskCheckoutTool is the task lifecycle's entry point, and the one tool whose
@@ -236,12 +239,17 @@ func assertInvariant(reg *flags.Registry) bool {
 	return err == nil && on
 }
 
+// dynamicToolsEnabled reports whether tools load on demand. The operator's
+// harness.dynamic_tools asks for it on any provider; llm.local.dynamic_tools
+// (default on) asks for it on the local provider alone.
 func dynamicToolsEnabled(reg *flags.Registry, provider string) bool {
+	if harnessBool(reg, dynamicToolsKey) {
+		return true
+	}
 	if provider != local.Name {
 		return false
 	}
-	on, _, err := reg.Bool(flags.LLMLocalDynamicTools)
-	return err == nil && on
+	return harnessBool(reg, flags.LLMLocalDynamicTools)
 }
 
 func guidanceRouterEnabled(reg *flags.Registry, provider string) bool {

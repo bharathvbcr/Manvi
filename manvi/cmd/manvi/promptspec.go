@@ -54,11 +54,58 @@ func harnessFlagDefs() []flags.Def {
 		Description: "What the agent loop does when consecutive steps each make a single read-only lookup while " +
 			"devcouncil_batch is offered: refuse notes the third and refuses the fifth once (sent again, it runs), " +
 			"note only notes every third, off does neither.",
+	}, {
+		Key: coreToolsOnlyKey, Kind: flags.KindBool, Default: "false", Mutable: flags.HumanOnly,
+		Description: "Offer only the core tool set, whichever provider is in use: task lifecycle, sub-agent, " +
+			"artifact and other extended tools are left out of every request. llm.local.core_tools_only does the " +
+			"same for the local provider alone; either one turns it on. Operator scope: never read from the " +
+			"repository's config.yaml.",
+	}, {
+		Key: dynamicToolsKey, Kind: flags.KindBool, Default: "false", Mutable: flags.HumanOnly,
+		Description: "Start every provider from the core tool set and let the model load the rest on demand with " +
+			"devcouncil_search_tools and devcouncil_activate_tools, instead of sending every schema each request. " +
+			"llm.local.dynamic_tools does the same for the local provider alone (and defaults on there); either " +
+			"one turns it on. Operator scope: never read from the repository's config.yaml.",
+	}, {
+		Key: batchToolKey, Kind: flags.KindEnum, Default: batchToolOn,
+		Values: []string{batchToolOn, batchToolOff}, Mutable: flags.HumanOnly,
+		Description: "Whether devcouncil_batch is offered. off removes the tool from every tool set, drops the " +
+			"prompt's line about it, and with it the batching rule that harness.serial_lookups enforces. " +
+			"Operator scope: never read from the repository's config.yaml.",
 	}}
 }
 
 // serialLookupsKey names the batching rule's mode; see agent.SerialLookups.
 const serialLookupsKey = "harness.serial_lookups"
+
+// The operator's switches over which tool schemas a turn offers. They apply to
+// every provider; the llm.local.* pair they sit beside names the local provider
+// only. All three change what the agent can reach, so they are operator scope.
+const (
+	coreToolsOnlyKey = "harness.core_tools_only"
+	dynamicToolsKey  = "harness.dynamic_tools"
+	batchToolKey     = "harness.batch_tool"
+)
+
+// Values of batchToolKey.
+const (
+	batchToolOn  = "on"
+	batchToolOff = "off"
+)
+
+// batchToolWithheld reports whether the operator withheld devcouncil_batch. A
+// registry that cannot answer, which only one built without harnessFlagDefs can
+// be, offers it: that is the behaviour of every release before the switch.
+func batchToolWithheld(reg *flags.Registry) bool {
+	mode, _, err := reg.String(batchToolKey)
+	return err == nil && mode == batchToolOff
+}
+
+// harnessBool reads one of the boolean switches above; an unreadable key is off.
+func harnessBool(reg *flags.Registry, key string) bool {
+	on, _, err := reg.Bool(key)
+	return err == nil && on
+}
 
 // serialLookupMode is the configured mode. A registry that cannot answer, which
 // only a registry built without harnessFlagDefs can be, gets the default and

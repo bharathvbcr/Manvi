@@ -43,8 +43,13 @@ import (
 
 // Deps are what the tools need to do their work.
 type Deps struct {
-	Store *store.Client
-	Gate  *gate.Gate
+	// WithholdBatch leaves devcouncil_batch out of the surface. The operator's
+	// harness.batch_tool=off sets it; everything that names the batch tool —
+	// the prompt line, the loop's serial-lookup rule — reads the offered set,
+	// so withholding it here withholds them too.
+	WithholdBatch bool
+	Store         *store.Client
+	Gate          *gate.Gate
 	// Root is the repository the tools read and write inside.
 	Root string
 	// LeaseTTL is how long a checkout lasts before it must be renewed.
@@ -514,7 +519,9 @@ func (r *Registry) Tools() []tools.Tool {
 	// The board tools. Contributes nothing without a Work binding.
 	set = append(set, r.workTools()...)
 	// Several lookups in one step; the agent loop runs it. See agent/batch.go.
-	set = append(set, tools.BatchTool())
+	if !r.deps.WithholdBatch {
+		set = append(set, tools.BatchTool())
+	}
 	return set
 }
 

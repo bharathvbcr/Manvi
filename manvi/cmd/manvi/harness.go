@@ -110,6 +110,7 @@ func buildNativeTools(reg *flags.Registry, approver ui.Approver, work *devcounci
 			Root:         root,
 			DevmapBinary: toolBinary("MANVI_MAP_BINARY", "devmap"),
 		},
+		WithholdBatch:     batchToolWithheld(reg),
 		KnownSecret:       knownSecretIn(toolScrubber, toolResolver),
 		KnownSecretMaxLen: knownSecretMaxLenIn(toolScrubber, toolResolver),
 		Work:              work,

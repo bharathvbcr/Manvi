@@ -217,7 +217,21 @@ var operatorScopeRules = []operatorScopeRule{
 				path, serialLookupsKey, flags.EnvKey(serialLookupsKey), serialLookupsKey)
 		},
 	},
+	{
+		matches: isToolOfferingKey,
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: it decides which tools the agent is offered, "+
+				"and this file ships with a clone and can be written by an agent under a relaxed posture. "+
+				"Remove those lines; set %s with %s or 'manvi flags set %s VALUE'",
+				path, strings.Join(keys, ", "), keys[0], flags.EnvKey(keys[0]), keys[0])
+		},
+	},
 	{matches: isEndpointKey, refusal: refuseEndpointKeys},
+}
+
+// isToolOfferingKey matches the settings that choose which tools a turn offers.
+func isToolOfferingKey(key string) bool {
+	return key == coreToolsOnlyKey || key == dynamicToolsKey || key == batchToolKey
 }
 
 // refuseEndpointKeys is the refusal for endpoint keys set in the repository file.
