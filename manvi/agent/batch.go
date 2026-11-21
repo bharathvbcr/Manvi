@@ -262,33 +262,11 @@ func (l *Loop) noteSerialLookup(result tools.Result) tools.Result {
 
 // admitBatchItem returns why one inner call may not run, or "" when it may.
 func (l *Loop) admitBatchItem(slot *batchSlot) string {
-	name := slot.item.Tool
-	switch {
-	case name == "":
-		return "a call needs a tool name"
-	case name == tools.BatchToolName:
-		return "a batch cannot contain a batch"
-	case !l.tools.Has(name):
-		// A model that read a short name somewhere sends it here; saying "not
-		// batchable" sent it off to make every lookup on its own.
-		if full := "devcouncil_" + name; l.tools.Batchable(full) && l.allows(full) {
-			return fmt.Sprintf("no tool is named %s; the lookup is %s", boundField(name), full)
-		}
-		return fmt.Sprintf("no tool is named %s", boundField(name))
-	case !l.tools.Batchable(name):
-		return fmt.Sprintf("%s cannot run inside a batch: only read-only lookups can. Call it on its own.", boundField(name))
-	case !l.allows(name):
-		return l.notOfferedText(name)
+	args, refusal := l.admitInner("a batch", slot.item.Tool, slot.item.Args)
+	if refusal != "" {
+		return refusal
 	}
-	if len(slot.item.Args) == 0 {
-		slot.item.Args = jsontext.Value("{}")
-	}
-	// The same ledger a top-level call is counted in, so a batch is not a way
-	// round the repeat refusal.
-	if repeat := l.repeats.seen(name, []byte(slot.item.Args)); repeat > RepeatLimit {
-		return fmt.Sprintf("this exact call to %s was already made %d times in this turn with the same "+
-			"arguments, so it was not run again", name, repeat-1)
-	}
+	slot.item.Args = args
 	if slot.item.MaxLines < 0 || slot.item.MaxLines > maxBatchLines {
 		return fmt.Sprintf("max_lines must be in 1..%d", maxBatchLines)
 	}
@@ -307,6 +285,52 @@ func (l *Loop) admitBatchItem(slot *batchSlot) string {
 		slot.filter = re
 	}
 	return ""
+}
+
+// innerKind names a container tool the way a refusal does.
+func innerKind(name string) string {
+	if name == tools.ScriptToolName {
+		return "a script"
+	}
+	return "a batch"
+}
+
+// admitInner is the admission every call made on a container tool's behalf
+// passes, a batch item or a script's call alike: a tool the registry has,
+// offered this step, a read-only lookup, not a container itself, and within the
+// repeat ledger a top-level call is counted in. One function, so the two
+// containers cannot drift apart about what may run inside them. where names the
+// container in the refusal ("a batch", "a script"). It returns the arguments to
+// run with (an absent object becomes {}) and the refusal, "" when the call may
+// run.
+func (l *Loop) admitInner(where, name string, args jsontext.Value) (jsontext.Value, string) {
+	switch {
+	case name == "":
+		return args, "a call needs a tool name"
+	case name == tools.BatchToolName || name == tools.ScriptToolName:
+		return args, fmt.Sprintf("%s cannot contain %s", where, innerKind(name))
+	case !l.tools.Has(name):
+		// A model that read a short name somewhere sends it here; saying "not
+		// batchable" sent it off to make every lookup on its own.
+		if full := "devcouncil_" + name; l.tools.Batchable(full) && l.allows(full) {
+			return args, fmt.Sprintf("no tool is named %s; the lookup is %s", boundField(name), full)
+		}
+		return args, fmt.Sprintf("no tool is named %s", boundField(name))
+	case !l.tools.Batchable(name):
+		return args, fmt.Sprintf("%s cannot run inside %s: only read-only lookups can. Call it on its own.", boundField(name), where)
+	case !l.allows(name):
+		return args, l.notOfferedText(name)
+	}
+	if len(args) == 0 {
+		args = jsontext.Value("{}")
+	}
+	// The same ledger a top-level call is counted in, so a container is not a
+	// way round the repeat refusal.
+	if repeat := l.repeats.seen(name, []byte(args)); repeat > RepeatLimit {
+		return args, fmt.Sprintf("this exact call to %s was already made %d times in this turn with the same "+
+			"arguments, so it was not run again", name, repeat-1)
+	}
+	return args, ""
 }
 
 // batchKeep is the part of one answer the call asked to keep, and a line that

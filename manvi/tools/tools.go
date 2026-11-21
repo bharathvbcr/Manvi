@@ -1046,6 +1046,55 @@ func BatchTool(batchable ...string) Tool {
 	}
 }
 
+// ScriptToolName is the tool that runs a short Starlark script whose calls are
+// the read-only lookups, so one step can chain them: the second call's arguments
+// may come from the first call's answer. The agent loop runs it itself (see
+// agent/script.go); the registered handler only refuses.
+const ScriptToolName = "devcouncil_script"
+
+const (
+	// DefaultScriptCalls is how many tool calls a script may make when it names
+	// no max_calls.
+	DefaultScriptCalls = 16
+	// MaxScriptCalls is the most max_calls may ask for.
+	MaxScriptCalls = 32
+	// MaxScriptBytes bounds the script's source.
+	MaxScriptBytes = 16 << 10
+)
+
+// ScriptTool is the script tool's registration, with its schema owned here
+// beside the name the loop dispatches on. callable is the full names of the
+// lookups the surface marks Batchable; the description names exactly those.
+func ScriptTool(callable ...string) Tool {
+	names := slices.Clone(callable)
+	slices.Sort(names)
+	names = slices.Compact(names)
+	lookups := "the read-only lookups of this tool list"
+	if len(names) > 0 {
+		lookups = strings.Join(names, ", ")
+	}
+	return Tool{
+		Schema: llm.ToolSchema{
+			Name: ScriptToolName,
+			Description: "Chain read-only lookups in one step with a short Starlark script (Python-like; no imports, " +
+				"files or network). Use it when a lookup needs the answer of the one before it; independent lookups " +
+				"belong in devcouncil_batch. Callable, by full name with keyword arguments only: " + lookups + ". " +
+				"Each call returns a struct with .text (the answer, cut at 32 KiB), .error (true when the call failed or " +
+				"was refused) and .truncated; json.decode parses a JSON answer. Output is what print() writes. " +
+				"Example: r = devcouncil_grep(pattern=\"func Run\"); print(r.text). " +
+				"Bounds: max_calls (default 16, at most 32), 1e6 interpreter steps, 30 s, 128 KiB of output; a breach " +
+				"ends the script and keeps its output so far. A file read inside a script is never counted as read in " +
+				"full, so read it on its own before writing it.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"script":{"type":"string","maxLength":16384},"max_calls":{"type":"integer","minimum":1,"maximum":32}},"required":["script"]}`),
+		},
+		Group:    GroupCore,
+		ReadOnly: true,
+		Handler: func(context.Context, Call) Result {
+			return Errorf("%s is run by the agent loop and was reached without one, so nothing ran; call the tools one at a time", ScriptToolName)
+		},
+	}
+}
+
 type viewKey struct{}
 
 // View is how much of a tool's answer may reach the model: a batch keeps only

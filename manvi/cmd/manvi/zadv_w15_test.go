@@ -378,8 +378,8 @@ func TestAdvW15ManviToolsCountMatchesTheDocs(t *testing.T) {
 		t.Skipf("the native tool surface could not be built here: %v", err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "\n52 tools, all native") {
-		t.Errorf("manvi tools in a skill-less repository does not end with 52 tools:\n%s", text[max(0, len(text)-200):])
+	if !strings.Contains(text, "\n53 tools, all native") {
+		t.Errorf("manvi tools in a skill-less repository does not end with 53 tools:\n%s", text[max(0, len(text)-200):])
 	}
 	board := 0
 	for _, line := range strings.Split(text, "\n") {
