@@ -16,7 +16,6 @@ import (
 
 	mapclient "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
-	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 )
 
 // OpWorkRefine proposes acceptance criteria, splits and duplicate links for one
@@ -701,7 +700,7 @@ func refineSymbolAnswer(ctx context.Context, devmap DevmapClient, symbol string,
 	}
 	walk := ""
 	if w := bytes.TrimSpace(blast.WalkIncomplete); len(w) > 0 && !bytes.Equal(w, []byte("null")) && !bytes.Equal(w, []byte("false")) {
-		if walk = devcouncil.DevmapNoteText(w); walk == "" {
+		if walk = walkNote(w); walk == "" {
 			walk = "incomplete"
 		}
 		walk = truncateRunes(walk, 400)
