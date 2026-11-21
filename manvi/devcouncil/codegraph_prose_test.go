@@ -1,6 +1,8 @@
 package devcouncil
 
 import (
+	"encoding/json/v2"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -49,4 +51,61 @@ func TestCodeGraphNeverRewritesAPathKeyAndStillJudgesIt(t *testing.T) {
 			t.Errorf("a path key was rewritten into %q: %s", mangled, text)
 		}
 	}
+}
+
+func decodeAny(t *testing.T, raw []byte) any {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// Call-site notes quote labels built from raw receiver text. None of these
+// shapes may carry any of it to the model, whatever the receiver contains.
+func TestCodeGraphCallSiteProseCannotBeBypassed(t *testing.T) {
+	site := `{"unresolved_namesakes":{"sites":[{"callee_name":"run","receiver":"%s","source_file":"secrets/s.go"}]}`
+	cases := map[string]string{
+		"receiver holding the lazy-match terminator": `{"walk_incomplete":"1 call site(s) the resolver could not bind name a symbol this answer reached (` + leakToken + `), so x.run) — an untyped receiver — so callers through them are not in it"}`,
+		"receiver holding the em-dash terminator":    `{"coverage_gap":"1 call site(s) inside what this answer walked could not be bound (a) — ` + leakToken + `.run), so what they call is not in it"}`,
+		"a :: label passes bareLabel":                `{"walk_incomplete":"1 call site(s) written as a qualified path name a symbol this answer reached (secrets::` + leakToken + `::run) — the crate or module the path starts with is not mapped to an indexed root — so callers through them are not in it"}`,
+		"a string inside an array":                   `{"notes":["1 call site(s) the resolver could not bind name a symbol this answer reached (` + leakToken + `.run) — an untyped receiver — so callers are not in it"]}`,
+		"a string in an array in an array":           `{"x":{"y":[["2 call site(s) inside what this answer walked could not be bound (` + leakToken + `.run), so what they call is not in it"]]}}`,
+		"an unparenthesised sample":                  `{"walk_incomplete":"3 call sites could not be bound: ` + leakToken + `.run, ` + leakToken + `.go"}`,
+	}
+	for name, doc := range cases {
+		out, _, err := withholdGraphSources([]byte(doc), refuseSecretsDir)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.Contains(string(out), leakToken) {
+			t.Errorf("%s: receiver text reached the model: %s", name, out)
+		}
+		if !strings.Contains(string(out), withheldLabels) {
+			t.Errorf("%s: the cut is not marked: %s", name, out)
+		}
+	}
+	// A refused receiver is cut from its own key whatever the prose says.
+	out, _, err := withholdGraphSources([]byte(fmt.Sprintf(site, leakToken)+`}`), refuseSecretsDir)
+	if err != nil || strings.Contains(string(out), leakToken) {
+		t.Fatalf("receiver key leaked (%v): %s", err, out)
+	}
+}
+
+// The count survives, because a reader needs to know the walk was cut and by
+// how much, and prose with no call-site sample is untouched.
+func TestCodeGraphKeepsCountsAndUnrelatedProse(t *testing.T) {
+	out, _, err := withholdGraphSources([]byte(`{"walk_incomplete":"at least 7 call site(s) the resolver could not bind name a symbol this answer reached (a.b) — an untyped receiver — so callers are not in it","other":"stopped at depth 2 in src/config.rs"}`), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(out)
+	if !strings.Contains(text, "at least 7 call site(s)") || strings.Contains(text, "a.b") {
+		t.Errorf("count lost or sample kept: %s", text)
+	}
+	if !strings.Contains(text, "stopped at depth 2 in src/config.rs") {
+		t.Errorf("unrelated prose was changed: %s", text)
+	}
+	_ = decodeAny(t, out)
 }
