@@ -131,6 +131,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- DevCouncil pin moved from `230bbf04` to `d938f7f8` (origin/main; 37 commits,
+  16 touching linked paths). Schema constants are unchanged (devmap-store 29,
+  dc-store 11, workbench 17), so no cross-app schema carry is needed. The
+  vendored lease contract and its checksum are re-synced, `crates/Cargo.lock`
+  gains the new `dc-proc` edges, the docs schema re-read gate is re-read at the
+  new pin, and the quiet-tree grep test follows DevCouncil 29cf2dde (an
+  untracked nested repository is no longer searched when ignore rules are on).
+  gusset stays at `19383ad`.
 - Verification runs to a verdict, and `manvi run` reports it. A turn that
   changed files and ended at the step ceiling runs the end-of-turn check once
   more on the final tree; a turn that ended on an error or cancellation after

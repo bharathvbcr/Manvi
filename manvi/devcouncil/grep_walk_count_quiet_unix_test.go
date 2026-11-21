@@ -64,6 +64,8 @@ func walkQuietWant(t *testing.T, got []string, want ...string) {
 
 // walkQuietOddTree writes a quiet tree holding every kind of entry the engine and
 // the listing might count differently. Every legitimate file holds "needle".
+// nested/n.go sits in a nested git repository, so it is returned with the files
+// that only an include_ignored search reaches.
 func walkQuietOddTree(t *testing.T, f *fixture) (visible []string, visibleIgnored []string) {
 	t.Helper()
 	root := f.root
@@ -106,8 +108,8 @@ func walkQuietOddTree(t *testing.T, f *fixture) (visible []string, visibleIgnore
 	if err := syscall.Mkfifo(filepath.Join(root, "fifo"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return []string{"src/a.go", "src/b.txt", "src/deep/c.txt", "nested/n.go", "exact.txt", "uni/café.txt", "uni/caféd.txt"},
-		[]string{"ignored/x.txt", "z.log", "dotignored.txt", ".hid/h.txt", ".hidden.txt", "gitexcluded.txt", ".gitignore"}
+	return []string{"src/a.go", "src/b.txt", "src/deep/c.txt", "exact.txt", "uni/café.txt", "uni/caféd.txt"},
+		[]string{"nested/n.go", "ignored/x.txt", "z.log", "dotignored.txt", ".hid/h.txt", ".hidden.txt", "gitexcluded.txt", ".gitignore"}
 }
 
 // Card criterion "no regression": a legitimate grep in an ordinary tree never
@@ -129,6 +131,13 @@ func TestGrepQuietOddTreeSpeculativeSearchIsNotARetryError(t *testing.T) {
 				}
 			}
 			t.Logf("files_searched=%v withheld=%v", reply["files_searched"], reply["withheld"])
+			// nested/ holds its own .git: dc-grep (29cf2dde) does not descend an untracked
+			// nested repository unless ignore rules are off (include_ignored).
+			for _, g := range got {
+				if g == "nested/n.go" && !ignored {
+					t.Errorf("nested/n.go is inside an untracked nested git repo and must not match with include_ignored=false, got %v", got)
+				}
+			}
 			for _, w := range want {
 				found := false
 				for _, g := range got {
