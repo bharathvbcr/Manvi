@@ -84,6 +84,32 @@ Each lane worked in its own worktree under `Manvi/tmp/lanes/<lane>` against the 
 - **Secret containment** (above): needs an exec seam and a dc-redact contract.
 - **The refusal rule is unmeasured.** No benchmark task has yet provoked five lone lookups in a row.
 
+## 2026-11-21, fourth pass (wave 3; Fable scoped it, Sonnet lanes; branch integrate/wave3)
+
+Owner decisions, delegated on 2026-11-21 ("choose best"):
+- **Pin target:** DevCouncil origin/main `d938f7f8`. It is pushed and descends from the current pin. Local DevCouncil main is 110 commits ahead of origin and unpushed, so pinning it, or the feat branches, would break Jarvis and GitPulse fetches. `ask_evidence` and the Manvi `dcredact` wrapper wait for the bump after the owner lands and pushes those branches.
+- **"dc-verify in manvi should be executed to the end to ensure it's built properly":** this means both things. The full `verify.sh` runs to a verdict every wave. The end-of-turn verification always reaches an honest verdict.
+
+Built and merged:
+- **guards2.** An overwrite re-checks the read digest inside the atomic replace, just before the rename. A delete is tracked for the stale-index notice and clears the guard. A microsecond window remains between the final read and the rename.
+- **contain.** `harness.exec_containment` adds darwin `sandbox-exec` around `exec_command`, denying reads of secret files. It is operator scope, off by default, and fails closed where it is unavailable. Its parity test checks the deny set against `MatchAnyFold`. It costs about 7 ms plus about 6.5 ms per 1000 entries.
+- **verifyend.** The audit found five gaps, all now fixed:
+  - ceiling turns skipped the check;
+  - errored or cancelled turns left no report;
+  - the exit code ignored the verification;
+  - a broken verifier reported a code finding;
+  - a cut-off answer counted as checked.
+
+  `manvi run` now exits 10 when verification failed and 11 when it could not run.
+- **Script wall-bound race.** Found by the pin dry run and fixed with a GOMAXPROCS(1) test that is deterministic.
+- **bench2** (`bench/batching2`, pre-registered, n=120 units, $3.73):
+  - Batching saves input tokens against batch-off (−70k per unit, 98.33% CI [−114k, −29k]).
+  - The script nudge saves more against the default (−65k, CI [−101k, −35k]).
+  - The refusal rule fires (15/120 default runs) but shows no token effect (CI [−102k, +39k]).
+  - The power calculation was off by about 6×, because trail runs range from 39k to 886k tokens, so the refusal null says little.
+  - Correctness was 717–719 of 720 in every arm.
+- **dcredact (DevCouncil, feat/devmap-ask-evidence `a6282446`).** A JSON-on-stdio redaction binary over the unchanged dc-redact library. It is registered in the install catalog, and its parity test checks it against `redact_secrets`. No gusset: a spawn costs about 2.6 ms and a call takes microseconds, which is below choosing.md's bar. DevCouncil's own gate now runs in a lane by sourcing `rust/gusset-engine/cgo-env.sh`. One Go test, `TestEveryHostRegistersDevCouncilAndAChecksAgrees` (claude host), fails identically on base 1b5dc133.
+
 ## Open decisions (owner)
 
 1. **Pin bump.** Manvi pins DevCouncil at 230bbf04, which is 147 commits behind main as of 2026-11-20 (about 60 of them touch the paths Manvi links; see the second pass). Bump it so Manvi can expose `ask_evidence`, then carry the bump to GitPulse (re-vendor) and Jarvis. Ask before bumping.
@@ -94,14 +120,13 @@ Each lane worked in its own worktree under `Manvi/tmp/lanes/<lane>` against the 
 
 ## Where things are
 
-- Worktrees: `~/Code/devtools/Manvi/tmp/env9/{Manvi,DevCouncil,gusset→symlink}` holds the branches. `tmp/env10` holds the same Manvi changes with DevCouncil and gusset at their pins, for the full gate.
-- The full gate passes only at the pins. Against DevCouncil main, `TestCratePinsMatchDevCouncil` and one grep test fail, before and after this work, because main has drifted from the pin.
-- 2026-11-20 gate (`tmp/env10/Manvi`, PATH led by `/opt/homebrew/bin` for Python ≥3.11, `MANVI_CONSUMER_JARVIS` set):
-  - The verdict was "PASS with gates that did not run": 39 steps, 8627 Go tests with 8 skips that predate this work, and the local and live provider contracts not run.
-  - Jarvis builds against the tree.
-  - Live through the built binary, `devcouncil_code` answers all four kinds against real devmap.
-  - That live run found the redaction stripping devmap's `evidence.source` provenance tag (Resolver, Stored or Reconstructed). Fixed, with `TestCodeGraphKeepsEvidenceProvenance`.
-  - `ask_evidence` works end to end through DevCouncil's Go client against a devmap built from feat/devmap-ask-evidence. The installed devmap 0.2.5 refuses it because the capability is not advertised.
-  - Graph read gate, checked against real output: only `definitions.items[].source` and ask's `files[].units[].source_span` carry file text, and both name their own `file_path`. `TestCodeGraphGatesAskEvidenceUnits` pins the real ask_evidence fixture. In a live negative, `secrets/vault.go` came back as `withheld: path.secret_read` (devmap also blanks it upstream).
-  - Go-script chaining already works: `devcouncil_exec_command` runs `go run` under the command gate (it needs a lease in enforce). A script that calls devmap or dcgrep directly bypasses Manvi's read gate on their output.
-  - `devcouncil_batch` is exercised through the agent loop in tests only. `manvi tool` cannot drive it, and no live model turn was run.
+As of 2026-11-21:
+
+- **Manvi**
+  - Feature branch `feat/native-devcouncil-tools` is in `~/Code/devtools/Manvi/tmp/env9/Manvi`.
+  - Integration branches are under `~/Code/devtools/Manvi/tmp/lanes/`: `integrate` is wave 1–2 (`integrate/wave1`) and `integrate3` is wave 3 (`integrate/wave3`). Each has DevCouncil and gusset symlinked to the pinned checkouts in `tmp/env10`, so the full `verify.sh` runs there at the pins.
+  - `tmp/env10/Manvi` itself is stale: its own Manvi checkout is no longer used.
+- **DevCouncil:** branch `feat/devmap-ask-evidence` is in `~/Code/devtools/Manvi/tmp/env9/DevCouncil` (ask_evidence, content-bearing keys, dcredact). It is unpushed.
+- **Full gate:** run with `PATH=/opt/homebrew/bin:$PATH`, `MANVI_CONSUMER_JARVIS=~/Code/devtools/Jarvis`, and `manvi map build` immediately before.
+- **Pin-bump dry run:** under `tmp/lanes/pinbump/report/`, as delta reports and patches. Nothing is committed.
+- **Nothing is pushed anywhere.**

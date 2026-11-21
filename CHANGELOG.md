@@ -23,6 +23,28 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `harness.exec_containment` (operator scope; `off` by default, `secrets`). With
+  `secrets` on macOS, `devcouncil_exec_command` runs under `sandbox-exec` with a
+  profile that denies reads of the repository's secret files (DevCouncil's
+  `policy.SecretPathPatterns`, enumerated per command with symlinks resolved),
+  so `grep -r`, `rg` or a built program can no longer read what a command naming
+  the path would be refused. Where `sandbox-exec` is unavailable the command is
+  refused, never run uncontained. Refused in a repository `config.yaml`.
+  Measured overhead: about 7 ms per command plus about 6.5 ms per 1000
+  repository entries. Known gaps: hard links, secret files created outside a
+  secret directory mid-command, no per-path allow list; the verify command is
+  not contained. Security impact: narrows access only.
+- bench: `bench/batching2/` is a pre-registered five-arm study (batch off;
+  default; identical repeat; devcouncil_script nudge; serial lookups off) with
+  dependent-lookup tasks and a 480-record pointer-chase fixture. At n=120 units
+  on Haiku 5.5 the default batching policy cut input tokens by about 70k per
+  unit against batch-off (98.33% CI −114k to −29k), and the script nudge cut a
+  further 65k against the default (CI −101k to −35k); the serial-lookup refusal
+  fired in 15 of 120 default runs and no token effect from it is shown (CI −102k
+  to +39k). The pre-registered power calculation underestimated the spread
+  (delta SD about 196k, not 34k). `run_batching.py` is now a reusable study
+  runner; `bench/batching2` tests run in verify.sh's bench step and are excluded
+  from the paper supplement.
 - The end-of-turn check now selects the tests a turn's changes reach, through the
   code index's `affected` query, and reports them on `verify.report`
   (`test_selection`, `selected_tests`) and in the bounce text as "selected, not
@@ -109,6 +131,16 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- Verification runs to a verdict, and `manvi run` reports it. A turn that
+  changed files and ended at the step ceiling runs the end-of-turn check once
+  more on the final tree; a turn that ended on an error or cancellation after
+  changing files is recorded as `degraded` with its reason. New `manvi run` exit
+  statuses: `10` (verification failed and the failure still stands) and `11`
+  (verification could not run); both were `0` before. A turn that changes files
+  only through shell commands with `MANVI_VERIFY_COMMAND` unset now exits `11`.
+  A configured verifier that cannot answer (missing binary, timeout) degrades
+  the verdict instead of reporting a finding, and the model is no longer bounced
+  for it. Event wire fields are unchanged.
 - **`devcouncil_write_file` also refuses a file that changed after it was
   read.** The session records a SHA-256 of exactly the bytes a full read showed
   (or that it wrote itself) and compares it with the file on disk before
@@ -734,6 +766,17 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- devcouncil_write_file now re-checks, inside the atomic replace and immediately
+  before the rename, that the file still holds the bytes the agent read. A
+  change landing between the overwrite check and the replace is refused with the
+  usual "has changed since you read it" message instead of being clobbered.
+  devcouncil_delete_file now records the deleted path for the stale-index
+  notice, appends the usual impact line when an index is available, and clears
+  the overwrite guard, so a re-created file must be read again before it can be
+  overwritten.
+- devcouncil_script: a tool call freed by the wall-time bound now ends the
+  script at that call; before, the next statement could still run and print
+  after the bound.
 - **The bench verifier no longer takes the candidate worker's word for any check that decides a verdict** (ft-efcc491a, post-hoc review of 808a94a). Before: the import ban was a `sys.meta_path` finder inside the worker, and argument writeback a report from a method candidate code could replace, so a candidate passed `globmatch` by removing the finder and importing `fnmatch` through `builtins.__dict__["__imp"+"ort__"]`, passed `intervals` while appending to its arguments by replacing `_make_wb` (through `gc.get_objects()` or `sys.modules["__main__"]._g`), and could reach `queue` in `concurrency_race` as `sys.modules["__main__"]._g["queue"]` or as `_queue`. Now (`bench/mh/rpc.py`):
   - The ban is an audit hook the worker installs before the candidate's first line. CPython cannot remove one, and this one reads no state a candidate can reach. It refuses the `import` event of every banned name however an import statement, `__import__` or `importlib` spells it (not loader-level calls into `_imp`, which raise no such event; see the loader-level follow-up below), the reading of a banned module's source (so loading `queue.py` by hand fails too), `ctypes` and the sub-interpreter modules, and `gc.get_objects`/`get_referrers`/`get_referents`. `_queue`, `_sre`, `_fnmatch` are banned with `queue`, `re`, `fnmatch`.
   - The worker harness loads no `re`, `queue`, `json`, `base64` or `importlib` (it has its own JSON codec and inbox), so there is no already-imported copy to reach through `_g` or `json.decoder.re`. The `forbid` reply, sent before any candidate line has run, lists anything loaded anyway, and the record names it.
