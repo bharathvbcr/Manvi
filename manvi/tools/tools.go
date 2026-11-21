@@ -145,6 +145,20 @@ type Result struct {
 	// tells an operator a gate contained something when nothing was contained.
 	// Only the gate knows, so only the gate sets this.
 	Blocked bool
+	// OnShown is a side effect the handler defers until the answer has reached
+	// the model whole. A handler running under a View (a batch that keeps only
+	// part of every answer) cannot know whether its answer survives the cut, so
+	// it returns what it would have recorded here instead of recording it; the
+	// agent loop calls it once, and only after it has shown the answer in full.
+	// A call that was cut, errored or never folded leaves it uncalled, which is
+	// the safe direction: devcouncil_read_file's mark is what lets a file be
+	// overwritten, and a missing mark costs one re-read.
+	//
+	// The closure belongs to the registry that built the result: it commits to
+	// that registry's own state and never to a second copy of it. Outside a
+	// View the answer is shown as returned and handlers act at once, so a
+	// top-level result never carries one.
+	OnShown func()
 }
 
 // Qualified reports whether the outcome was reached by anything other than the
@@ -1001,15 +1015,23 @@ const BatchToolName = "devcouncil_batch"
 const MaxBatchCalls = 16
 
 // BatchTool is the batch tool's registration. Its schema has one owner here,
-// beside the name the loop dispatches on.
-func BatchTool() Tool {
+// beside the name the loop dispatches on. batchable is the full names of the
+// tools the surface marks Batchable; the description names exactly those, so it
+// cannot drift from what the loop admits. With none it says only that the
+// lookups are the read-only ones the tool list marks as batchable.
+func BatchTool(batchable ...string) Tool {
+	names := slices.Clone(batchable)
+	slices.Sort(names)
+	names = slices.Compact(names)
+	lookups := "the read-only lookups of this tool list"
+	if len(names) > 0 {
+		lookups = strings.Join(names, ", ")
+	}
 	return Tool{
 		Schema: llm.ToolSchema{
 			Name: BatchToolName,
 			Description: "Run up to 16 independent read-only lookups in one step, concurrently, and get back " +
-				"only the lines you ask for. Name each tool in full: devcouncil_read_file, devcouncil_grep, " +
-				"devcouncil_find_files, devcouncil_list_dir, devcouncil_code, devcouncil_get_diff and the " +
-				"devcouncil_git_* reads. " +
+				"only the lines you ask for. Name each tool in full. The tools a batch may carry: " + lookups + ". " +
 				"Use it whenever you would otherwise make several lookups one step at a time. Calls cannot " +
 				"use each other's results; anything that writes, runs a command or activates tools is refused " +
 				"inside a batch. Per call: match keeps only lines matching a regular expression, max_lines " +
@@ -1026,10 +1048,13 @@ func BatchTool() Tool {
 
 type viewKey struct{}
 
-// View is how much of a tool's answer will reach the model: a batch keeps only
-// the lines and bytes each call asked for. A handler whose side effects depend
-// on the model having seen its whole answer — devcouncil_read_file marks a file
-// as read — asks Whole before acting as if it had.
+// View is how much of a tool's answer may reach the model: a batch keeps only
+// the lines and bytes each call asked for, and the bytes left in the batch
+// when a call's turn comes depend on the calls before it, which a handler
+// running concurrently cannot know. MaxLines and MaxBytes are therefore upper
+// bounds, not promises. A handler whose side effects depend on the model having
+// seen its whole answer — devcouncil_read_file marks a file as read — defers
+// them on Result.OnShown rather than acting under a View.
 type View struct {
 	MaxLines int
 	MaxBytes int
@@ -1048,12 +1073,6 @@ func WithView(ctx context.Context, v View) context.Context {
 func ViewFrom(ctx context.Context) (View, bool) {
 	v, ok := ctx.Value(viewKey{}).(View)
 	return v, ok
-}
-
-// Whole reports whether an answer of this many lines and bytes reaches the
-// model in full under the view.
-func (v View) Whole(lines, bytes int) bool {
-	return !v.Filtered && lines <= v.MaxLines && bytes <= v.MaxBytes
 }
 
 // Batchable reports whether name is registered and admitted inside a batch.

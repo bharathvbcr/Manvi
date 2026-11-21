@@ -514,7 +514,15 @@ func (r *Registry) Tools() []tools.Tool {
 	// The board tools. Contributes nothing without a Work binding.
 	set = append(set, r.workTools()...)
 	// Several lookups in one step; the agent loop runs it. See agent/batch.go.
-	set = append(set, tools.BatchTool())
+	// Its description names the lookups this surface actually marks Batchable,
+	// so the names a model is told to send are the ones the loop will admit.
+	var batchable []string
+	for _, tool := range set {
+		if tool.Batchable {
+			batchable = append(batchable, tool.Schema.Name)
+		}
+	}
+	set = append(set, tools.BatchTool(batchable...))
 	return set
 }
 

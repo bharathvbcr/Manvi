@@ -355,11 +355,6 @@ func TestBatchTellsEachHandlerWhatItsAnswerWillBeCutTo(t *testing.T) {
 	if v := views[`{"n":2}`]; v.MaxLines != 7 || !v.Filtered {
 		t.Errorf("filtered view = %+v", v)
 	}
-	if (tools.View{MaxLines: 10, MaxBytes: 100}).Whole(10, 100) != true ||
-		(tools.View{MaxLines: 10, MaxBytes: 100, Filtered: true}).Whole(1, 1) != false ||
-		(tools.View{MaxLines: 10, MaxBytes: 100}).Whole(11, 1) != false {
-		t.Error("View.Whole is wrong at its edges")
-	}
 }
 
 // serialProbe registers a batchable "probe" whose every answer differs, so
