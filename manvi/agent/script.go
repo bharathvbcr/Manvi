@@ -237,6 +237,15 @@ func (r *scriptRun) toolFunc(ctx context.Context, name string) *starlark.Builtin
 			r.setBreach(reason)
 			return nil, errors.New(reason)
 		}
+		// A call that returned because the context ended (a blocked tool freed by
+		// the bound) must end the script now. Left to the watcher goroutine alone,
+		// the interpreter can run on to the next statement before the breach is
+		// recorded, and print() would still write after the bound.
+		if err := ctx.Err(); err != nil {
+			reason := ctxReason(ctx)
+			r.setBreach(reason)
+			return nil, errors.New(reason)
+		}
 		// result.OnShown is deliberately not called: see the comment at the top
 		// of this file. A read inside a script is not a read in full.
 		if len(result.Content) > 0 {

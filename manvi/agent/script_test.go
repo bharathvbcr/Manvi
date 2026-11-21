@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,26 @@ func withScript(t *testing.T, h *harness) {
 	withBatch(t, h)
 	if err := h.tools.Register(tools.ScriptTool()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A tool freed by the wall-time bound returns before the watcher goroutine has
+// recorded the breach; the script must still end at that call, whatever the
+// scheduling. One P makes the interpreter win the race every time on the
+// unfixed code.
+func TestScriptEndsAtACallFreedByTheWallTimeBound(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	for i := 0; i < 20; i++ {
+		shortWallTime(t, 20*time.Millisecond)
+		h := scriptHarness(t, "print('before')\nblock()\nprint('after')", 0)
+		registerBatchable(t, h, "block", func(ctx context.Context, _ tools.Call) tools.Result {
+			<-ctx.Done()
+			return tools.Errorf("interrupted")
+		})
+		_, text := runScriptHarness(t, h)
+		if !strings.Contains(text, "wall-time bound") || !strings.Contains(text, "before") || strings.Contains(text, "after") {
+			t.Fatalf("run %d: the script ran past the call the bound freed:\n%s", i, text)
+		}
 	}
 }
 
