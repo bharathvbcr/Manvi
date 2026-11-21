@@ -678,8 +678,10 @@ func TestCodeGraphGatesReceiverTextFromSecretPaths(t *testing.T) {
 	}
 }
 
-// A receiver from a readable file, and the prose that quotes it, still reach the
-// model, and a site naming no file is cut: the check cannot run.
+// A receiver from a readable file still reaches the model, as its own receiver
+// field. The prose that quotes it does not: a call-site sample is withheld
+// wherever it is quoted, because the sample carries no file to judge. A site
+// naming no file is cut: the check cannot run.
 func TestCodeGraphKeepsReadableReceiverAndCutsUnattributedOne(t *testing.T) {
 	raw := []byte(`{"unresolved_namesakes":{"sites":[` +
 		`{"callee_name":"go","receiver":"pool","source_file":"src/a.go"},` +
