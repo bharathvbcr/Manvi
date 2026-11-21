@@ -481,6 +481,8 @@ printf '    covered: %s%% of statements across the tree (floor %s%%); weakest pa
 # The ruleguard DSL is lint-only — excluded from every build by its tag, which
 # is why it must NOT appear below: if it ever does, the tag has stopped working
 # and a lint dependency has entered a shipped binary.
+# go.starlark.net is the interpreter behind devcouncil_script: pure Go, standard
+# library only, and its universe holds no file, network, clock or random builtin.
 # DevCouncil's go_orchestrator is the component module this harness imports.
 # It arrives through the replace in manvi/go.mod, not through a proxy. gusset
 # is cgo: it is not part of the CGO_ENABLED=0 build and must not appear in that
@@ -518,7 +520,7 @@ step "Go — dependency surface"
 # The module itself is now a dotted path (github.com/bharathvbcr/Manvi/manvi),
 # so the domain-path filter below would report every package in this tree as an
 # unexpected dependency. Exclude it; the allowlist is for *external* packages.
-allowed_base='github\.com/awnumar/(memguard|memcall)|golang\.org/x/(crypto|sys)|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator'
+allowed_base='github\.com/awnumar/(memguard|memcall)|golang\.org/x/(crypto|sys)|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator|go\.starlark\.net'
 allowed_nocgo="^(${allowed_base})(/|$)"
 # The shipped configuration adds the Gusset engine's Go side: the cgo wrapper
 # and its FFI package. Nothing else may arrive with cgo.

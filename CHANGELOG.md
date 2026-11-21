@@ -23,6 +23,17 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **`devcouncil_script` chains lookups in one step.** A short Starlark script (at most 16 KiB; new dependency
+  `go.starlark.net`) whose functions are the read-only lookups `devcouncil_batch` may carry, called by full name
+  with keyword arguments, so one call can use the previous call's answer (`json.decode` is available; each call
+  returns `.text`, `.error`, `.refused`, `.truncated`). Every call passes the batch's own admission (now one shared
+  function, `admitInner`), the repeat ledger, progress accounting and per-call gate-evidence recording under
+  `<call id>#<n>`. Bounded by `max_calls` (default 16, at most 32), 1,000,000 interpreter steps, 30 s of wall
+  time, 32 KiB per answer and 128 KiB of output; a breach ends the script and keeps its output so far. Hermetic:
+  no `load()`, files, network, clock or randomness. A `read_file` inside a script never counts as read for the
+  overwrite guard. A step with a script call resets the serial-lookup run. `harness.batch_tool: off` withholds it
+  with the batch tool. Native tool count 53 to 54 (53 in a repository with no skills, from 52).
+
 - `devcouncil_write_file` and `devcouncil_patch_file` end their result with a bounded impact line from the code index: up to 10 callers outside the written file, labelled with the index generation and stated stale when the index has not seen the write, or one line saying the check did not run. `devcouncil_code` opens with `index_notice` when the index is behind the tree, naming the paths this session wrote that it has not seen, and hoists completeness fields that are identical on every sub-envelope into one `shared_envelope` (differing values are left in place).
 
 - **Tool offering is operator-settable on every provider.** `harness.core_tools_only`
