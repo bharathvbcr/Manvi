@@ -44,11 +44,36 @@ Owner's design (2026-11-20, stated by the owner; keep it as the north star):
 - There is no evidence yet that a batch beats native parallel tool calls. Haiku made up to four native calls per step unprompted, and no arm ran without the batch tool.
 - Known limit of "audit first": `devcouncil_patch_file` and delete need no prior read.
 
+## 2026-11-20, third pass (Fable's decisions; Sonnet lanes; branch integrate/wave1)
+
+Each lane worked in its own worktree under `Manvi/tmp/lanes/<lane>` against the env10 pins and was merged into `integrate/wave1` in order.
+
+- **guards.** `write_file` over an existing file needs a full read whose sha256 still matches the file. A batch read counts only when the batch showed that answer whole (`tools.Result.OnShown`). The batch budget is adaptive: min(32 KiB, what remains of 128 KiB). A patch made after a full read keeps the guard in step (`TestAPatchKeepsTheGuardOnlyAfterAFullRead`). Known gap: the check and the write are not atomic.
+- **graph.** A write or patch answers with the symbols it touched and their callers (devmap impact, depth 1, at most 10). Answers about files the agent wrote this session lead with an `index_notice` that the index predates them. Identical freshness and walk notes are hoisted into one `shared_envelope`. Deletes are not tracked.
+- **context.** New operator-scope settings: `harness.core_tools_only`, `harness.dynamic_tools` and `harness.batch_tool`. The defaults are unchanged. The full tool set costs about 7.6k tokens over 46 tools; the core set about 4.1k over 25.
+- **secrets.** Design only, in `docs/SECRET_CONTAINMENT_DESIGN.md`. Reproduced: `grep -r`, `rg` and `go run` read secret files through `exec_command` and return them, while `cat` is refused. Manvi has no containment seam (`runProc` runs `sh -c`), and dc-redact has no callable contract. **To file as a task.**
+- **search.** Anthropic `web_search_20250305`, off by default (`llm.anthropic.web_search`, `llm.anthropic.web_search_max_uses` 1–20, default 3, operator scope). Security impact: query text reaches a third party, and results come back encrypted, so Manvi cannot frame them as untrusted. A live Haiku run cost $0.0134.
+- **testsel.** The end-of-turn check reports the tests the changed files reach (devmap affected) as "selected, not run". It never executes them and fails closed.
+- **script.** `devcouncil_script` runs a Starlark script whose calls go through the same admission as a batch, run sequentially, with bounds of 16 calls, 16 KiB of script, 1e6 steps, 30 s, 32 KiB per answer and 128 KiB in total. A read inside a script does not satisfy the overwrite guard (`TestAScriptReadDoesNotSatisfyTheOverwriteGuard`). `harness.batch_tool: off` withholds it too.
+- **content keys, DevCouncil side** (`lane/devmap-withheld-marker`). devmap now publishes `CONTENT_BEARING_KEYS` (`source`, `source_span`, `source_indent`, `signature`, `value`), and a contract test pins them. Manvi's read gate covers all five (`TestCodeGraphGatesEveryPublishedContentKey`). Landing note: devmap-query changed, so GitPulse must re-vendor; no schema constant changed.
+- **bench** (`bench/batching`, pre-registered in `PREREG.md` before any run). 4 read-only lookup tasks on claude-haiku-5-5, 3 arms (A batch off, B batch on with serial-lookup refusal off, C default), 12 paired task-reps, $0.43 spent.
+  - Batching cut steps: 4.58 → 3.92 (B) and 4.00 (C), with CIs excluding zero.
+  - It did **not** show an input-token saving at the pre-registered n=12: C−A was −8.3k tokens, 95% CI [−20.9k, +3.6k].
+  - The serial-lookup refusal never fired, so B and C were the same treatment. A pooled C−B gap of −13k tokens, whose CI excludes zero, is the noise floor, not an effect.
+  - Correctness was equal (57/57 facts in every arm at n=12).
+  - Read the pooled n=32 numbers in `RESULTS.md` as exploratory.
+
+### Still open after the third pass
+
+- **Pin bump.** The order is: land the DevCouncil branches (`feat/devmap-ask-evidence` and `lane/devmap-withheld-marker`), bump Manvi's pin, fix the two off-pin test failures, then re-vendor GitPulse and bump Jarvis. Each step needs the owner's go-ahead; landing on DevCouncil main is the owner's call.
+- **Secret containment** (above): needs an exec seam and a dc-redact contract.
+- **The refusal rule is unmeasured.** No benchmark task has yet provoked five lone lookups in a row.
+
 ## Open decisions (owner)
 
 1. **Pin bump.** Manvi pins DevCouncil at 230bbf04, which is 147 commits behind main as of 2026-11-20 (about 60 of them touch the paths Manvi links; see the second pass). Bump it so Manvi can expose `ask_evidence`, then carry the bump to GitPulse (re-vendor) and Jarvis. Ask before bumping.
-2. **True code-mode chaining.** One call's output feeding the next would need a script interpreter, which is a new dependency.
-3. **Online search for agents.** This widens network access, so it needs a security-impact statement. The only existing route is `devcouncil_fetch_url` behind an operator allowlist.
+2. **True code-mode chaining.** Built in the third pass as `devcouncil_script` (Starlark via go.starlark.net, a new dependency the owner approved).
+3. **Online search for agents.** Built in the third pass as Anthropic server-side web search, default off, operator scope only; the security impact is written in the CHANGELOG entry and below.
 4. **Deeper gusset.** The measured record and a 2026-11-20 survey (Sonnet survey, Fable review) found no Manvi hot path that meets the revisit bar. The one experiment worth running is pattern redaction of tool results through dc-redact, framed as a security feature, behind an isolated interleaved A/B and a parity oracle. Moving dcgrep, devmap, dcverify or dcstore in-process would reverse a measured decision.
 5. **What "dc-verify executed to the end" means.** It could mean running Manvi's `verify.sh` to completion, or making agents run DevCouncil's dc-verify before they finish. Not yet confirmed.
 
