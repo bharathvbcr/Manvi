@@ -25,6 +25,15 @@ under **Unreleased** in the same commit as the code.
 
 - `devcouncil_write_file` and `devcouncil_patch_file` end their result with a bounded impact line from the code index: up to 10 callers outside the written file, labelled with the index generation and stated stale when the index has not seen the write, or one line saying the check did not run. `devcouncil_code` opens with `index_notice` when the index is behind the tree, naming the paths this session wrote that it has not seen, and hoists completeness fields that are identical on every sub-envelope into one `shared_envelope` (differing values are left in place).
 
+- **Tool offering is operator-settable on every provider.** `harness.core_tools_only`
+  and `harness.dynamic_tools` (both default `false`) give any provider the core
+  set (about 25 of 46 tools, roughly 4.1k of 7.6k schema tokens per request) or
+  on-demand activation; the `llm.local.*` pair keeps working for the local
+  provider, and either turns the behaviour on. `harness.batch_tool` (`on`, the
+  default; `off`) withholds `devcouncil_batch`, and with it the prompt's batch
+  line and the serial-lookup rule. All three change what the agent can reach, so
+  they are operator scope: a repository `config.yaml` that sets one is refused at
+  startup. Defaults are unchanged: a cloud provider is still offered every tool.
 - **`devcouncil_batch`: several independent lookups in one step.** Up to 16
   calls to allowlisted read-only tools (file reads, grep, find/list, the graph
   tools, git reads, get_diff) run concurrently, at most four at once, and come
