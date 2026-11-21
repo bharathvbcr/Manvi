@@ -137,6 +137,7 @@ var prices = map[string]budget.Prices{
 		LongPromptAbove:   100_000,
 		LongRates:         budget.Rates{Input: 500, Output: 2_500, CacheWrite: 625, CacheRead: 50},
 		ReasoningInOutput: true,
+		SearchRequest:     searchRequestNanoUSD,
 	},
 	"claude-haiku-4-5": flat(1_000, 5_000, 100),
 }
@@ -145,8 +146,15 @@ func flat(input, output, cacheRead int64) budget.Prices {
 	return budget.Prices{
 		Rates:             budget.Rates{Input: input, Output: output, CacheWrite: input * 5 / 4, CacheRead: cacheRead},
 		ReasoningInOutput: true,
+		SearchRequest:     searchRequestNanoUSD,
 	}
 }
+
+// searchRequestNanoUSD is the web search tool's price on the Claude API, "$10
+// USD per 1,000 searches" (platform.claude.com/docs/en/agents-and-tools/tool-use/
+// web-search-tool, "Usage and pricing"), charged once per search that does not
+// fail. It is the same for every model.
+const searchRequestNanoUSD = 10_000_000
 
 // PriceOf returns what a model costs, for budget metering.
 func PriceOf(model string) (budget.Prices, bool) {
@@ -232,6 +240,13 @@ var RemovedParameters = []string{"temperature", "top_p", "top_k"}
 // ValidateRequest checks an assembled request against everything this adapter
 // knows will fail, before it is sent.
 func ValidateRequest(req llm.Request, mode ThinkingMode) error {
+	return validateRequest(req, mode, false)
+}
+
+// validateRequest is ValidateRequest, plus whether a trailing assistant message
+// that carries hosted-tool state is a paused turn to continue (the hosted web
+// search tool is on this request) rather than a prefill.
+func validateRequest(req llm.Request, mode ThinkingMode, continuePaused bool) error {
 	if err := catalogue.Validate("anthropic", req); err != nil {
 		return err
 	}
@@ -253,7 +268,7 @@ func ValidateRequest(req llm.Request, mode ThinkingMode) error {
 	// A last-assistant-turn prefill is rejected by every current model. It is
 	// worth catching here because the replacement is structural (structured
 	// output, or a system-prompt instruction) rather than a parameter tweak.
-	if n := len(sent); n > 0 && sent[n-1].Role == llm.RoleAssistant {
+	if n := len(sent); n > 0 && sent[n-1].Role == llm.RoleAssistant && !(continuePaused && hasServerState(sent[n-1])) {
 		return fmt.Errorf("anthropic: %s rejects a trailing assistant message (prefill); "+
 			"use a structured output format or a system-prompt instruction instead", req.Model)
 	}
