@@ -7,7 +7,7 @@ Owner's design (2026-11-20, stated by the owner; keep it as the north star):
 - **Rust ↔ Go interconnect is gusset** for Rust hosted in-process. Separately versioned components keep a JSON-on-stdio process contract. Which transport a component uses is decided per component in DevCouncil's `docs/gusset-candidates.md`.
 - **Agents in Manvi are forced into good behaviour by the harness, not by prompt bulk.** That means auditing before acting, navigating by the code graph, batching independent lookups, never assuming, and verifying before claiming. The prompt stays light; enforcement lives in Go.
 
-## Done on branch feat/native-devcouncil-tools (uncommitted as of 2026-11-20)
+## Done on branch feat/native-devcouncil-tools (first pass, commit d897dec)
 
 - `devcouncil_batch` runs up to 16 lookups in one step, 4 at a time, through the same agent-loop guards as single calls. Each call can keep only matching lines (`match`) or a line cap (`max_lines`), and every call and the whole result have a byte cap.
 - `devcouncil_code` answers explore, impact, trace and affected questions through DevCouncil `devmap.Client.Advanced`. It is a core tool whenever a code map is attached, and source excerpts in its answers pass the read gate.
@@ -44,7 +44,22 @@ Owner's design (2026-11-20, stated by the owner; keep it as the north star):
 - There is no evidence yet that a batch beats native parallel tool calls. Haiku made up to four native calls per step unprompted, and no arm ran without the batch tool.
 - Known limit of "audit first": `devcouncil_patch_file` and delete need no prior read.
 
-## 2026-11-20, third pass (Fable's decisions; Sonnet lanes; branch integrate/wave1)
+## 2026-11-20, third pass: Fable's decisions (owner delegated; new dependencies allowed)
+
+1. No pin bump in this run. Afterwards: land the DevCouncil branches, then one bump commit that fixes the two known off-pin failures, then GitPulse and Jarvis. Landing on DevCouncil main is the owner's call.
+2. Chaining becomes an in-process, hermetic script tool (go.starlark.net, if its current docs confirm step limits and no ambient I/O). Its only functions are the batchable tools, each admitted like a batch item. Calls, steps, time and output are bounded. A read made by a script never counts as a full read. The `go run` + `manvi tool` route is dropped.
+3. Online search: provider-hosted only, default off, operator scope, with a cap on uses per turn and results labelled untrusted. If it needs a host-side fetch, it stops at a design.
+4. Secret reads through the shell: reproduce under strict posture with a lease, then a narrow fix at an existing containment seam. Redaction only through a callable dc-redact contract. Otherwise a design plus a task.
+5. Test selection: select and report only (`devmap affected` → verify.report). Tests run only through an operator-set command.
+6. Cloud tool surface: add operator settings and keep the defaults; the benchmark decides.
+7. Graph freshness: stale-first headers, no rebuild per write. 8. Envelope dedupe happens in Manvi's adapter, with no DevCouncil contract change.
+9. Patch and delete without a prior read: leave as is. 10. The dc-redact speed experiment is dropped.
+
+Lanes (Sonnet), under `Manvi/tmp/lanes/<lane>`:
+- Wave 1: guards, graph, context, secrets, search, and dc-withheld (a DevCouncil marker plus its full gate).
+- Wave 2 is cut from the integrated branch: the script tool, test selection, and the benchmark (n≥10 paired, three arms, about $2 cap, `main` account).
+
+## 2026-11-20, third pass, what was built (branch integrate/wave1)
 
 Each lane worked in its own worktree under `Manvi/tmp/lanes/<lane>` against the env10 pins and was merged into `integrate/wave1` in order.
 
