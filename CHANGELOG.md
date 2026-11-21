@@ -23,6 +23,12 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **Design: shell commands can read repository secret files they do not name.**
+  `docs/SECRET_CONTAINMENT_DESIGN.md` records the reproduction (`grep -r`, `rg`
+  and a program run by `go run` read `secrets/` in dev posture; only a command
+  naming the path is refused), why neither a containment seam nor a callable
+  `dc-redact` contract exists yet, and the proposed seam. No behaviour change.
+
 - **`devcouncil_batch`: several independent lookups in one step.** Up to 16
   calls to allowlisted read-only tools (file reads, grep, find/list, the graph
   tools, git reads, get_diff) run concurrently, at most four at once, and come
