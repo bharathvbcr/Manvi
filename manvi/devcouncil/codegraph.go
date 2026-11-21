@@ -320,19 +320,25 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 					withheld++
 				}
 			}
+			// Only devmap's prose fields are rewritten. Identity keys (id,
+			// symbol_name, qualified_name, name, nodes) and content keys
+			// (sourceKeys) are never run through the sanitizer: a symbol whose
+			// name or body mentions "call site" is data, and the path gate
+			// already judges its content.
 			for key, child := range node {
-				if text, ok := child.(string); ok && key != "receiver" && !isPathKey(key) {
-					node[key] = WithholdCallSiteSamples(text)
+				if proseKeys[key] {
+					var changed bool
+					node[key], changed = withholdProse(child)
+					if changed {
+						withheld++
+					}
 				}
 			}
 			for name, child := range node {
 				walk(child, name)
 			}
 		case []any:
-			for i, child := range node {
-				if text, ok := child.(string); ok && !isPathKey(parent) {
-					node[i] = WithholdCallSiteSamples(text)
-				}
+			for _, child := range node {
 				walk(child, parent)
 			}
 		}
@@ -343,6 +349,50 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 		return nil, 0, err
 	}
 	return out, withheld, nil
+}
+
+// proseKeys are the envelope fields in which devmap writes sentences about its
+// own answer, taken from the pinned devmap source: walk_incomplete and
+// coverage_gap carry the radius notes that quote call-site samples, and the
+// rest carry notes the same walk can join into. Each is a string or an array or
+// object of strings; every string under one is sanitized.
+var proseKeys = map[string]bool{
+	"walk_incomplete":          true,
+	"coverage_gap":             true,
+	"dead_clusters_incomplete": true,
+	"note":                     true,
+	"notes":                    true,
+	"scope_note":               true,
+	"degraded_reason":          true,
+	"signature_note":           true,
+}
+
+// withholdProse sanitizes every string under a prose field and reports whether
+// any was changed. Non-string leaves (a boolean walk_incomplete) pass as they
+// are.
+func withholdProse(v any) (any, bool) {
+	switch node := v.(type) {
+	case string:
+		clean := WithholdCallSiteSamples(node)
+		return clean, clean != node
+	case []any:
+		changed := false
+		for i := range node {
+			var c bool
+			node[i], c = withholdProse(node[i])
+			changed = changed || c
+		}
+		return node, changed
+	case map[string]any:
+		changed := false
+		for k := range node {
+			var c bool
+			node[k], c = withholdProse(node[k])
+			changed = changed || c
+		}
+		return node, changed
+	}
+	return v, false
 }
 
 // pathKeys are the keys under which an envelope object names its file:

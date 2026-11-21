@@ -3,6 +3,7 @@ package devcouncil
 import (
 	"encoding/json/v2"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -71,7 +72,9 @@ func TestCodeGraphCallSiteProseCannotBeBypassed(t *testing.T) {
 		"receiver holding the em-dash terminator":    `{"coverage_gap":"1 call site(s) inside what this answer walked could not be bound (a) — ` + leakMarker + `.run), so what they call is not in it"}`,
 		"a :: label passes bareLabel":                `{"walk_incomplete":"1 call site(s) written as a qualified path name a symbol this answer reached (secrets::` + leakMarker + `::run) — the crate or module the path starts with is not mapped to an indexed root — so callers through them are not in it"}`,
 		"a string inside an array":                   `{"notes":["1 call site(s) the resolver could not bind name a symbol this answer reached (` + leakMarker + `.run) — an untyped receiver — so callers are not in it"]}`,
-		"a string in an array in an array":           `{"x":{"y":[["2 call site(s) inside what this answer walked could not be bound (` + leakMarker + `.run), so what they call is not in it"]]}}`,
+		"a string in an array in an array":           `{"walk_incomplete":{"y":[["2 call site(s) inside what this answer walked could not be bound (` + leakMarker + `.run), so what they call is not in it"]]}}`,
+		"a receiver holding the clause separator":    `{"walk_incomplete":"1 call site(s) the resolver could not bind name a symbol this answer reached (a; ` + leakMarker + `.run) — an untyped receiver — so callers are not in it"}`,
+		"a receiver imitating a completeness clause": `{"walk_incomplete":"1 call site(s) the resolver could not bind name a symbol this answer reached (a; only 1 of 2 reached key(s) were checked against the unresolved ledger; ` + leakMarker + `.run) — x"}`,
 		"an unparenthesised sample":                  `{"walk_incomplete":"3 call sites could not be bound: ` + leakMarker + `.run, ` + leakMarker + `.go"}`,
 	}
 	for name, doc := range cases {
@@ -108,4 +111,41 @@ func TestCodeGraphKeepsCountsAndUnrelatedProse(t *testing.T) {
 		t.Errorf("unrelated prose was changed: %s", text)
 	}
 	_ = decodeAny(t, out)
+}
+
+// A symbol that is about call sites is data, not prose. The sanitizer once ran
+// over every string in the envelope, so a query for it came back with its own
+// id, name and source replaced by the marker and the withheld count unmoved.
+func TestCodeGraphLeavesIdentityAndContentKeysAlone(t *testing.T) {
+	raw := []byte(`{"items":[{"id":"manvi/devcouncil/devmapprose.go:WithholdCallSiteSamples",` +
+		`"symbol_name":"WithholdCallSiteSamples","qualified_name":"devcouncil.WithholdCallSiteSamples",` +
+		`"name":"CallSiteNote","file_path":"src/a.go",` +
+		`"signature":"func WithholdCallSiteSamples(text string) string",` +
+		`"source":"// replaces the call sites devmap quotes\nfunc f() {}","nodes":["CallSite","the call sites"]}]}`)
+	out, withheld, err := withholdGraphSources(raw, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withheld != 0 {
+		t.Errorf("withheld = %d, want 0 for a readable definition: %s", withheld, out)
+	}
+	if strings.Contains(string(out), withheldLabels) {
+		t.Errorf("a readable definition was rewritten: %s", out)
+	}
+	if !reflect.DeepEqual(decodeAny(t, out), decodeAny(t, raw)) {
+		t.Errorf("answer changed:\n got %s\nwant %s", out, raw)
+	}
+}
+
+// A real walk_incomplete sample is still cut, and the cut is counted.
+func TestCodeGraphCountsAWithheldProseSample(t *testing.T) {
+	raw := []byte(`{"walk_incomplete":"2 call site(s) the resolver could not bind name a symbol this answer reached (` +
+		leakMarker + `.run) — an untyped receiver — so callers through them are not in it"}`)
+	out, withheld, err := withholdGraphSources(raw, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withheld != 1 || strings.Contains(string(out), leakMarker) || !strings.Contains(string(out), "2 call site(s)") {
+		t.Errorf("withheld = %d; answer: %s", withheld, out)
+	}
 }
