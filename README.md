@@ -404,7 +404,7 @@ cargo build --manifest-path crates/Cargo.toml --bin dcstore --bin dcverify --bin
 manvi
 # (or /tmp/manvi if you built without install)
 
-# Headless single turn (exit codes: 0 ok · 1 failure · 2 step ceiling · 3 output cap · 4 no answer · 5 unfinished)
+# Headless single turn (exit codes: 0 ok · 1 failure · 2 step ceiling · 3 output cap · 4 no answer · 5 unfinished · 10 verification failed · 11 verification did not run)
 manvi run -p "fix the failing test in src/calc.go"
 manvi run -p "..." --json --max-steps 40 --timeout 10m
 
@@ -432,7 +432,7 @@ rather than searched past.
 |---|---|
 | `manvi` | Full-screen interactive TUI (composer, transcript, approvals, dashboard) |
 | `manvi doctor` | Check configuration, store reachability, weakened gates |
-| `manvi run -p "..."` | One headless turn; exit 2 = step ceiling, 3 = output cap, 4 = no answer, 5 = unfinished |
+| `manvi run -p "..."` | One headless turn; exit 2 = step ceiling, 3 = output cap, 4 = no answer, 5 = unfinished, 10 = verification failed, 11 = verification did not run |
 | `manvi local` | Discover local model servers (~30ms) |
 | `manvi pull` | Fast-forward the current branch; refuses a dirty tree |
 | `manvi push` | Push the current branch to its configured upstream (never force) |

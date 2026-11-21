@@ -166,6 +166,20 @@ type TurnStopping struct {
 	// call.
 	Empty bool
 
+	// Final is true when this is the check's last look at the turn and it will
+	// not be sent back: the step ceiling ended the turn with changes the last
+	// verdict had not seen. A listener still records its verdict, and does not
+	// set Inject — the loop ignores it, and composing it would spend a critic on
+	// advice nobody receives.
+	Final bool
+
+	// Unexamined is set by a listener whose verdict was reached without looking
+	// at the turn's changes — the cut-off answer, which is sent back before any
+	// file is read. The verdict stands, but it is not the check the changes are
+	// owed, so the loop keeps owing it: a turn that then ends some other way is
+	// closed as degraded rather than as having been examined.
+	Unexamined bool
+
 	// Inject, when a listener sets it, is appended to the log as a message from
 	// the harness and the turn takes another step. Bounded by
 	// MaxCheckpointBounces per turn; past that the loop ignores it and closes,
@@ -256,6 +270,17 @@ type Config struct {
 	// and work that is genuinely stuck buys more thinking exactly when the
 	// cheap tier has been shown not to be enough.
 	EffortCeiling string
+	// EndOfTurnCheck declares that a terminal-checkpoint listener is attached
+	// to this loop's bus and owes every turn that changed something a verdict.
+	// The loop cannot count its own listeners, so the face that attached one
+	// says so. With it set, no way of ending a turn that changed files may
+	// leave without a recorded verdict: the step ceiling runs the check one
+	// last time, and a turn that ended some other way — an error, a
+	// cancellation — is closed as degraded, because a check that was owed and
+	// did not run must never read as one that ran and passed. Left false for a
+	// loop that is deliberately unchecked, a sub-agent's, whose changes come
+	// back through the parent's own check.
+	EndOfTurnCheck bool
 	// SystemPrompt is the assembled prompt for this run.
 	SystemPrompt string
 	// MaxSteps bounds a turn. A ceiling in code, not a prompt instruction:
@@ -345,6 +370,11 @@ type Loop struct {
 	// the compaction path, copied onto the Outcome at turn end. Reset per turn
 	// alongside the other per-turn state.
 	overflowed bool
+	// unchecked is true from a mutation until a checkpoint has recorded a
+	// verdict after it: the difference between "the check ran on this turn's
+	// changes" and "the check ran on an earlier state of the tree". Reset at
+	// the start of each Run.
+	unchecked bool
 	// effort is the tier the *next* request will carry. It is per-turn state,
 	// reset by Run: a turn that had to think harder says nothing about the next
 	// one, for the same reason the repeat ledger and the progress tracker do
@@ -888,7 +918,7 @@ type Outcome struct {
 // response; absorbResponse folds that response into the outcome; dispatchCalls
 // runs its tool calls; chargeStep spends the budget. A step with no tool calls
 // ends at closeOrBounce, the terminal checkpoint.
-func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
+func (l *Loop) Run(ctx context.Context, prompt llm.Message) (out Outcome, runErr error) {
 	// Every exit leaves the log balanced. A failed turn used to return with
 	// turn/start and step/start still open, so the projected stream carried a
 	// turn.start with no turn.end and the next turn began inside it. The error
@@ -901,7 +931,10 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		return Outcome{}, err
 	}
 
-	var out Outcome
+	// Registered after the deferrals above, so it runs before them: the turn's
+	// boundaries are still open in the log when it records.
+	l.unchecked = false
+	defer l.sealUnchecked(ctx, &out, &runErr)
 	out.EffortFrom, out.EffortTo = l.cfg.Effort, l.cfg.Effort
 	// nullRetries counts responses that carried nothing, across the whole turn
 	// rather than per step: a server producing them repeatedly is not a
@@ -918,6 +951,12 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		// either way, because the cheapest step costs 1.
 		if out.BudgetSpent >= l.cfg.MaxSteps {
 			out.TruncatedBySteps = true
+			// The ceiling is not a reason to leave the changes unexamined: a
+			// turn that wrote nine files and ran out of steps is the turn that
+			// most needs to know whether they build.
+			if err := l.finalCheck(ctx, &out, currentTurn); err != nil {
+				return out, err
+			}
 			break
 		}
 
@@ -1492,6 +1531,7 @@ func (l *Loop) account(out *Outcome, tally *stepTally, name string, result tools
 	// repeat or stall refusal above never reached a handler.
 	if l.progress.mutated(name, result) {
 		out.Mutated = true
+		l.unchecked = true
 		// A call that changed something and named no path leaves
 		// effects nothing downstream can enumerate. Recorded here,
 		// beside Mutated, because this is the only place that knows
@@ -1729,28 +1769,12 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 		Truncated:           out.FinalTruncated, Empty: out.FinalEmpty,
 		Bounce: out.Bounces, Circling: out.Repeated + out.Stalled,
 	}
-	if err := bus.Serial(l.bus, ctx, checkpoint); err != nil {
-		// The listener failed. It did not ask for another step, and
-		// re-sending an identical history is not a recovery — it is
-		// the same request with the same answer, charged again. So the
-		// turn closes, and closes loudly: a check that was owed and
-		// could not be completed is degraded, never a pass.
-		out.Sensor = SensorDegraded
-		if _, appendErr := l.log.Append(session.VerifyReport, session.VerifyReportData{
-			Verdict: string(SensorDegraded),
-			Source:  "checkpoint",
-			Paths:   out.Wrote,
-			Degraded: []string{
-				"the terminal checkpoint failed: " + err.Error(),
-			},
-			Bounce: out.Bounces,
-		}); appendErr != nil {
-			return false, appendErr
-		}
-		return true, nil
+	listenerFailed, err := l.consult(ctx, out, checkpoint)
+	if err != nil {
+		return false, err
 	}
-	if checkpoint.Verdict != "" {
-		out.Sensor = checkpoint.Verdict
+	if listenerFailed {
+		return true, nil
 	}
 	inject := strings.TrimSpace(checkpoint.Inject)
 	if inject == "" {
@@ -1787,6 +1811,98 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 	}
 	out.Bounces++
 	return false, nil
+}
+
+// consult runs the terminal checkpoint's listeners and folds what they
+// concluded into the outcome. It reports whether a listener failed, in which
+// case the turn is closed and the failure is on the outcome and in the log.
+func (l *Loop) consult(ctx context.Context, out *Outcome, checkpoint *TurnStopping) (listenerFailed bool, err error) {
+	if listenerErr := bus.Serial(l.bus, ctx, checkpoint); listenerErr != nil {
+		// The listener failed. It did not ask for another step, and
+		// re-sending an identical history is not a recovery — it is
+		// the same request with the same answer, charged again. So the
+		// turn closes, and closes loudly: a check that was owed and
+		// could not be completed is degraded, never a pass. What this
+		// returns is the log's own failure to say so, if it has one.
+		out.Sensor = SensorDegraded
+		l.unchecked = false
+		_, appendErr := l.log.Append(session.VerifyReport, session.VerifyReportData{
+			Verdict: string(SensorDegraded),
+			Source:  "checkpoint",
+			Paths:   out.Wrote,
+			Degraded: []string{
+				"the terminal checkpoint failed: " + listenerErr.Error(),
+			},
+			Bounce: out.Bounces,
+		})
+		return appendErr == nil, appendErr
+	}
+	if checkpoint.Verdict != "" {
+		out.Sensor = checkpoint.Verdict
+		if !checkpoint.Unexamined {
+			l.unchecked = false
+		}
+	}
+	return false, nil
+}
+
+// finalCheck gives a turn that the step ceiling ended, with changes the last
+// verdict had not seen, the check it was owed. It cannot send the turn back:
+// there is no step left to send it to, so the verdict is the whole product.
+// A cancelled context is left to sealUnchecked, which says the check did not
+// run rather than starting a verifier nobody is waiting for.
+func (l *Loop) finalCheck(ctx context.Context, out *Outcome, turn int) error {
+	if !l.cfg.EndOfTurnCheck || !out.Mutated || !l.unchecked {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+	_, err := l.consult(ctx, out, &TurnStopping{
+		Turn: turn, Steps: out.Steps,
+		Mutated: out.Mutated, Wrote: out.Wrote,
+		WroteTruncated:      out.WroteTruncated,
+		UnenumeratedEffects: out.UnenumeratedEffects,
+		Bounce:              out.Bounces, Circling: out.Repeated + out.Stalled,
+		Final: true,
+	})
+	return err
+}
+
+// sealUnchecked is the loop's guarantee that a turn which changed something
+// does not end without a verdict about it. Every exit that did not reach the
+// terminal checkpoint — a provider error, a failed append, a cancellation —
+// lands here, and the turn is recorded as degraded: the check was owed and did
+// not run. The reason names the kind of exit and not its text, which can carry
+// a provider's response and has no business in a verification record.
+func (l *Loop) sealUnchecked(ctx context.Context, out *Outcome, runErr *error) {
+	if !l.cfg.EndOfTurnCheck || !out.Mutated || !l.unchecked {
+		return
+	}
+	reason := "the end-of-turn check was owed and did not run"
+	switch {
+	case *runErr != nil:
+		reason += ": the turn failed before it ended"
+	case ctx.Err() != nil:
+		reason += ": the turn was cancelled"
+	default:
+		reason += ": no checkpoint listener reported a verdict"
+	}
+	out.Sensor = SensorDegraded
+	l.unchecked = false
+	if _, err := l.log.Append(session.VerifyReport, session.VerifyReportData{
+		Verdict: string(SensorDegraded),
+		Source:  "not run",
+		Paths:   out.Wrote,
+		Degraded: []string{
+			reason + ", so this turn's changes were not verified",
+		},
+		Bounce: out.Bounces,
+	}); err != nil && *runErr == nil {
+		*runErr = err
+	}
 }
 
 // maxNullRetries bounds how many times a turn will re-ask for a response that

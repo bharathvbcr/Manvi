@@ -77,6 +77,7 @@ func newTurnLoop(face turnFace, deps turnDeps) (*agent.Loop, error) {
 		MaxTokens:       face.maxTokens,
 		ReadOnly:        face.readOnly,
 		ChatOnly:        face.chatOnly,
+		EndOfTurnCheck:  face.check != nil,
 		CoreToolsOnly:   deps.coreToolsOnly,
 		AssertInvariant: deps.assertInvariant,
 		SerialLookups:   deps.serialLookups,

@@ -202,7 +202,9 @@ func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command stri
 		report.Degraded = append(report.Degraded, note)
 	}
 	for _, gap := range gaps {
-		if !gap.Blocking {
+		// Already in degraded, which is where it demotes the verdict: the gates
+		// did not look, so the change has no finding against it.
+		if !gap.Blocking || gap.Type == gapRigorDidNotRun {
 			continue
 		}
 		detail := gap.Detail
