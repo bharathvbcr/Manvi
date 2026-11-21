@@ -87,6 +87,14 @@ class Study(unittest.TestCase):
         self.assertEqual(rep["arms"]["R"]["runs_with_refusal"], 4)
         self.assertEqual(rep["arms"]["A"]["runs_with_script"], 0)
 
+    def test_every_interval_records_the_level_it_was_drawn_at(self):
+        # The key is "ci95" for compatibility with the first study's stats;
+        # the level it holds is whatever alpha the analysis ran at.
+        rep = rb.analyze(self.rows(), arms="ACSR", comparisons=(("S", "C"),), alpha=0.0167)
+        self.assertAlmostEqual(rep["deltas"]["S-C"]["input_tokens"]["ci_level"], 0.9833)
+        self.assertAlmostEqual(rep["arms"]["C"]["input_tokens"]["ci_level"], 0.9833)
+        self.assertAlmostEqual(rb.analyze(self.rows(), arms="AC", comparisons=(("C", "A"),))["deltas"]["C-A"]["input_tokens"]["ci_level"], 0.95)
+
     def test_a_cell_missing_one_of_the_named_arms_is_dropped(self):
         rows = [r for r in self.rows() if not (r["rep"] == 3 and r["arm"] == "S")]
         rep = rb.analyze(rows, arms="ACSR", comparisons=(("S", "C"),))

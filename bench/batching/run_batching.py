@@ -337,7 +337,7 @@ def analyze(rows, arms="ABC", comparisons=(("B", "A"), ("C", "A"), ("C", "B")), 
         for name, fn in metrics.items():
             xs = [fn(r) for r in rs]
             mean, lo, hi = bootstrap_ci(xs, alpha=alpha)
-            d[name] = {"mean": mean, "median": median(xs), "ci95": [lo, hi]}
+            d[name] = {"mean": mean, "median": median(xs), "ci95": [lo, hi], "ci_level": round(1 - alpha, 6)}
         rep["arms"][arm] = d
     for x, y in comparisons:
         key = "%s-%s" % (x, y)
@@ -346,7 +346,7 @@ def analyze(rows, arms="ABC", comparisons=(("B", "A"), ("C", "A"), ("C", "B")), 
             ds = [fn(p[1][x]) - fn(p[1][y]) for p in pairs]
             mean, lo, hi = bootstrap_ci(ds, alpha=alpha)
             rep["deltas"][key][name] = {
-                "mean": mean, "median": median(ds), "ci95": [lo, hi],
+                "mean": mean, "median": median(ds), "ci95": [lo, hi], "ci_level": round(1 - alpha, 6),
                 "negative": sum(1 for v in ds if v < 0), "positive": sum(1 for v in ds if v > 0),
                 "zero": sum(1 for v in ds if v == 0), "n": len(ds),
                 "excludes_zero": bool(ds) and (lo > 0 or hi < 0)}

@@ -14,6 +14,8 @@ own pricing, not an invoice) plus $0.1296 pilot = $3.727 of the $6.00 cap; the r
 Arm checks held: no A run made a batch or script call; no R run had a serial-lookup note or refusal.
 Correctness: facts right A 719/720, C 719/720, C2 718/720, S 718/720, R 717/720.
 
+> Intervals in `results/stats_prereg.json` are stored under the key `ci95` for compatibility with the first study; each carries `ci_level`, the level it was drawn at (0.9833 for the primary family, alpha 0.05/3).
+
 ## Pre-registered primary results
 
 Input tokens (`turn.usage` input_tokens), paired per unit, x minus y, percentile bootstrap CI at 98.33% (alpha 0.05/3).
