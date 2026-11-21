@@ -1492,6 +1492,12 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 		}
 		content = string(data)
 	}
+	// Whether the agent had this exact file in full before the patch: then it
+	// also knows the whole patched result, and the overwrite guard follows it.
+	// A patch on a file it never read in full, or one changed since, records
+	// nothing — an anchor match is not a read.
+	seen, wasRead := r.inspected.digest(decision.Target)
+	readBefore := wasRead && seen == sha256.Sum256([]byte(content))
 
 	if args.StartLine > 0 || args.EndLine > 0 {
 		lines := strings.Split(content, "\n")
@@ -1563,6 +1569,9 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 		if err := writeUnpinned(full, []byte(content)); err != nil {
 			return writeFailure(decision.Target, "writing patched "+args.Path, err)
 		}
+	}
+	if readBefore {
+		r.inspected.mark(decision.Target, sha256.Sum256([]byte(content)))
 	}
 
 	return r.noteWriteImpact(ctx, annotate(

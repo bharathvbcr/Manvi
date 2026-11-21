@@ -582,3 +582,43 @@ func TestBatchDescriptionNamesExactlyTheBatchableTools(t *testing.T) {
 		}
 	}
 }
+
+// A patch keeps the overwrite guard in step only when the agent had the whole
+// file before it: then it knows the whole patched result. Reading, patching
+// and then rewriting the file is allowed; patching a file never read in full
+// does not count as reading it.
+func TestAPatchKeepsTheGuardOnlyAfterAFullRead(t *testing.T) {
+	f := newFixture(t)
+	if out := f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"}); out["acquired"] != true {
+		t.Fatalf("checkout = %v", out)
+	}
+	for _, name := range []string{"read.go", "unread.go"} {
+		target := filepath.Join(f.root, "src", name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("package calc\n\nfunc Keep() {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	patch := func(path string) {
+		t.Helper()
+		if res := f.call("devcouncil_patch_file", map[string]any{"path": path, "target_content": "Keep", "replacement_content": "Kept"}); res.IsError {
+			t.Fatalf("patch %s: %s", path, res.Text)
+		}
+	}
+	write := func(path string) tools.Result {
+		return f.call("devcouncil_write_file", map[string]string{"path": path, "content": "package calc\n"})
+	}
+	if res := f.call("devcouncil_read_file", map[string]any{"path": "src/read.go"}); res.IsError {
+		t.Fatal(res.Text)
+	}
+	patch("src/read.go")
+	if res := write("src/read.go"); res.IsError {
+		t.Fatalf("read, patch, write was refused: %s", res.Text)
+	}
+	patch("src/unread.go")
+	if res := write("src/unread.go"); !res.IsError {
+		t.Fatal("a patch on a file never read in full counted as reading it")
+	}
+}
