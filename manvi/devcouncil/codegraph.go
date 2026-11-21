@@ -95,6 +95,10 @@ func (r *Registry) codeQuery(ctx context.Context, call tools.Call) tools.Result 
 	if err != nil {
 		return unavailable("code graph "+args.Kind, err)
 	}
+	data, shared, err := hoistSharedEnvelopeFields(data)
+	if err != nil {
+		return unavailable("code graph "+args.Kind, err)
+	}
 	if len(data) > maxCodeAnswerBytes {
 		return tools.Errorf("the %s answer is %d bytes after redaction, past the %d-byte bound; "+
 			"ask again with a smaller budget or depth", args.Kind, len(data), maxCodeAnswerBytes)
@@ -109,7 +113,125 @@ func (r *Registry) codeQuery(ctx context.Context, call tools.Call) tools.Result 
 	if withheld > 0 {
 		notes = append(notes, fmt.Sprintf("%d source excerpt(s) withheld by the read gate", withheld))
 	}
-	return payload(body, notes, stale)
+	if shared != nil {
+		body["shared_envelope"] = shared
+	}
+	result := payload(body, notes, stale)
+	if notice := r.staleIndexNotice(res.Index); notice != "" {
+		return withLeadingField(result, "index_notice", notice)
+	}
+	return result
+}
+
+// withLeadingField puts a string field first in a payload's JSON object.
+//
+// payload renders its map in key order, which would leave a field named for its
+// importance in the middle of the answer. A stale-index notice is read before
+// the answer or not at all, so it is spliced ahead of the rest. A result that
+// is an error, or whose text is not an indented object, is returned as it is:
+// the notice then is not shown, but the answer is not corrupted.
+func withLeadingField(res tools.Result, key, value string) tools.Result {
+	const open = "{\n"
+	if res.IsError || !strings.HasPrefix(res.Text, open) {
+		return res
+	}
+	name, err := json.Marshal(key)
+	if err != nil {
+		return res
+	}
+	text, err := json.Marshal(value)
+	if err != nil {
+		return res
+	}
+	res.Text = open + "  " + string(name) + ": " + string(text) + ",\n" + res.Text[len(open):]
+	return res
+}
+
+// sharedEnvelopeFields are the completeness fields devmap repeats on every
+// sub-envelope of a composed answer (an explore carries one per definition,
+// per direction, and one for the blast radius).
+var sharedEnvelopeFields = []string{"source_freshness", "walk_incomplete"}
+
+// envelopeMarker is the key every devmap completeness envelope carries.
+const envelopeMarker = "truncated"
+
+// hoistSharedEnvelopeFields moves a repeated completeness field to one place.
+//
+// A field is hoisted only when it can be restored without loss: it occurs at
+// least twice, every occurrence has the identical value, and no envelope of the
+// answer lacks it (an envelope without walk_incomplete is a walk that did
+// complete, and folding the others into a shared value would erase that
+// difference). Anything else stays where the producer put it. The returned map
+// is nil when nothing was hoisted.
+func hoistSharedEnvelopeFields(raw []byte) ([]byte, map[string]any, error) {
+	var root any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, nil, fmt.Errorf("unparseable graph answer: %w", err)
+	}
+	var envelopes []map[string]any
+	var walk func(v any)
+	walk = func(v any) {
+		switch node := v.(type) {
+		case map[string]any:
+			if _, ok := node[envelopeMarker]; ok {
+				envelopes = append(envelopes, node)
+			}
+			for _, child := range node {
+				walk(child)
+			}
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	shared := map[string]any{}
+	for _, field := range sharedEnvelopeFields {
+		holders, value, ok := identicalEverywhere(envelopes, field)
+		if !ok {
+			continue
+		}
+		for _, holder := range holders {
+			delete(holder, field)
+		}
+		shared[field] = value
+	}
+	if len(shared) == 0 {
+		return raw, nil, nil
+	}
+	shared["note"] = "each of these was identical in every sub-envelope of the answer and is removed from each"
+	out, err := json.Marshal(root, json.Deterministic(true))
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, shared, nil
+}
+
+// identicalEverywhere reports the envelopes carrying field, and its value, when
+// there are at least two, all carry it, and all carry the same value.
+func identicalEverywhere(envelopes []map[string]any, field string) ([]map[string]any, any, bool) {
+	var first []byte
+	var value any
+	for _, env := range envelopes {
+		v, ok := env[field]
+		if !ok {
+			return nil, nil, false
+		}
+		enc, err := json.Marshal(v, json.Deterministic(true))
+		if err != nil {
+			return nil, nil, false
+		}
+		if first == nil {
+			first, value = enc, v
+		} else if string(enc) != string(first) {
+			return nil, nil, false
+		}
+	}
+	if len(envelopes) < 2 {
+		return nil, nil, false
+	}
+	return envelopes, value, true
 }
 
 // codeQueryFor validates the model's arguments into the bounded query, applying
