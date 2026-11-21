@@ -191,7 +191,8 @@ func sortedPaths(set map[string]bool) []string {
 // ancestorDirs are the directories above every denied path, up to but not
 // including "/". Renaming a directory needs unlink on its own name, so a command
 // that may not touch .env can still move it by moving cfg/ or the repository
-// itself; denying unlink on each ancestor closes that.
+// itself, or copy it by cloning either with clonefile; denying unlink and
+// file-clone on each ancestor closes both.
 func (d secretDenials) ancestorDirs() []string {
 	set := map[string]bool{}
 	for _, p := range append(append([]string{}, d.literals...), d.subpaths...) {
@@ -203,9 +204,10 @@ func (d secretDenials) ancestorDirs() []string {
 }
 
 // seatbeltProfile renders denials as an SBPL profile: everything allowed,
-// reading the named paths denied, and writing, linking or unlinking them too,
-// with unlink also denied on every directory above them so neither the file nor
-// a parent can be renamed away from the deny. Without a rule list the profile is
+// reading the named paths denied, and writing, linking or cloning them too,
+// with unlink and clone also denied on every directory above them so neither
+// the file nor a parent can be renamed or cloned away from the deny: clonefile
+// of a directory copies the secret to a name no rule matches. Without a rule list the profile is
 // just the allow, since an empty deny form does not parse.
 func seatbeltProfile(d secretDenials) (string, error) {
 	var b strings.Builder
@@ -233,13 +235,15 @@ func seatbeltProfile(d secretDenials) (string, error) {
 	}
 	if len(d.literals)+len(d.subpaths) > 0 {
 		secrets := []group{{"literal", d.literals}, {"subpath", d.subpaths}}
-		for _, operations := range []string{"file-read*", "file-write*", "file-link"} {
+		for _, operations := range []string{"file-read*", "file-write*", "file-link", "file-clone"} {
 			if err := render(operations, secrets...); err != nil {
 				return "", err
 			}
 		}
-		if err := render("file-write-unlink", group{"literal", d.ancestorDirs()}); err != nil {
-			return "", err
+		for _, operations := range []string{"file-write-unlink", "file-clone"} {
+			if err := render(operations, group{"literal", d.ancestorDirs()}); err != nil {
+				return "", err
+			}
 		}
 	}
 	if b.Len() > maxProfileBytes {

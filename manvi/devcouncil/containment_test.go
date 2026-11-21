@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -125,6 +126,32 @@ func readDenyBlock(t *testing.T, profile string) string {
 	return block
 }
 
+// denyBlocks are the rules of every deny form for operation in a rendered
+// profile, in order, each block as the text between its "(deny op" and the next
+// form.
+func denyBlocks(profile, operation string) []string {
+	var blocks []string
+	rest := profile
+	for {
+		_, after, ok := strings.Cut(rest, "(deny "+operation+"\n")
+		if !ok {
+			return blocks
+		}
+		block, _, _ := strings.Cut(after, "\n(deny ")
+		blocks = append(blocks, block)
+		rest = after
+	}
+}
+
+func ruleSet(block string) []string {
+	var out []string
+	for _, m := range profileRule.FindAllStringSubmatch(block, -1) {
+		out = append(out, m[1]+" "+unescapeSBPL(m[2]))
+	}
+	sort.Strings(out)
+	return out
+}
+
 // The profile must deny exactly the files the policy matcher calls secret, no
 // more and no fewer, over a tree built from DevCouncil's own fold fixture (the
 // rows its Go and Rust engines are held to) plus ordinary files.
@@ -224,6 +251,33 @@ func TestProfileDeniesExactlyWhatTheMatcherMatches(t *testing.T) {
 	}
 	if len(want) < 15 || len(all)-len(want) < 5 {
 		t.Fatalf("the fixture did not exercise both sides: %d secret of %d files", len(want), len(all))
+	}
+	// The write, link and clone forms name exactly the secret set the read
+	// form does, and the unlink and clone ancestor forms exactly the
+	// directories above it, so a rule cannot be dropped from one form alone.
+	secretSet := ruleSet(readDenyBlock(t, profile))
+	for _, operation := range []string{"file-write*", "file-link", "file-clone"} {
+		blocks := denyBlocks(profile, operation)
+		if len(blocks) == 0 || !reflect.DeepEqual(ruleSet(blocks[0]), secretSet) {
+			t.Errorf("%s names %q, want the secret set %q", operation, blocks, secretSet)
+		}
+	}
+	var ancestors []string
+	for _, dir := range denials.ancestorDirs() {
+		ancestors = append(ancestors, "literal "+dir)
+	}
+	sort.Strings(ancestors)
+	if len(ancestors) == 0 {
+		t.Fatal("the fixture has no ancestor directories")
+	}
+	for _, c := range []struct {
+		operation string
+		index     int
+	}{{"file-write-unlink", 0}, {"file-clone", 1}} {
+		blocks := denyBlocks(profile, c.operation)
+		if len(blocks) <= c.index || !reflect.DeepEqual(ruleSet(blocks[c.index]), ancestors) {
+			t.Errorf("%s ancestor form does not name exactly the ancestor directories %q:\n%q", c.operation, ancestors, blocks)
+		}
 	}
 	// Every rule in the profile names a path under the resolved root.
 	for _, p := range append(literals, subpaths...) {

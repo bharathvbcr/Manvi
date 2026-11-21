@@ -94,7 +94,7 @@ the owner should choose.
 ## Implemented profile and its remaining gaps
 
 The profile, rendered per command from the secret files found under the real
-repository root, is `(allow default)` plus four deny forms, each verified live
+repository root, is `(allow default)` plus five deny forms, each verified live
 with `sandbox-exec` on darwin (`TestContainmentStopsRenameAndLinkLive`):
 
 | deny form | on | stops |
@@ -102,6 +102,7 @@ with `sandbox-exec` on darwin (`TestContainmentStopsRenameAndLinkLive`):
 | `file-read*` | each secret file (literal), each secret directory (subpath) | `cat`, `grep -r`, `cp`, a program that opens it |
 | `file-write*` | same | writing, appending, `chmod`, `rm`, and renaming the file itself |
 | `file-link` | same | `ln .env y` (a hard link under another name) |
+| `file-clone` | same, and every directory above a secret path | `clonefile("cfg", "cfgc")`, `clonefile(repo, repo_c)`: a clone copies the tree by reference to a name no rule matches (`TestContainmentStopsCloneLive`, which calls clonefile from inside the sandbox) |
 | `file-write-unlink` | every directory above a secret path, up to `/` exclusive | `mv cfg cfg2`, `mv repo repo2`: a rename needs unlink on the source name |
 
 An earlier version denied only `file-read*`; `mv .env y && cat y` and
@@ -116,7 +117,11 @@ Remaining gaps (not contained):
   runs (`echo $T > .env && cat .env`): the profile is built before the command,
   so the new name is not in it. Secret directories are denied as subtrees and
   do cover files created inside them.
-- Writing, linking or deleting a secret file is denied too, so a contained
+- Deleting or moving a directory tree that contains a secret-named file
+  (`rm -rf node_modules` with a `*.pem` inside, `mv` of a parent) fails with
+  EPERM while containment is on: the unlink deny covers every ancestor, and the
+  secret file itself cannot be removed.
+- Writing, linking, cloning or deleting a secret file is denied too, so a contained
   command cannot edit `.env`; legitimate tooling that does fails with EPERM.
 - `sandbox-exec` is deprecated by Apple and still shipped; each macOS release
   must be re-verified. Where it is missing the command is refused, not run.
