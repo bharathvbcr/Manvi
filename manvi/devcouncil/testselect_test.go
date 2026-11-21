@@ -130,6 +130,29 @@ func TestVerifyPathsSelectionOnAStaleIndexSaysItMayBeIncomplete(t *testing.T) {
 	}
 }
 
+// devmap's walk_incomplete quotes a sample of receiver.callee labels, raw
+// source text with no file attached. The selection caveat goes to the model in
+// the sensor report, so the sample must not.
+func TestVerifyPathsSelectionCaveatWithholdsCallSiteSamples(t *testing.T) {
+	f := newFixture(t)
+	idx := newStubIndex(t, f, 7, true)
+	doc := strings.Replace(affectedDoc(1, "pkg/a_test.go"), `"tests":{`, `"tests":{"walk_incomplete":"1 call site(s) the resolver could not bind name a symbol this answer reached (ZQ97LEAK_sk_live.run) — an untyped receiver — so callers through them are not in it",`, 1)
+	idx.set(t, "affected", doc)
+
+	sel := f.reg.VerifyPaths(context.Background(), []string{"a.go"}, "", Baseline{}).Selection
+
+	if sel == nil || !sel.Ran {
+		t.Fatalf("selection = %+v", sel)
+	}
+	text := sel.Summary()
+	if strings.Contains(text, "ZQ97LEAK") {
+		t.Fatalf("a call-site sample reached the selection summary: %s", text)
+	}
+	if !strings.Contains(text, "The walk was incomplete: 1 call site(s)") {
+		t.Fatalf("the caveat lost its count: %s", text)
+	}
+}
+
 func TestVerifyPathsSelectionReportsAnUnmatchedChangedFile(t *testing.T) {
 	f := newFixture(t)
 	idx := newStubIndex(t, f, 7, true)

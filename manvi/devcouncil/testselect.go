@@ -182,8 +182,8 @@ func selectTestsFrom(ctx context.Context, client *devmap.Client, paths []string)
 	if answer.Tests.Truncated {
 		sel.Caveat("The index cut the list short, so the total is a lower bound")
 	}
-	if wi := strings.TrimSpace(string(answer.Tests.WalkIncomplete)); wi != "" && wi != "null" && wi != "false" {
-		sel.Caveat("The walk was incomplete: " + clipLine(strings.Trim(wi, `"`), selectNoteBytes))
+	if note := DevmapNoteText(answer.Tests.WalkIncomplete); note != "" {
+		sel.Caveat("The walk was incomplete: " + clipLine(note, selectNoteBytes))
 	}
 	if n := len(answer.BlastRadius.Unmatched); n > 0 {
 		sel.Caveat(fmt.Sprintf("%d changed file(s) are not in the index (%s), so nothing could be selected for them",
