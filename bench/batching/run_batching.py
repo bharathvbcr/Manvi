@@ -15,9 +15,12 @@ import itertools
 import json
 import os
 import re
+import queue
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
@@ -37,7 +40,12 @@ BASE_ENV = {
 # silently change the arm.
 STRIP_ENV = ("MANVI_HARNESS_BATCH_TOOL", "MANVI_HARNESS_SERIAL_LOOKUPS")
 BATCH_TOOL = "devcouncil_batch"
+SCRIPT_TOOL = "devcouncil_script"
 REFUSAL_RE = re.compile(r"refused, not run: (\d+) steps?")
+# The note the loop appends to the result of the third lone lookup in a row
+# (agent/batch.go noteSerialLookup). The refusal text shares its opening words,
+# so the note is told apart by the sentence that follows them.
+SERIAL_NOTE_RE = re.compile(r"harness: \d+ steps in a row each made a single lookup\. Lookups that")
 
 
 def load_tasks(path=None):
@@ -80,7 +88,8 @@ def parse_stream(lines):
     m = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
          "cost_nano_usd": 0, "unpriced_steps": 0, "steps": 0, "tool_calls": 0,
          "tool_counts": {}, "batch_calls": 0, "batch_inner_calls": 0,
-         "refusals": 0, "refused_steps": 0, "notices": [], "errors": [],
+         "refusals": 0, "refused_steps": 0, "serial_notes": 0, "script_calls": 0,
+         "notices": [], "errors": [],
          "turn_usage_events": 0, "writes": 0, "bad_lines": 0}
     final = []  # assistant.text arrives as stream chunks; the answer is those after the last tool result
     for raw in lines:
@@ -105,6 +114,8 @@ def parse_stream(lines):
             name = e.get("tool", "")
             m["tool_calls"] += 1
             m["tool_counts"][name] = m["tool_counts"].get(name, 0) + 1
+            if name == SCRIPT_TOOL:
+                m["script_calls"] += 1
             if name == BATCH_TOOL:
                 m["batch_calls"] += 1
                 try:
@@ -115,7 +126,10 @@ def parse_stream(lines):
                 m["writes"] += 1
         elif k == "tool.result":
             final = []
-            hit = REFUSAL_RE.search(e.get("text", "") or "")
+            text = e.get("text", "") or ""
+            if SERIAL_NOTE_RE.search(text):
+                m["serial_notes"] += 1
+            hit = REFUSAL_RE.search(text)
             if hit:
                 m["refusals"] += 1
                 m["refused_steps"] += int(hit.group(1))
@@ -129,10 +143,22 @@ def parse_stream(lines):
     return m
 
 
-def run_one(binary, repo, prompt, arm, scratch, timeout_s):
+def scrub(value, repo):
+    """The rows are committed, so the checkout path and the home directory a tool
+    or an error message may quote are replaced before a row is stored."""
+    if isinstance(value, list):
+        return [scrub(v, repo) for v in value]
+    for host, stand_in in ((os.path.realpath(repo), "<repo>"), (repo, "<repo>"),
+                           (os.path.expanduser("~"), "~")):
+        if host and host != "/":
+            value = value.replace(host, stand_in)
+    return value
+
+
+def run_one(binary, repo, prompt, arm, scratch, timeout_s, arms=None):
     env = {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
     env.update(BASE_ENV)
-    env.update(ARMS[arm])
+    env.update((arms or ARMS)[arm])
     cmd = [os.path.expanduser("~/.local/bin/anthropic-account"), "exec", "--", binary, "run",
            "--json", "--max-steps", "60", "--timeout", "10m", "-p", prompt]
     t0 = time.time()
@@ -144,6 +170,8 @@ def run_one(binary, repo, prompt, arm, scratch, timeout_s):
     m["exit_code"] = p.returncode
     m["wall_s"] = round(wall, 1)
     m["stderr_tail"] = p.stderr[-300:]
+    for k in ("final_text", "stderr_tail", "notices", "errors"):
+        m[k] = scrub(m[k], repo)
     return m
 
 
@@ -171,40 +199,91 @@ def cmd_reparse(a):
     return 0
 
 
-def cmd_run(a):
-    spec = load_tasks()
+def run_valid(r):
+    """A run that exited non-zero or produced no usage or no step is invalid,
+    never a zero."""
+    return r["exit_code"] == 0 and r["turn_usage_events"] > 0 and r["steps"] > 0
+
+
+def run_study(a, spec, arms, orders, prompt_for, jobs=1, repos=None, after_run=None, retries=0):
+    """Run every (task, rep, arm) of `orders` that results.jsonl does not hold,
+    `jobs` units at a time (the arms of one unit stay in sequence), until the
+    spend reaches a.budget_usd. Returns 3 when the budget stopped it. A unit
+    already started is finished, so the spend can pass the budget by one unit.
+
+    `repos` is the checkouts the runs execute in (default: a.repo for all). Each
+    worker holds one for a unit, so a study may give every job its own and no run
+    sees another's files; `after_run(repo)` is called after each run, for
+    removing what the run left in its checkout. A run that is invalid (run_valid)
+    is retried up to `retries` times; the stored row says how many attempts it took,
+    and a run that is still invalid is stored as invalid, never zero-filled."""
     by_id = {t["id"]: t for t in spec["tasks"]}
     os.makedirs(a.out, exist_ok=True)
     raw_dir = os.path.join(a.scratch, "raw")
     os.makedirs(raw_dir, exist_ok=True)
     results_path = os.path.join(a.out, "runs.jsonl")
     done = set()
-    spent = 0.0
+    spent = [0.0]
     if os.path.exists(results_path):
         for line in open(results_path):
             r = json.loads(line)
             done.add((r["task"], r["rep"], r["arm"]))
-            spent += r["cost_nano_usd"] / 1e9
-    for tid, rep, order in schedule(spec["tasks"], a.reps):
+            spent[0] += (r["cost_nano_usd"] + r.get("discarded_cost_nano_usd", 0)) / 1e9
+    lock = threading.Lock()
+    stopped = []
+    free = queue.Queue()
+    for repo in (repos or [a.repo] * jobs):
+        free.put(repo)
+
+    def unit(tid, rep, order):
+        repo = free.get()
+        try:
+            unit_in(repo, tid, rep, order)
+        finally:
+            free.put(repo)
+
+    def unit_in(repo, tid, rep, order):
         for arm in order:
             if (tid, rep, arm) in done:
                 continue
-            if spent >= a.budget_usd:
-                print("budget reached: spent $%.4f >= $%.2f; stopping" % (spent, a.budget_usd))
-                return 3
+            with lock:
+                if spent[0] >= a.budget_usd:
+                    stopped.append(1)
+                    return
             task = by_id[tid]
-            m = run_one(a.manvi, a.repo, build_prompt(spec, task), arm,
-                        os.path.join(raw_dir, "%s-r%d-%s.ndjson" % (tid, rep, arm)), a.timeout)
+            attempts, discarded = 0, 0
+            while True:
+                attempts += 1
+                m = run_one(a.manvi, repo, prompt_for(spec, task, arm), arm,
+                            os.path.join(raw_dir, "%s-r%d-%s.ndjson" % (tid, rep, arm)), a.timeout, arms)
+                if after_run:
+                    after_run(repo)
+                if run_valid(m) or attempts > retries:
+                    break
+                discarded += m["cost_nano_usd"]
             n_ok, flags = grade(m["final_text"], task["facts"])
             row = dict(m, task=tid, rep=rep, arm=arm, order=order, facts=len(task["facts"]),
-                       correct=n_ok, fact_flags=flags)
-            with open(results_path, "a") as f:
-                f.write(json.dumps(row) + "\n")
-            spent += m["cost_nano_usd"] / 1e9
-            print("%s r%d %s order=%s in=%d steps=%d calls=%d batches=%d ref=%d ok=%d/%d $%.4f (total $%.4f)" % (
-                tid, rep, arm, order, m["input_tokens"], m["steps"], m["tool_calls"], m["batch_calls"],
-                m["refusals"], n_ok, len(flags), m["cost_nano_usd"] / 1e9, spent), flush=True)
+                       correct=n_ok, fact_flags=flags, attempts=attempts, discarded_cost_nano_usd=discarded)
+            with lock:
+                with open(results_path, "a") as f:
+                    f.write(json.dumps(row) + "\n")
+                spent[0] += (m["cost_nano_usd"] + discarded) / 1e9
+                print("%s r%d %s order=%s in=%d steps=%d calls=%d batches=%d scripts=%d ref=%d ok=%d/%d $%.4f (total $%.4f)" % (
+                    tid, rep, arm, order, m["input_tokens"], m["steps"], m["tool_calls"], m["batch_calls"],
+                    m["script_calls"], m["refusals"], n_ok, len(flags), m["cost_nano_usd"] / 1e9, spent[0]), flush=True)
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for f in [pool.submit(unit, *u) for u in orders]:
+            f.result()
+    if stopped:
+        print("budget reached: spent $%.4f >= $%.2f; stopping" % (spent[0], a.budget_usd))
+        return 3
     return 0
+
+
+def cmd_run(a):
+    spec = load_tasks()
+    return run_study(a, spec, ARMS, schedule(spec["tasks"], a.reps), lambda s, t, arm: build_prompt(s, t))
 
 
 def median(xs):
@@ -213,22 +292,24 @@ def median(xs):
     return float("nan") if n == 0 else (s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2)
 
 
-def valid_pairs(rows):
-    """Only task-reps with all three arms valid enter a paired comparison. A run
+def valid_pairs(rows, arms="ABC"):
+    """Only task-reps with every arm valid enter a paired comparison. A run
     that exited non-zero or produced no usage is invalid, never a zero."""
     cells = {}
     for r in rows:
         cells.setdefault((r["task"], r["rep"]), {})[r["arm"]] = r
     out, dropped = [], []
-    for key, arms in sorted(cells.items()):
-        ok = (set(arms) == set("ABC") and all(
-            x["exit_code"] == 0 and x["turn_usage_events"] > 0 and x["steps"] > 0 for x in arms.values()))
-        (out if ok else dropped).append((key, arms))
+    for key, cell in sorted(cells.items()):
+        ok = set(cell) == set(arms) and all(run_valid(x) for x in cell.values())
+        (out if ok else dropped).append((key, cell))
     return out, dropped
 
 
-def analyze(rows):
-    pairs, dropped = valid_pairs(rows)
+def analyze(rows, arms="ABC", comparisons=(("B", "A"), ("C", "A"), ("C", "B")), alpha=0.05):
+    """Per-arm summaries and paired deltas (x minus y, for each pair in
+    `comparisons`). `alpha` is the bootstrap's two-sided level, so a family of k
+    primary comparisons passes 0.05/k."""
+    pairs, dropped = valid_pairs(rows, arms)
     rep = {"n_runs": len(rows), "n_pairs": len(pairs),
            "dropped_pairs": [list(k) for k, _ in dropped], "arms": {}, "deltas": {}}
     metrics = {
@@ -239,11 +320,15 @@ def analyze(rows):
         "tool_calls": lambda r: r["tool_calls"],
         "correct_frac": lambda r: r["correct"] / r["facts"],
     }
-    for arm in "ABC":
+    for arm in arms:
         rs = [p[1][arm] for p in pairs]
         d = {"n": len(rs), "batch_calls_total": sum(r["batch_calls"] for r in rs),
              "batch_inner_calls_total": sum(r["batch_inner_calls"] for r in rs),
              "refusals_total": sum(r["refusals"] for r in rs),
+             "runs_with_refusal": sum(1 for r in rs if r["refusals"] > 0),
+             "runs_with_script": sum(1 for r in rs if r.get("script_calls", 0) > 0),
+             "script_calls_total": sum(r.get("script_calls", 0) for r in rs),
+             "serial_notes_total": sum(r.get("serial_notes", 0) for r in rs),
              "notices_total": sum(len(r["notices"]) for r in rs),
              "writes_total": sum(r["writes"] for r in rs),
              "facts_correct": sum(r["correct"] for r in rs), "facts_total": sum(r["facts"] for r in rs),
@@ -251,15 +336,15 @@ def analyze(rows):
              "spend_usd": sum(r["cost_nano_usd"] for r in rs) / 1e9}
         for name, fn in metrics.items():
             xs = [fn(r) for r in rs]
-            mean, lo, hi = bootstrap_ci(xs)
+            mean, lo, hi = bootstrap_ci(xs, alpha=alpha)
             d[name] = {"mean": mean, "median": median(xs), "ci95": [lo, hi]}
         rep["arms"][arm] = d
-    for x, y in (("B", "A"), ("C", "A"), ("C", "B")):
+    for x, y in comparisons:
         key = "%s-%s" % (x, y)
         rep["deltas"][key] = {}
         for name, fn in metrics.items():
             ds = [fn(p[1][x]) - fn(p[1][y]) for p in pairs]
-            mean, lo, hi = bootstrap_ci(ds)
+            mean, lo, hi = bootstrap_ci(ds, alpha=alpha)
             rep["deltas"][key][name] = {
                 "mean": mean, "median": median(ds), "ci95": [lo, hi],
                 "negative": sum(1 for v in ds if v < 0), "positive": sum(1 for v in ds if v > 0),

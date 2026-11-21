@@ -427,8 +427,8 @@ test("bench: a suite's NOT COVERED line is named as a gate that did not run, nev
 test("bench: control — suites that name no gap pass", () => {
   const run = runGate([SEGMENTS.bench], ["python3"]);
   assert.equal(run.status, 0, run.out);
-  // The fake python3 reports 100 per suite, and the bench step runs 12 suites.
-  assert.match(run.out, /covered: 1200 checks/);
+  // The fake python3 reports 100 per suite, and the bench step runs 13 suites.
+  assert.match(run.out, /covered: 1300 checks/);
   assert.match(run.out, /PASS all gates/);
 });
 

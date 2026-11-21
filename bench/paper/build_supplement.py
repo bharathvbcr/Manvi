@@ -83,6 +83,7 @@ POLICY = (
     ("bench/.gitignore", "exclude", "repository housekeeping"),
     ("bench/live/**", "exclude", "drives the authors' separate production agent (Go), not the Python harness"),
     ("bench/batching/**", "exclude", "the Manvi batch-tool A/B (its own preregistration and results), not part of the paper's harness"),
+    ("bench/batching2/**", "exclude", "the Manvi batching-policy study (its own preregistration, fixtures and results), not part of the paper's harness"),
     ("bench/results/**", "exclude", "raw run logs carry host paths; released after acceptance"),
     ("bench/paper/harness_architecture.*", "exclude", "the manuscript itself"),
     ("bench/paper/header.tex", "exclude", "manuscript typesetting"),
