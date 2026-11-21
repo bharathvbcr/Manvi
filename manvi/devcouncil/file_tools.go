@@ -301,6 +301,11 @@ func lineRange(text string, offset, limit int) (string, error) {
 		strings.Join(lines[offset-1:end], ""), nil
 }
 
+// afterCreatedCheck runs between the existence question writeFile asks for the
+// reuse note and the pin that decides what the write really replaces: the window
+// a file can appear in. A test creates the file here instead of racing a sleep.
+var afterCreatedCheck = func() {}
+
 func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		Path    string `json:"path"`
@@ -322,6 +327,7 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	// duplicating" from a line in the system prompt into something that
 	// actually looks.
 	reusePath, creating := r.createdPath(args.Path)
+	afterCreatedCheck()
 	// The target is pinned BEFORE the ladder runs and before any approval
 	// prompt: the identity snapshot has to predate human-scale delays, or a
 	// concurrent actor could swap a directory for a symlink while the prompt
@@ -334,6 +340,10 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 		if err != nil {
 			return tools.Errorf("%v", err)
 		}
+		// What the write replaces is what the pin saw, and the pin fails closed
+		// on a stat error. The earlier createdPath answer folds an unreadable
+		// path into "new", so it cannot decide the guard below.
+		creating = !pinned.targetExisted
 	}
 	decision, err := r.deps.Gate.EvaluateWrite(args.Path, task, dc.OpWrite)
 	if err != nil {
@@ -346,6 +356,8 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 		}
 		decision = escalated
 	}
+	// The guard runs for every in-root target the pin found: creating is now the
+	// pin's answer, not the earlier existence check's.
 	// Audit before overwrite, asked after the gate so a write the policy
 	// refuses is reported as the policy's refusal — the evidence trail records
 	// what the gate decided, and this rule must not hide it. A plain error and

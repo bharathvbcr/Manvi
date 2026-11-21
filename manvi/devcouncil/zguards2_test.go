@@ -112,3 +112,34 @@ func TestDeleteClearsTheOverwriteGuard(t *testing.T) {
 		t.Fatalf("an overwrite of a re-created file needed no fresh read: %+v", res)
 	}
 }
+
+// Whether the read-before-overwrite guard runs is decided by what the write
+// really replaces (the pinned target), not by an earlier existence check: a file
+// that appears after that check, unread, must not be overwritten.
+func TestOverwriteGuardFollowsThePinnedTargetNotTheEarlierExistenceCheck(t *testing.T) {
+	f := newFixture(t)
+	checkedOut(t, f)
+	target := filepath.Join(f.root, "src", "late.go")
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const theirs = "package calc\n\nfunc Theirs() {}\n"
+	fired := 0
+	failSeam(t, &afterCreatedCheck, func() {
+		fired++
+		if err := os.WriteFile(target, []byte(theirs), 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+
+	res := f.call("devcouncil_write_file", map[string]string{"path": "src/late.go", "content": "package calc\n"})
+	if fired != 1 {
+		t.Fatalf("the seam ran %d times, want 1", fired)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "has not been read in full") {
+		t.Fatalf("a file that appeared after the existence check was overwritten unread: %+v", res)
+	}
+	if got, _ := os.ReadFile(target); string(got) != theirs {
+		t.Fatalf("the unread file was overwritten: %q", got)
+	}
+}
