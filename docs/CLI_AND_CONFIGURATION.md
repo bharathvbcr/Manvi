@@ -44,11 +44,13 @@ This document provides a complete reference for MANVI's command-line interface, 
 
 ## Headless Exit Codes (`manvi run`)
 
-Scripts and CI systems should inspect exit codes from `manvi run`. Six statuses
-(`0` through `5`) are distinguished, because a caller that cannot tell them apart commits half-done
-work as if it were finished. `manvi run --help` prints the same six. The table also lists `8` and `9`,
-which come from `manvi --version --check` and not from `manvi run`, so it has eight rows; `6` and `7`
+Scripts and CI systems should inspect exit codes from `manvi run`. Eight statuses
+(`0` through `5`, `10` and `11`) are distinguished, because a caller that cannot tell them apart commits half-done
+work as if it were finished. `manvi run --help` prints the same eight. The table also lists `8` and `9`,
+which come from `manvi --version --check` and not from `manvi run`, so it has ten rows; `6` and `7`
 belong to `manvi check` and are in the next section.
+
+`10` and `11` report the end-of-turn verification that `manvi run` runs over every turn that changed files. A status that is set by an earlier row in the table wins (a turn cut off by the step ceiling exits `2` whatever its verification said); the verification's own verdict is always in the `verify.report` event and on stderr.
 
 | Exit Code | Meaning | Interpretation |
 |---|---|---|
@@ -58,6 +60,8 @@ belong to `manvi check` and are in the next section.
 | `3` | **Output Cap Reached** | The output cap cut the final answer off mid-sentence. Read the answer before acting: one that was going somewhere wants a larger `llm.local.max_output_tokens`; one that was repeating itself was being held in check. Kept apart from `2` because the fix differs. |
 | `4` | **No Answer** | The turn ended with no text and no tool call. Neither ceiling was reached, so raising one fixes nothing. |
 | `5` | **Unfinished** | There is an answer, but the stream did not end on a stop reason meaning the work was done — a dropped connection, an unmapped status, or a refusal. stderr says which. Retrying helps the first and not the last. |
+| `10` | **Verification Failed** | The turn changed files, and the end-of-turn check ran over them and found something that was still standing when the turn ended: the bounce limit was reached, or the step ceiling ended the turn first (the ceiling now runs the check one last time, so the verdict is about the final tree). The findings are in the `verify.report` event. The code needs fixing. |
+| `11` | **Verification Did Not Run** | The turn changed files and the end-of-turn check could not be completed: no verifier binary, a turn that changed files through a command with no `MANVI_VERIFY_COMMAND` set, a verification command that timed out, or a turn that ended (provider error, cancellation) before the check ran. Nothing here is evidence the changes are sound. The `degraded` list on the `verify.report` event names what did not run. |
 | `8` | **Update Check Failed** | Only `manvi --version --check`. The release lookup could not be answered: a network error, a timeout (10 s), a rate limit or refusal (403/429), an oversized or malformed response, an empty tag, or no eligible semantic-version release. Tags that are not semantic versions are skipped and counted (`skipped_tags` in JSON), not fatal. It is never reported as up to date; stderr says which. |
 | `9` | **Cannot Compare** | Only `manvi --version --check`. This build has no semantic release version (an unstamped or dev build), so it cannot be compared with a release and is not claimed to be up to date. |
 

@@ -67,6 +67,8 @@ func TestTheStatusAndTheNoticeAgree(t *testing.T) {
 		{"no answer", agent.Outcome{FinalEmpty: true}},
 		{"unmapped stop", agent.Outcome{StopReason: llm.StopOther}},
 		{"refusal", agent.Outcome{StopReason: llm.StopRefusal}},
+		{"verification failed", agent.Outcome{Sensor: agent.SensorFailed}},
+		{"verification did not run", agent.Outcome{Sensor: agent.SensorDegraded}},
 	} {
 		var degraded bool
 		for _, n := range outcomeNotices(tc.outcome, 500) {

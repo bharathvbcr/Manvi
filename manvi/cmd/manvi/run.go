@@ -99,6 +99,14 @@ Exit status:
      or the model refused. Read the answer before acting on it; stderr says
      which of the three it was. Retrying helps a dropped connection and does
      not help a refusal.
+ 10  the turn changed files, and the end-of-turn check ran over them and found
+     something still standing when the turn ended (the bounce limit, or the step
+     ceiling). The findings are in the verify.report event. Fix the code.
+ 11  the turn changed files and the end-of-turn check could not be completed —
+     no verifier, a command-made change with no MANVI_VERIFY_COMMAND, a
+     timeout, or a turn that ended before the check ran. Nothing here is
+     evidence the changes are sound; verify.report's degraded list says what
+     did not run. Fix the verifier, not the code.
 `
 
 type runOptions struct {
@@ -507,8 +515,35 @@ func outcomeStatus(outcome agent.Outcome) error {
 	if outcome.StopReason == llm.StopOther || outcome.StopReason == llm.StopRefusal || outcome.StopReason == llm.StopPause {
 		return errUnfinished
 	}
-	return nil
+	// Last, because every status above says something more specific about how
+	// the turn ended. This is the verification the harness runs over the turn's
+	// own changes, and its verdict is the one a caller commits on: a turn that
+	// finished on its own with a failed check, or with a check that could not
+	// run, used to exit 0 — the status a verified turn gets.
+	switch outcome.Sensor {
+	case agent.SensorNone, agent.SensorSkipped, agent.SensorPassed:
+		return nil
+	case agent.SensorFailed:
+		return errVerifyFailed
+	default:
+		// Degraded, and a verdict this build does not recognise: neither is
+		// evidence that anything passed.
+		return errVerifyNotRun
+	}
 }
+
+// errVerifyFailed is the sentinel that maps to exit status 10: the end-of-turn
+// check ran over the turn's changes and found something, and the turn ended
+// with it still standing — the bounce limit was reached, or the step ceiling
+// ended the turn first.
+var errVerifyFailed = errors.New("the end-of-turn check failed on this turn's changes")
+
+// errVerifyNotRun is the sentinel that maps to exit status 11: the turn changed
+// files and the end-of-turn check could not be completed, so nothing here is
+// evidence that the changes are sound. Kept apart from 10 because they ask for
+// different things: 10 wants the code fixed, 11 wants the verifier, its
+// binary or MANVI_VERIFY_COMMAND looked at.
+var errVerifyNotRun = errors.New("the end-of-turn check could not run over this turn's changes")
 
 // errTruncated is the sentinel that maps to exit status 2.
 var errTruncated = errors.New("the turn was truncated by the step ceiling")
