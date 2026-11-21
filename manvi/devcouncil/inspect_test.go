@@ -642,3 +642,57 @@ func TestCodeGraphGatesEveryPublishedContentKey(t *testing.T) {
 		t.Errorf("withheld %d content fields, want 4: %s", withheld, out)
 	}
 }
+
+// A call site devmap could not bind carries the raw text of its receiver (up to
+// 64 characters of source). Real devmap output (testdata, from a fixture whose
+// secrets/ file holds a fake token) shows it leaking two ways: as the receiver
+// field of an unresolved_namesakes site, and inside the prose of walk_incomplete
+// and coverage_gap, which quote the same text. Both pass the gate by the file
+// the site came from, and prose that cannot be attributed to a file is cut.
+func TestCodeGraphGatesReceiverTextFromSecretPaths(t *testing.T) {
+	const token = "secrettoken_zq97_sk_live"
+	refuse := func(path string) string {
+		if strings.HasPrefix(path, "secrets/") {
+			return "path.secret_read"
+		}
+		return ""
+	}
+	for _, name := range []string{"devmap_impact_secret_receiver.json", "devmap_ask_secret_receiver.json"} {
+		raw, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), token) {
+			t.Fatalf("%s no longer carries the fixture token; regenerate it from devmap", name)
+		}
+		out, withheld, err := withholdGraphSources(raw, refuse)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), token) {
+			t.Errorf("%s: receiver text from a secret path passed the read gate: %s", name, out)
+		}
+		if !strings.Contains(string(out), withheldLabels) {
+			t.Errorf("%s: the cut is not marked in the answer (withheld excerpts %d): %s", name, withheld, out)
+		}
+	}
+}
+
+// A receiver from a readable file, and the prose that quotes it, still reach the
+// model, and a site naming no file is cut: the check cannot run.
+func TestCodeGraphKeepsReadableReceiverAndCutsUnattributedOne(t *testing.T) {
+	raw := []byte(`{"unresolved_namesakes":{"sites":[` +
+		`{"callee_name":"go","receiver":"pool","source_file":"src/a.go"},` +
+		`{"callee_name":"go","receiver":"orphan_receiver"}]},` +
+		`"walk_incomplete":"2 call site(s) the resolver could not bind name a symbol this answer reached (pool.go, orphan_receiver.go) — an untyped receiver — so callers are not in it"}`)
+	out, _, err := withholdGraphSources(raw, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"receiver":"pool"`) {
+		t.Errorf("a readable receiver was withheld: %s", out)
+	}
+	if strings.Contains(string(out), "orphan_receiver") {
+		t.Errorf("a receiver with no file passed: %s", out)
+	}
+}

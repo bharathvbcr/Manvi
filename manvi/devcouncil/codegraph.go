@@ -5,6 +5,8 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
@@ -262,11 +264,15 @@ func codeQueryFor(kind, query, to string, targets []string, depth, budget int) (
 	return q, nil
 }
 
-// sourceKeys are the envelope fields that carry file content: devmap's
-// published list (devmap_query::model::CONTENT_BEARING_KEYS, documented in
-// DevCouncil's docs/devmap/HOST_INTEGRATION.md). evidence.source shares a name
-// with source and is provenance; resolutionSources below lets it through.
-var sourceKeys = []string{"source", "source_span", "source_indent", "signature", "value"}
+// sourceKeys are the envelope fields that carry file content. The list is
+// maintained here, mirroring the content-bearing key list DevCouncil's
+// feat/devmap-ask-evidence work publishes; the pinned devmap (d938f7f8) has no
+// such symbol to import, and its own answers are not withheld for any of these.
+// receiver is the raw text of an unbound call's receiver (up to 64 characters of
+// source), so it is content: an unresolved_namesakes site names its file in
+// source_file. evidence.source shares a name with source and is provenance;
+// resolutionSources below lets it through.
+var sourceKeys = []string{"source", "source_span", "source_indent", "signature", "value", "receiver"}
 
 // resolutionSources are the values of devmap's ResolutionSource
 // (devmap-resolve model.rs), which an edge's evidence object carries under
@@ -290,10 +296,16 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 		return nil, 0, fmt.Errorf("unparseable graph answer: %w", err)
 	}
 	withheld := 0
+	prose := collectReceiverSites(root, refuse)
 	var walk func(v any, parent string)
 	walk = func(v any, parent string) {
 		switch node := v.(type) {
 		case map[string]any:
+			for key, child := range node {
+				if text, ok := child.(string); ok && key != "receiver" {
+					node[key] = prose.redact(text)
+				}
+			}
 			for _, key := range sourceKeys {
 				value, ok := node[key].(string)
 				if !ok {
@@ -302,10 +314,7 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 				if parent == "evidence" && key == "source" && resolutionSources[value] {
 					continue
 				}
-				path, _ := node["file_path"].(string)
-				if path == "" {
-					path, _ = node["path"].(string)
-				}
+				path := nodePath(node)
 				rule := "source not attributable to a file"
 				if path != "" {
 					rule = refuse(path)
@@ -331,4 +340,110 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 		return nil, 0, err
 	}
 	return out, withheld, nil
+}
+
+// nodePath is the file an envelope object names, under any of the three keys
+// devmap uses: file_path, path, and source_file (an unresolved call site).
+func nodePath(node map[string]any) string {
+	for _, key := range []string{"file_path", "path", "source_file"} {
+		if path, _ := node[key].(string); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+// receiverSites records what the answer's unbound call sites say about their
+// receivers, so prose that quotes them can be held to the same file gate.
+//
+// devmap's walk_incomplete and coverage_gap notes quote a sample of
+// "receiver.callee" labels with no file attached, and the receiver is raw source
+// text. A label is let through only when a site that names a readable file
+// carries it; a label no site vouches for is cut, because attribution that
+// cannot be made must not pass.
+type receiverSites struct {
+	readable map[string]bool // "receiver.callee" and "receiver::callee" of readable sites
+	refused  []string        // receiver text of sites whose file the gate refuses or is unnamed
+}
+
+func collectReceiverSites(root any, refuse func(string) string) *receiverSites {
+	sites := &receiverSites{readable: map[string]bool{}}
+	var walk func(v any)
+	walk = func(v any) {
+		switch node := v.(type) {
+		case map[string]any:
+			if receiver, ok := node["receiver"].(string); ok && receiver != "" {
+				path := nodePath(node)
+				if path != "" && refuse(path) == "" {
+					callee, _ := node["callee_name"].(string)
+					sites.readable[receiver+"."+callee] = true
+					sites.readable[receiver+"::"+callee] = true
+				} else {
+					sites.refused = append(sites.refused, receiver)
+				}
+			}
+			for _, child := range node {
+				walk(child)
+			}
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return sites
+}
+
+// minRefusedReceiver is the shortest refused receiver cut by substring from any
+// prose; shorter ones would corrupt unrelated text, and the sample check below
+// still removes them wherever they appear as a label.
+const minRefusedReceiver = 6
+
+var (
+	// noteSample matches the sample of labels in devmap's call-site notes:
+	// "N call site(s) ... (SAMPLE) — ..." and "... (SAMPLE), so ...".
+	noteSample = regexp.MustCompile(`(call site\(s\)[^(;]*\()(.*?)(\) — |\), so )`)
+	// bareLabel is a label with no receiver text: a callee name or a path.
+	bareLabel = regexp.MustCompile(`^[\w$]+(::[\w$]+)*$`)
+)
+
+const withheldLabels = "[call-site labels withheld: not attributable to a readable file]"
+
+// redact returns text with the labels of its call-site notes checked against the
+// readable sites, and any refused receiver text still in it replaced. A cut
+// says so in the text itself, so it is not counted among withheld excerpts.
+func (s *receiverSites) redact(text string) string {
+	text = noteSample.ReplaceAllStringFunc(text, func(match string) string {
+		parts := noteSample.FindStringSubmatch(match)
+		if s.labelsAttributable(parts[2]) {
+			return match
+		}
+		return parts[1] + withheldLabels + parts[3]
+	})
+	for _, receiver := range s.refused {
+		if len(receiver) >= minRefusedReceiver && strings.Contains(text, receiver) {
+			text = strings.ReplaceAll(text, receiver, "[withheld]")
+		}
+	}
+	return text
+}
+
+// labelsAttributable reports whether every label in a sample is vouched for: a
+// readable site carries it, or it is a bare identifier or path.
+func (s *receiverSites) labelsAttributable(sample string) bool {
+	labels := make([]string, 0, len(s.readable))
+	for label := range s.readable {
+		labels = append(labels, label)
+	}
+	sort.Slice(labels, func(i, j int) bool { return len(labels[i]) > len(labels[j]) })
+	for _, label := range labels {
+		sample = strings.ReplaceAll(sample, label, "")
+	}
+	for _, token := range strings.Split(sample, ", ") {
+		if token = strings.TrimSpace(token); token != "" && !bareLabel.MatchString(token) {
+			return false
+		}
+	}
+	return true
 }
