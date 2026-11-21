@@ -2,6 +2,7 @@ package devcouncil
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -155,6 +156,48 @@ type pinnedTarget struct {
 	// its identity must still match when we open it.
 	targetExisted bool
 	targetIdent   componentIdentity
+	// expect, when set, is the digest of the bytes the caller knows the leaf to
+	// hold; the replace refuses unless the leaf still has exactly those bytes.
+	expect    *contentDigest
+	expectMsg string
+}
+
+// requireContent makes an overwrite conditional on the leaf still holding the
+// bytes that hash to sum, checked inside the replace immediately before the
+// rename. msgPath names the file in the refusal.
+func (p *pinnedTarget) requireContent(sum contentDigest, msgPath string) {
+	p.expect = &sum
+	p.expectMsg = changedSinceReadMessage(msgPath)
+}
+
+// verifyContent refuses unless the leaf, read through the verified parent, is
+// the pinned file and holds the bytes the caller required. A leaf that cannot
+// be read back is a refusal: a check that could not run did not pass.
+func (p *pinnedTarget) verifyContent(chain *verifiedChain, leaf string) (err error) {
+	f, err := safefile.OpenNoFollow(chain.parent(), leaf, os.O_RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("refusing to write %q: it could not be read back to check it is unchanged: %w", p.rel, err)
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+	id, err := p.checkOpened(f, chain, leaf, "write")
+	if err != nil {
+		return err
+	}
+	if !id.Equal(p.targetIdent) {
+		return fmt.Errorf("refusing to write %q: the file at that path changed identity before the replace "+
+			"(filesystem identity differs)", p.rel)
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, maxToolReadBytes+1))
+	if err != nil {
+		return fmt.Errorf("refusing to write %q: it could not be read back to check it is unchanged: %w", p.rel, err)
+	}
+	var sum contentDigest
+	h.Sum(sum[:0])
+	if n > maxToolReadBytes || sum != *p.expect {
+		return errors.New(p.expectMsg)
+	}
+	return nil
 }
 
 // pinnedDirID returns the T0 identity of directory component parts[i], and
@@ -471,6 +514,10 @@ var (
 	syncFile  = func(f *os.File) error { return f.Sync() }
 	closeFile = func(f *os.File) error { return f.Close() }
 	syncDir   = syncdir.Root
+	// beforeReplace runs once the replacement is durable and immediately before
+	// the content precondition and the rename: the window a concurrent writer
+	// can land in. A test changes the file here instead of racing a sleep.
+	beforeReplace = func() {}
 )
 
 // leafName is the final component of the pinned path.
@@ -679,12 +726,18 @@ func (p *pinnedTarget) replaceByRename(chain *verifiedChain, leaf string, data [
 	if err := writeAndClose(tf, data); err != nil {
 		return fmt.Errorf("writing %q: %w", p.rel, err)
 	}
+	beforeReplace()
 	// The window since the pin was verified included the whole write.
 	if err := p.verifyLeafIdentity(chain, leaf); err != nil {
 		return err
 	}
 	if err := chain.stillLinked(p.parts); err != nil {
 		return err
+	}
+	if p.expect != nil {
+		if err := p.verifyContent(chain, leaf); err != nil {
+			return err
+		}
 	}
 	if err := parent.Rename(tmp, leaf); err != nil {
 		return fmt.Errorf("replacing %q: %w", p.rel, err)
