@@ -137,7 +137,7 @@ repository is not a value that can authorise anything.
 
 | Variable | Effect |
 |---|---|
-| `MANVI_VERIFY_COMMAND` | The command the end-of-turn check runs over a mutating turn's changes. Unset means the built-in path-scoped gates run alone. |
+| `MANVI_VERIFY_COMMAND` | The command the end-of-turn check runs over a mutating turn's changes. Unset means the built-in path-scoped gates run alone, and no test runs. Either way, when the code index is available the check also *selects* the tests the changed files reach and reports them as "selected, not run" (up to 20 names plus the total, with the index generation and whether it is stale); if the index cannot answer, the report says the selection did not run. Selection never executes a test and never changes the verdict. |
 | `MANVI_FETCH_HOSTS` | Comma- or space-separated hosts `devcouncil_fetch_url` may reach. **Unset means no outbound network access, and the tool is not offered at all.** |
 | `MANVI_ANTHROPIC_BUDGET_USD` | Account-wide Anthropic spend cap in dollars (`200`, `49.50`). Unset means unmetered. A value that is set but unusable stops the Anthropic provider from starting. |
 | `MANVI_ANTHROPIC_BUDGET_LEDGER` | Absolute path of the shared ledger. Unset means `<user config dir>/manvi/budget/anthropic.json`. The ledger is per machine: attempts whose process has exited are reclaimed by pid. |

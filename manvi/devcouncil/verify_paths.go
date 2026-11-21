@@ -71,6 +71,10 @@ type PathReport struct {
 	Findings []string `json:"findings,omitempty"`
 	// Degraded names checks that were owed and did not run.
 	Degraded []string `json:"degraded,omitempty"`
+	// Selection is the tests the code index reaches from the changed files:
+	// information beside the verdict, never an input to it and never run. Nil
+	// when there was nothing to select from.
+	Selection *TestSelection `json:"selection,omitempty"`
 }
 
 // Passed reports a clean verdict. A degraded report is not one, whatever else
@@ -142,6 +146,10 @@ func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command stri
 	if strings.TrimSpace(command) != "" {
 		report.Source = "operator verification command"
 		r.runVerifyCommand(ctx, command, &report)
+	}
+
+	if len(examined) > 0 {
+		report.Selection = r.selectTests(ctx, examined)
 	}
 
 	if len(examined) == 0 {

@@ -211,6 +211,11 @@ func (s *sensor) check(ctx context.Context, e *agent.TurnStopping) error {
 		Paths: report.Examined, Findings: report.Findings,
 		Degraded: report.Degraded, Bounce: e.Bounce,
 	}
+	if sel := report.Selection; sel != nil {
+		data.TestSelection = sel.Summary()
+		data.SelectedTests = sel.Tests
+		data.SelectedTotal = sel.Total
+	}
 	if e.WroteTruncated {
 		data.Degraded = append(data.Degraded,
 			"this turn changed more paths than it tracked, so the examined set is incomplete")
@@ -410,6 +415,13 @@ func (s *sensor) run(ctx context.Context, e *agent.TurnStopping) devcouncil.Path
 	// test passed it: the gates read a.go, found nothing wrong, and certified a
 	// turn half of whose changes nothing had looked at. A non-empty list is
 	// evidence about the paths in it and about nothing else.
+	if e.UnenumeratedEffects {
+		report.Selection.Caveat("This turn also changed files through a command that could not be listed, " +
+			"so the selection covers only the listed paths")
+	}
+	if e.WroteTruncated {
+		report.Selection.Caveat("This turn changed more paths than it tracked, so the selection covers only the tracked ones")
+	}
 	if e.UnenumeratedEffects && s.command == "" {
 		report.Verdict = devcouncil.VerdictDegraded
 		report.Degraded = append(report.Degraded,
@@ -450,6 +462,12 @@ func (s *sensor) injection(ctx context.Context, e *agent.TurnStopping, report de
 				}
 			}
 		}
+	}
+
+	if report.Selection != nil {
+		b.WriteString("\n")
+		b.WriteString(report.Selection.Summary())
+		b.WriteString("\n")
 	}
 
 	b.WriteString("\nFix what is listed above, or say plainly that you cannot and why. " +
