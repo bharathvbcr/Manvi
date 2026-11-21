@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const leakToken = "ZQ97LEAK_sk_live"
+const leakMarker = "ZQ97LEAK_marker"
 
 func refuseSecretsDir(path string) string {
 	if strings.HasPrefix(path, "secrets/") {
@@ -26,15 +26,15 @@ func TestCodeGraphNeverRewritesAPathKeyAndStillJudgesIt(t *testing.T) {
 		`{"callee_name":"load","receiver":"config","source_file":"secrets/site.go"},` +
 		`{"callee_name":"open","receiver":"secrets","source_file":"secrets/site2.go"}]},` +
 		`"items":[{"file_path":"src/config.rs","path":"src/config.rs","signature":"fn ok()"},` +
-		`{"file_path":"secrets/vault.go","source":"` + leakToken + `"},` +
-		`{"path":"secrets/vault.go","source_span":"` + leakToken + `"},` +
-		`{"source_file":"secrets/vault.go","value":"` + leakToken + `"}]}`)
+		`{"file_path":"secrets/vault.go","source":"` + leakMarker + `"},` +
+		`{"path":"secrets/vault.go","source_span":"` + leakMarker + `"},` +
+		`{"source_file":"secrets/vault.go","value":"` + leakMarker + `"}]}`)
 	out, withheld, err := withholdGraphSources(raw, refuseSecretsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(out)
-	if strings.Contains(text, leakToken) {
+	if strings.Contains(text, leakMarker) {
 		t.Errorf("source from a refused path passed the gate: %s", text)
 	}
 	// Two refused receivers, plus source, source_span and value.
@@ -67,19 +67,19 @@ func decodeAny(t *testing.T, raw []byte) any {
 func TestCodeGraphCallSiteProseCannotBeBypassed(t *testing.T) {
 	site := `{"unresolved_namesakes":{"sites":[{"callee_name":"run","receiver":"%s","source_file":"secrets/s.go"}]}`
 	cases := map[string]string{
-		"receiver holding the lazy-match terminator": `{"walk_incomplete":"1 call site(s) the resolver could not bind name a symbol this answer reached (` + leakToken + `), so x.run) — an untyped receiver — so callers through them are not in it"}`,
-		"receiver holding the em-dash terminator":    `{"coverage_gap":"1 call site(s) inside what this answer walked could not be bound (a) — ` + leakToken + `.run), so what they call is not in it"}`,
-		"a :: label passes bareLabel":                `{"walk_incomplete":"1 call site(s) written as a qualified path name a symbol this answer reached (secrets::` + leakToken + `::run) — the crate or module the path starts with is not mapped to an indexed root — so callers through them are not in it"}`,
-		"a string inside an array":                   `{"notes":["1 call site(s) the resolver could not bind name a symbol this answer reached (` + leakToken + `.run) — an untyped receiver — so callers are not in it"]}`,
-		"a string in an array in an array":           `{"x":{"y":[["2 call site(s) inside what this answer walked could not be bound (` + leakToken + `.run), so what they call is not in it"]]}}`,
-		"an unparenthesised sample":                  `{"walk_incomplete":"3 call sites could not be bound: ` + leakToken + `.run, ` + leakToken + `.go"}`,
+		"receiver holding the lazy-match terminator": `{"walk_incomplete":"1 call site(s) the resolver could not bind name a symbol this answer reached (` + leakMarker + `), so x.run) — an untyped receiver — so callers through them are not in it"}`,
+		"receiver holding the em-dash terminator":    `{"coverage_gap":"1 call site(s) inside what this answer walked could not be bound (a) — ` + leakMarker + `.run), so what they call is not in it"}`,
+		"a :: label passes bareLabel":                `{"walk_incomplete":"1 call site(s) written as a qualified path name a symbol this answer reached (secrets::` + leakMarker + `::run) — the crate or module the path starts with is not mapped to an indexed root — so callers through them are not in it"}`,
+		"a string inside an array":                   `{"notes":["1 call site(s) the resolver could not bind name a symbol this answer reached (` + leakMarker + `.run) — an untyped receiver — so callers are not in it"]}`,
+		"a string in an array in an array":           `{"x":{"y":[["2 call site(s) inside what this answer walked could not be bound (` + leakMarker + `.run), so what they call is not in it"]]}}`,
+		"an unparenthesised sample":                  `{"walk_incomplete":"3 call sites could not be bound: ` + leakMarker + `.run, ` + leakMarker + `.go"}`,
 	}
 	for name, doc := range cases {
 		out, _, err := withholdGraphSources([]byte(doc), refuseSecretsDir)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if strings.Contains(string(out), leakToken) {
+		if strings.Contains(string(out), leakMarker) {
 			t.Errorf("%s: receiver text reached the model: %s", name, out)
 		}
 		if !strings.Contains(string(out), withheldLabels) {
@@ -87,8 +87,8 @@ func TestCodeGraphCallSiteProseCannotBeBypassed(t *testing.T) {
 		}
 	}
 	// A refused receiver is cut from its own key whatever the prose says.
-	out, _, err := withholdGraphSources([]byte(fmt.Sprintf(site, leakToken)+`}`), refuseSecretsDir)
-	if err != nil || strings.Contains(string(out), leakToken) {
+	out, _, err := withholdGraphSources([]byte(fmt.Sprintf(site, leakMarker)+`}`), refuseSecretsDir)
+	if err != nil || strings.Contains(string(out), leakMarker) {
 		t.Fatalf("receiver key leaked (%v): %s", err, out)
 	}
 }
