@@ -2,6 +2,7 @@ package devcouncil
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"path/filepath"
 	"sync"
 )
@@ -62,6 +63,22 @@ func (s *inspectedSet) digest(p string) (contentDigest, bool) {
 	defer s.mu.Unlock()
 	sum, ok := s.paths[inspectedKey(p)]
 	return sum, ok
+}
+
+// forget drops what the agent knew of p. A deleted path that comes back is a
+// different file, so the next overwrite must be preceded by a fresh read.
+func (s *inspectedSet) forget(p string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.paths, inspectedKey(p))
+}
+
+// changedSinceReadMessage is the refusal for a file that is no longer what the
+// agent read, whether the change was seen before the write or at the replace.
+func changedSinceReadMessage(path string) string {
+	return fmt.Sprintf("%s has changed since you read it, so it was not overwritten: write_file "+
+		"replaces every byte and would drop what was added. Read the whole file again with "+
+		"devcouncil_read_file (no offset or limit), or change part of it with devcouncil_patch_file", path)
 }
 
 // has reports whether the agent has read or written p at all, whatever the

@@ -271,9 +271,7 @@ func (r *Registry) overwriteRefusal(ctx context.Context, path, normalized string
 		return &res
 	}
 	if sha256.Sum256(current) != seen {
-		res := tools.Errorf("%s has changed since you read it, so it was not overwritten: write_file "+
-			"replaces every byte and would drop what was added. Read the whole file again with "+
-			"devcouncil_read_file (no offset or limit), or change part of it with devcouncil_patch_file", path)
+		res := tools.Errorf("%s", changedSinceReadMessage(path))
 		return &res
 	}
 	return nil
@@ -358,6 +356,11 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	if !outside && !creating {
 		if refusal := r.overwriteRefusal(ctx, args.Path, normalized); refusal != nil {
 			return *refusal
+		}
+		// The check above and the replace below are two steps; the replace
+		// repeats the comparison against these bytes just before it renames.
+		if seen, ok := r.inspected.digest(normalized); ok && pinned != nil {
+			pinned.requireContent(seen, args.Path)
 		}
 	}
 
@@ -462,12 +465,15 @@ func (r *Registry) deleteFile(ctx context.Context, call tools.Call) tools.Result
 		if err := RemovePinned(r.deps.Root, normalizedDelete); err != nil {
 			return tools.Errorf("%v", err)
 		}
-		return annotate(
+		// A path that comes back is a new file the agent has not read, and the
+		// index still holds the file that is gone.
+		r.inspected.forget(normalizedDelete)
+		return r.noteWriteImpact(ctx, annotate(
 			tools.Result{
 				Text:  fmt.Sprintf("deleted %s", decision.Target),
 				Wrote: []string{decision.Target},
 			},
-			decision)
+			decision), decision.Target)
 	}
 
 	full, err := r.resolvePath(args.Path)
