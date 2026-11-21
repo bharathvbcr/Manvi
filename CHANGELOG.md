@@ -39,6 +39,19 @@ under **Unreleased** in the same commit as the code.
   and a program run by `go run` read `secrets/` in dev posture; only a command
   naming the path is refused), why neither a containment seam nor a callable
   `dc-redact` contract exists yet, and the proposed seam. No behaviour change.
+- **Optional hosted web search for Anthropic agents, off by default.**
+  `llm.anthropic.web_search` (`off`, the default; `on`) and
+  `llm.anthropic.web_search_max_uses` (1 to 20, default 3) add Anthropic's
+  server-side `web_search_20250305` tool to requests that offer tools. Both are
+  operator scope: a repository `config.yaml` that sets either is refused. The
+  query text the model writes is sent to Anthropic and its search backend, and
+  results cannot be framed as untrusted by the harness, so the system prompt
+  says so while the tool is attached. Searches are priced ($10 per 1,000) and
+  reserved against the budget ledger; server blocks and citations are kept in
+  the session log's replay state and replayed only while they still match;
+  `pause_turn` is continued up to 4 times per turn and then ends unfinished
+  (new `llm.StopPause`, exit status 5). Previously a stream containing server
+  blocks or `citations_delta` failed to decode.
 
 - **`devcouncil_batch`: several independent lookups in one step.** Up to 16
   calls to allowlisted read-only tools (file reads, grep, find/list, the graph

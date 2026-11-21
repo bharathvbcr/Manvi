@@ -284,7 +284,8 @@ Every tool execution follows a 4-phase pipeline:
 
 ## Documentation lookup
 
-`devcouncil_fetch_url` is this harness's only outbound network path. It is
+`devcouncil_fetch_url` is this harness's only host-side outbound network path
+(the optional hosted web search below is run by the provider, not here). It is
 **off by default** and does not appear on the tool surface at all until an
 operator sets a host allowlist:
 
@@ -323,3 +324,45 @@ Every response is bounded (20s, 2 MiB, 5 redirects) and returned wrapped in
 page text cannot forge the closing line) that tell the model the enclosed text,
 including the page URL and title folded to one line each, is evidence and not instruction. That framing is steering, not a boundary — the
 boundary is the policy gate that every subsequent tool call still passes.
+
+## Hosted web search (Anthropic only, optional)
+
+Not a Manvi tool: it does not appear in the tool tables or counts above.
+`llm.anthropic.web_search = on` (operator scope, default `off`) adds
+Anthropic's server-side `web_search_20250305` tool to a Messages request that
+already offers tools, with `max_uses` from `llm.anthropic.web_search_max_uses`
+(default 3). Anthropic runs the search; the harness never fetches anything.
+
+- **Security impact.** The query text is chosen by the model and reaches
+  Anthropic and its search backend, so it is a path for repository content to
+  leave the machine. It bypasses `MANVI_FETCH_HOSTS` and a role's tool list. The
+  results are encrypted for the model, so the harness cannot wrap them in the
+  untrusted frame it puts around fetched pages; while the tool is attached the
+  system prompt says search results are untrusted data and must not be obeyed.
+  Turning it on is an explicit act of the operator; a repository config that
+  sets either key is refused.
+- **Cost.** $10 per 1,000 searches, billed on top of tokens. The adapter reads
+  `usage.server_tool_use.web_search_requests`, prices it (`Prices.SearchRequest`)
+  and a request reserves `max_uses` searches against the budget ledger.
+- **Session log.** Search blocks and cited text are kept verbatim in the
+  assistant message's adapter-private replay state and sent back only while they
+  still match the message and the tool is on the request. Otherwise the turn is
+  replayed as its visible text alone. An unanswered search left by a cancelled
+  turn is dropped rather than sent before an unrelated user message. A message
+  that holds nothing but server blocks has no visible content, is omitted like
+  any other hollow reply, and its turn is asked again instead of continued.
+- **`pause_turn`.** A provider-paused turn is continued as a step of its own,
+  at most 4 times per turn; past that it ends marked unfinished (exit status 5).
+- **Other providers (not wired here; from their documentation, read
+  2026-11-20).** Gemini offers Grounding with Google Search, enabled by passing
+  the `google_search` tool (`{"type": "google_search"}`; older models use
+  `google_search_retrieval`). The model decides when to search, the response
+  lists the queries it ran, and text carries `url_citation` annotations. On
+  Gemini 3 and newer it is billed per executed query ($14 per 1,000 after 5,000
+  free a month) and may be combined with function calling
+  (aistudio.google.com/docs/google-search). xAI offers a `web_search` tool
+  (`{"type": "web_search"}`) with `allowed_domains` or `excluded_domains`
+  (up to 5 each, not together) and optional image options; the page read does
+  not state pricing, model support or combination with function calling
+  (docs.x.ai/docs/guides/tools/search-tools). Both would follow the same
+  opt-in, operator-scope rule if added.

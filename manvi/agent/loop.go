@@ -908,6 +908,10 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 	// condition more attempts will fix, and an unbounded retry would spend the
 	// turn's budget on empty requests.
 	nullRetries := 0
+	// pauses counts continuations of a provider-hosted tool loop that paused,
+	// across the turn, for the same reason: a provider that keeps pausing is not
+	// a condition more requests will fix.
+	pauses := 0
 	for step := 1; ; step++ {
 		// The budget, not the step number. They are the same for a turn that
 		// keeps getting somewhere, and the ceiling still cannot be exceeded
@@ -995,6 +999,14 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 
 		if err := l.endStep(); err != nil {
 			return out, err
+		}
+
+		// A paused hosted-tool turn is not an answer. The history, which now ends
+		// on the paused message, is the continuation request; it goes out as a
+		// step of its own, so it is metered and journaled like any other.
+		if response.StopReason == llm.StopPause && len(calls) == 0 && pauses < maxPauses {
+			pauses++
+			continue
 		}
 
 		if len(calls) == 0 {
@@ -1237,6 +1249,7 @@ func (l *Loop) absorbResponse(out *Outcome, step int, response llm.Response) err
 	out.Usage.ReasoningTokens += response.Usage.ReasoningTokens
 	out.Usage.CacheReadTokens += response.Usage.CacheReadTokens
 	out.Usage.CacheWriteTokens += response.Usage.CacheWriteTokens
+	out.Usage.WebSearchRequests += response.Usage.WebSearchRequests
 	charge, priced := l.price(out, response.Usage)
 	// Throughput is a server-reported float, and the log encodes JSON, which
 	// has no NaN or Inf: one such value from a server would fail the append and
@@ -1777,6 +1790,10 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 // going to answer, and spending the whole step budget discovering that helps
 // nobody.
 const maxNullRetries = 3
+
+// maxPauses bounds how many times a turn continues a provider-hosted tool loop
+// that paused. Past it the turn ends on llm.StopPause and says so, unfinished.
+const maxPauses = 4
 
 // isNullResponse reports a response the server completed having generated
 // nothing: no text, no tool call, and no output tokens.

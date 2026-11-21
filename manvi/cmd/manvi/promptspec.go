@@ -40,7 +40,7 @@ const harnessSpecKey = "harness.spec"
 // tier keys, and not a safety flag. Empty selects no spec, which is the
 // behaviour of every release before this one.
 func harnessFlagDefs() []flags.Def {
-	return []flags.Def{{
+	return append(webSearchFlagDefs(), []flags.Def{{
 		Key: harnessSpecKey, Kind: flags.KindString, Default: "", Mutable: flags.HumanOnly,
 		Description: "Name of the harness spec this session runs with: extra prompt sections, a skills " +
 			"selection, a lessons library and sub-agent roles, from a spec the process registered or " +
@@ -72,7 +72,7 @@ func harnessFlagDefs() []flags.Def {
 		Description: "Whether devcouncil_batch is offered. off removes the tool from every tool set, drops the " +
 			"prompt's line about it, and with it the batching rule that harness.serial_lookups enforces. " +
 			"Operator scope: never read from the repository's config.yaml.",
-	}}
+	}}...)
 }
 
 // serialLookupsKey names the batching rule's mode; see agent.SerialLookups.
