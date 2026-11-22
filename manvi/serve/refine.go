@@ -700,10 +700,7 @@ func refineSymbolAnswer(ctx context.Context, devmap DevmapClient, symbol string,
 	}
 	walk := ""
 	if w := bytes.TrimSpace(blast.WalkIncomplete); len(w) > 0 && !bytes.Equal(w, []byte("null")) && !bytes.Equal(w, []byte("false")) {
-		if err := json.Unmarshal(w, &walk); err != nil {
-			walk = string(w)
-		}
-		if walk == "" {
+		if walk = walkNote(w); walk == "" {
 			walk = "incomplete"
 		}
 		walk = truncateRunes(walk, 400)

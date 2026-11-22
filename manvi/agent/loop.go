@@ -166,6 +166,20 @@ type TurnStopping struct {
 	// call.
 	Empty bool
 
+	// Final is true when this is the check's last look at the turn and it will
+	// not be sent back: the step ceiling ended the turn with changes the last
+	// verdict had not seen. A listener still records its verdict, and does not
+	// set Inject — the loop ignores it, and composing it would spend a critic on
+	// advice nobody receives.
+	Final bool
+
+	// Unexamined is set by a listener whose verdict was reached without looking
+	// at the turn's changes — the cut-off answer, which is sent back before any
+	// file is read. The verdict stands, but it is not the check the changes are
+	// owed, so the loop keeps owing it: a turn that then ends some other way is
+	// closed as degraded rather than as having been examined.
+	Unexamined bool
+
 	// Inject, when a listener sets it, is appended to the log as a message from
 	// the harness and the turn takes another step. Bounded by
 	// MaxCheckpointBounces per turn; past that the loop ignores it and closes,
@@ -256,6 +270,17 @@ type Config struct {
 	// and work that is genuinely stuck buys more thinking exactly when the
 	// cheap tier has been shown not to be enough.
 	EffortCeiling string
+	// EndOfTurnCheck declares that a terminal-checkpoint listener is attached
+	// to this loop's bus and owes every turn that changed something a verdict.
+	// The loop cannot count its own listeners, so the face that attached one
+	// says so. With it set, no way of ending a turn that changed files may
+	// leave without a recorded verdict: the step ceiling runs the check one
+	// last time, and a turn that ended some other way — an error, a
+	// cancellation — is closed as degraded, because a check that was owed and
+	// did not run must never read as one that ran and passed. Left false for a
+	// loop that is deliberately unchecked, a sub-agent's, whose changes come
+	// back through the parent's own check.
+	EndOfTurnCheck bool
 	// SystemPrompt is the assembled prompt for this run.
 	SystemPrompt string
 	// MaxSteps bounds a turn. A ceiling in code, not a prompt instruction:
@@ -287,6 +312,10 @@ type Config struct {
 	// AssertInvariant enables the model-visible-means-logged check before every
 	// dispatch. Mirrors flags.LogModelVisibleAssert.
 	AssertInvariant bool
+	// SerialLookups is what the loop does when consecutive steps each make a
+	// single read-only lookup while devcouncil_batch is offered. Empty means
+	// SerialLookupsRefuse; see agent/batch.go.
+	SerialLookups SerialLookups
 	// Price, when set, prices one response's usage in nano-USD. Nil means the
 	// model has no price table here, and every step is counted as unpriced.
 	//
@@ -324,6 +353,9 @@ type Loop struct {
 	log     *session.Log
 	tools   *tools.Registry
 	repeats *repeatTracker
+	// serialLookups counts consecutive steps that each made exactly one
+	// batchable lookup; see nudgeSerialLookups. Per-turn state.
+	serialLookups int
 	// progress decides whether a step got anywhere. It is rebuilt per turn,
 	// after tool registration, because it reads the registry to learn which
 	// tools are allowed to mutate.
@@ -338,6 +370,11 @@ type Loop struct {
 	// the compaction path, copied onto the Outcome at turn end. Reset per turn
 	// alongside the other per-turn state.
 	overflowed bool
+	// unchecked is true from a mutation until a checkpoint has recorded a
+	// verdict after it: the difference between "the check ran on this turn's
+	// changes" and "the check ran on an earlier state of the tree". Reset at
+	// the start of each Run.
+	unchecked bool
 	// effort is the tier the *next* request will carry. It is per-turn state,
 	// reset by Run: a turn that had to think harder says nothing about the next
 	// one, for the same reason the repeat ledger and the progress tracker do
@@ -397,6 +434,9 @@ func NewLoop(cfg Config, b *bus.Bus, log *session.Log, registry *tools.Registry)
 	}
 	if cfg.MaxSteps <= 0 {
 		return nil, errors.New("agent: MaxSteps must be positive; an unbounded turn is not a turn")
+	}
+	if !serialLookupModes[cfg.SerialLookups] {
+		return nil, fmt.Errorf("agent: SerialLookups %q is not off, note or refuse", cfg.SerialLookups)
 	}
 
 	plan, err := planEffort(cfg)
@@ -878,7 +918,7 @@ type Outcome struct {
 // response; absorbResponse folds that response into the outcome; dispatchCalls
 // runs its tool calls; chargeStep spends the budget. A step with no tool calls
 // ends at closeOrBounce, the terminal checkpoint.
-func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
+func (l *Loop) Run(ctx context.Context, prompt llm.Message) (out Outcome, runErr error) {
 	// Every exit leaves the log balanced. A failed turn used to return with
 	// turn/start and step/start still open, so the projected stream carried a
 	// turn.start with no turn.end and the next turn began inside it. The error
@@ -891,19 +931,32 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		return Outcome{}, err
 	}
 
-	var out Outcome
+	// Registered after the deferrals above, so it runs before them: the turn's
+	// boundaries are still open in the log when it records.
+	l.unchecked = false
+	defer l.sealUnchecked(ctx, &out, &runErr)
 	out.EffortFrom, out.EffortTo = l.cfg.Effort, l.cfg.Effort
 	// nullRetries counts responses that carried nothing, across the whole turn
 	// rather than per step: a server producing them repeatedly is not a
 	// condition more attempts will fix, and an unbounded retry would spend the
 	// turn's budget on empty requests.
 	nullRetries := 0
+	// pauses counts continuations of a provider-hosted tool loop that paused,
+	// across the turn, for the same reason: a provider that keeps pausing is not
+	// a condition more requests will fix.
+	pauses := 0
 	for step := 1; ; step++ {
 		// The budget, not the step number. They are the same for a turn that
 		// keeps getting somewhere, and the ceiling still cannot be exceeded
 		// either way, because the cheapest step costs 1.
 		if out.BudgetSpent >= l.cfg.MaxSteps {
 			out.TruncatedBySteps = true
+			// The ceiling is not a reason to leave the changes unexamined: a
+			// turn that wrote nine files and ran out of steps is the turn that
+			// most needs to know whether they build.
+			if err := l.finalCheck(ctx, &out, currentTurn); err != nil {
+				return out, err
+			}
 			break
 		}
 
@@ -985,6 +1038,14 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 
 		if err := l.endStep(); err != nil {
 			return out, err
+		}
+
+		// A paused hosted-tool turn is not an answer. The history, which now ends
+		// on the paused message, is the continuation request; it goes out as a
+		// step of its own, so it is metered and journaled like any other.
+		if response.StopReason == llm.StopPause && len(calls) == 0 && pauses < maxPauses {
+			pauses++
+			continue
 		}
 
 		if len(calls) == 0 {
@@ -1101,6 +1162,7 @@ func (l *Loop) announceTurnEnd(ctx context.Context) {
 func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
 	l.repeats = newRepeatTracker()
 	l.progress = newProgressTracker(l.tools)
+	l.serialLookups = 0
 	l.overflowed = false
 	l.openCalls = nil
 	turnEvent, err := l.log.Append(session.TurnStart, nil)
@@ -1226,6 +1288,7 @@ func (l *Loop) absorbResponse(out *Outcome, step int, response llm.Response) err
 	out.Usage.ReasoningTokens += response.Usage.ReasoningTokens
 	out.Usage.CacheReadTokens += response.Usage.CacheReadTokens
 	out.Usage.CacheWriteTokens += response.Usage.CacheWriteTokens
+	out.Usage.WebSearchRequests += response.Usage.WebSearchRequests
 	charge, priced := l.price(out, response.Usage)
 	// Throughput is a server-reported float, and the log encodes JSON, which
 	// has no NaN or Inf: one such value from a server would fail the append and
@@ -1300,12 +1363,20 @@ type stepTally struct {
 	// observable progress. It is per step rather than per call so a step
 	// that refused three calls climbs one rung, not three.
 	circling bool
+	// serialRefused records that the step's one call was refused for being
+	// another lone lookup. The harness made that call, not the model's
+	// circling, so chargeStep charges it as one step rather than as a stall.
+	serialRefused bool
 }
 
 // dispatchCalls runs one response's tool calls in order, recording each call,
 // what the gate made of it, and its result.
 func (l *Loop) dispatchCalls(ctx context.Context, out *Outcome, calls []llm.ToolCallBlock) (stepTally, error) {
 	var tally stepTally
+	single := l.singleLookup(calls)
+	if !single {
+		l.serialLookups = 0
+	}
 	for _, call := range calls {
 		if _, err := l.log.Append(session.ToolCall, session.ToolCallData{
 			ID: call.ID, Name: call.Name, Arguments: call.Arguments,
@@ -1313,7 +1384,15 @@ func (l *Loop) dispatchCalls(ctx context.Context, out *Outcome, calls []llm.Tool
 			return tally, err
 		}
 
-		result := l.runCall(ctx, out, &tally, call)
+		result, refused := l.refuseSerialLookup(single)
+		if refused {
+			tally.serialRefused = true
+		} else {
+			result = l.runCall(ctx, out, &tally, call)
+			if single {
+				result = l.noteSerialLookup(result)
+			}
+		}
 		out.ToolCalls++
 
 		if err := l.recordCall(out, call, result); err != nil {
@@ -1419,32 +1498,51 @@ func (l *Loop) runCall(ctx context.Context, out *Outcome, tally *stepTally, call
 				NoProgressLimit, call.Name),
 		}
 
+	case call.Name == tools.BatchToolName:
+		// Expanded here, not in a handler: every inner call has to pass the
+		// same offered-set, repeat and accounting path as a top-level one,
+		// and those live on the loop. See batch.go.
+		result = l.runBatch(ctx, out, tally, call)
+
+	case call.Name == tools.ScriptToolName:
+		// Expanded here for the same reason as the batch: every call the
+		// script makes passes the loop's own admission and accounting.
+		result = l.runScript(ctx, out, tally, call)
+
 	default:
 		result = l.tools.Run(ctx, tools.Call{
 			ID: call.ID, Name: call.Name, Arguments: call.Arguments,
 		})
-		tally.ran++
-		if l.progress.observe(call.Name, result) {
-			tally.progressed = true
-		}
-		// Recorded here rather than derived later, and only for calls
-		// that actually ran: a refused call changed nothing, and a
-		// repeat or stall refusal above never reached a handler.
-		if l.progress.mutated(call.Name, result) {
-			out.Mutated = true
-			// A call that changed something and named no path leaves
-			// effects nothing downstream can enumerate. Recorded here,
-			// beside Mutated, because this is the only place that knows
-			// both facts about the same call: by the time the paths are
-			// merged into out.Wrote, a shell command that wrote nothing
-			// is indistinguishable from a native write that reported.
-			if len(result.Wrote) == 0 {
-				out.UnenumeratedEffects = true
-			}
-		}
-		out.Wrote, out.WroteTruncated = tools.MergeWrites(out.Wrote, out.WroteTruncated, result.Wrote)
+		l.account(out, tally, call.Name, result)
 	}
 	return result
+}
+
+// account folds one call that actually ran into the step's tally and the
+// turn's outcome. Shared by top-level calls and the calls inside a batch, so
+// the two cannot disagree about what counts as progress or as a mutation.
+func (l *Loop) account(out *Outcome, tally *stepTally, name string, result tools.Result) {
+	tally.ran++
+	if l.progress.observe(name, result) {
+		tally.progressed = true
+	}
+	// Recorded here rather than derived later, and only for calls
+	// that actually ran: a refused call changed nothing, and a
+	// repeat or stall refusal above never reached a handler.
+	if l.progress.mutated(name, result) {
+		out.Mutated = true
+		l.unchecked = true
+		// A call that changed something and named no path leaves
+		// effects nothing downstream can enumerate. Recorded here,
+		// beside Mutated, because this is the only place that knows
+		// both facts about the same call: by the time the paths are
+		// merged into out.Wrote, a shell command that wrote nothing
+		// is indistinguishable from a native write that reported.
+		if len(result.Wrote) == 0 {
+			out.UnenumeratedEffects = true
+		}
+	}
+	out.Wrote, out.WroteTruncated = tools.MergeWrites(out.Wrote, out.WroteTruncated, result.Wrote)
 }
 
 func schemaNames(schemas []llm.ToolSchema) map[string]struct{} {
@@ -1512,6 +1610,25 @@ func (l *Loop) notOfferedText(name string) string {
 // recordCall records what the gate made of one call, any grant it applied,
 // and the result the model is shown.
 func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Result) error {
+	if err := l.recordPolicy(out, call.ID, call.Name, result); err != nil {
+		return err
+	}
+
+	if _, err := l.log.Append(session.ToolResult, session.ToolResultData{
+		ToolCallID: call.ID, Text: result.Text, Content: result.Content, IsError: result.IsError,
+	}); err != nil {
+		return err
+	}
+	l.answered(call.ID)
+	return nil
+}
+
+// recordPolicy writes what the gate made of one call — a denial, a
+// qualification, a grant — as its own events. They are evidence, not wire: the
+// session projection never turns them into messages, so a call inside a batch,
+// which has no tool_use block of its own, can be recorded here under its
+// derived ID without leaving an orphan for a provider to reject.
+func (l *Loop) recordPolicy(out *Outcome, id llm.CallID, name string, result tools.Result) error {
 	// A gate decision is recorded as its own event *in addition to*
 	// the tool result, so the evidence trail explains the outcome
 	// without the model-facing result having to carry policy detail.
@@ -1547,7 +1664,7 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 		// keeps that true. The claim it makes is exactly right here:
 		// this outcome was not reached by the rules running cleanly.
 		if _, err := l.log.Append(session.PolicyQualified, session.QualificationData{
-			ToolCallID: call.ID, Tool: call.Name,
+			ToolCallID: id, Tool: name,
 			Reason: result.Text, Degraded: result.Degraded,
 		}); err != nil {
 			return err
@@ -1555,7 +1672,7 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 	case result.Blocked:
 		out.Denied++
 		if _, err := l.log.Append(session.PolicyDenied, session.DenialData{
-			ToolCallID: call.ID, Tool: call.Name,
+			ToolCallID: id, Tool: name,
 			Rule: result.Rule, Severity: result.Severity, Reason: result.Text,
 		}); err != nil {
 			return err
@@ -1563,7 +1680,7 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 	case result.Qualified():
 		out.Qualified++
 		if _, err := l.log.Append(session.PolicyQualified, session.QualificationData{
-			ToolCallID: call.ID, Tool: call.Name,
+			ToolCallID: id, Tool: name,
 			Rule: result.Rule, Severity: result.Severity, Reason: result.Text,
 			Demoted: result.Demoted, Widened: result.Widened, Degraded: result.Degraded,
 		}); err != nil {
@@ -1573,18 +1690,11 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 	if result.GrantID != "" {
 		if _, err := l.log.Append(session.GrantApplied, session.GrantData{
 			GrantID: result.GrantID, GrantedBy: result.GrantedBy,
-			Rule: result.Rule, Target: call.Name, Reason: result.Text,
+			Rule: result.Rule, Target: name, Reason: result.Text,
 		}); err != nil {
 			return err
 		}
 	}
-
-	if _, err := l.log.Append(session.ToolResult, session.ToolResultData{
-		ToolCallID: call.ID, Text: result.Text, Content: result.Content, IsError: result.IsError,
-	}); err != nil {
-		return err
-	}
-	l.answered(call.ID)
 	return nil
 }
 
@@ -1593,6 +1703,11 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 func (l *Loop) chargeStep(out *Outcome, calls int, tally stepTally) {
 	// The step is charged here, before any path that leaves the iteration,
 	// so no route through the loop can take a step without paying for it.
+	if tally.serialRefused && tally.ran == 0 {
+		// The only call was refused by refuseSerialLookup: nothing ran, and
+		// the step is charged like a text-only one, not as waste.
+		calls = 0
+	}
 	cost, noProgress := l.progress.endStep(calls, tally.ran, tally.progressed)
 	out.BudgetSpent += cost
 	if noProgress {
@@ -1654,28 +1769,12 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 		Truncated:           out.FinalTruncated, Empty: out.FinalEmpty,
 		Bounce: out.Bounces, Circling: out.Repeated + out.Stalled,
 	}
-	if err := bus.Serial(l.bus, ctx, checkpoint); err != nil {
-		// The listener failed. It did not ask for another step, and
-		// re-sending an identical history is not a recovery — it is
-		// the same request with the same answer, charged again. So the
-		// turn closes, and closes loudly: a check that was owed and
-		// could not be completed is degraded, never a pass.
-		out.Sensor = SensorDegraded
-		if _, appendErr := l.log.Append(session.VerifyReport, session.VerifyReportData{
-			Verdict: string(SensorDegraded),
-			Source:  "checkpoint",
-			Paths:   out.Wrote,
-			Degraded: []string{
-				"the terminal checkpoint failed: " + err.Error(),
-			},
-			Bounce: out.Bounces,
-		}); appendErr != nil {
-			return false, appendErr
-		}
-		return true, nil
+	listenerFailed, err := l.consult(ctx, out, checkpoint)
+	if err != nil {
+		return false, err
 	}
-	if checkpoint.Verdict != "" {
-		out.Sensor = checkpoint.Verdict
+	if listenerFailed {
+		return true, nil
 	}
 	inject := strings.TrimSpace(checkpoint.Inject)
 	if inject == "" {
@@ -1714,12 +1813,108 @@ func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, respon
 	return false, nil
 }
 
+// consult runs the terminal checkpoint's listeners and folds what they
+// concluded into the outcome. It reports whether a listener failed, in which
+// case the turn is closed and the failure is on the outcome and in the log.
+func (l *Loop) consult(ctx context.Context, out *Outcome, checkpoint *TurnStopping) (listenerFailed bool, err error) {
+	if listenerErr := bus.Serial(l.bus, ctx, checkpoint); listenerErr != nil {
+		// The listener failed. It did not ask for another step, and
+		// re-sending an identical history is not a recovery — it is
+		// the same request with the same answer, charged again. So the
+		// turn closes, and closes loudly: a check that was owed and
+		// could not be completed is degraded, never a pass. What this
+		// returns is the log's own failure to say so, if it has one.
+		out.Sensor = SensorDegraded
+		l.unchecked = false
+		_, appendErr := l.log.Append(session.VerifyReport, session.VerifyReportData{
+			Verdict: string(SensorDegraded),
+			Source:  "checkpoint",
+			Paths:   out.Wrote,
+			Degraded: []string{
+				"the terminal checkpoint failed: " + listenerErr.Error(),
+			},
+			Bounce: out.Bounces,
+		})
+		return appendErr == nil, appendErr
+	}
+	if checkpoint.Verdict != "" {
+		out.Sensor = checkpoint.Verdict
+		if !checkpoint.Unexamined {
+			l.unchecked = false
+		}
+	}
+	return false, nil
+}
+
+// finalCheck gives a turn that the step ceiling ended, with changes the last
+// verdict had not seen, the check it was owed. It cannot send the turn back:
+// there is no step left to send it to, so the verdict is the whole product.
+// A cancelled context is left to sealUnchecked, which says the check did not
+// run rather than starting a verifier nobody is waiting for.
+func (l *Loop) finalCheck(ctx context.Context, out *Outcome, turn int) error {
+	if !l.cfg.EndOfTurnCheck || !out.Mutated || !l.unchecked {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+	_, err := l.consult(ctx, out, &TurnStopping{
+		Turn: turn, Steps: out.Steps,
+		Mutated: out.Mutated, Wrote: out.Wrote,
+		WroteTruncated:      out.WroteTruncated,
+		UnenumeratedEffects: out.UnenumeratedEffects,
+		Bounce:              out.Bounces, Circling: out.Repeated + out.Stalled,
+		Final: true,
+	})
+	return err
+}
+
+// sealUnchecked is the loop's guarantee that a turn which changed something
+// does not end without a verdict about it. Every exit that did not reach the
+// terminal checkpoint — a provider error, a failed append, a cancellation —
+// lands here, and the turn is recorded as degraded: the check was owed and did
+// not run. The reason names the kind of exit and not its text, which can carry
+// a provider's response and has no business in a verification record.
+func (l *Loop) sealUnchecked(ctx context.Context, out *Outcome, runErr *error) {
+	if !l.cfg.EndOfTurnCheck || !out.Mutated || !l.unchecked {
+		return
+	}
+	reason := "the end-of-turn check was owed and did not run"
+	switch {
+	case *runErr != nil:
+		reason += ": the turn failed before it ended"
+	case ctx.Err() != nil:
+		reason += ": the turn was cancelled"
+	default:
+		reason += ": no checkpoint listener reported a verdict"
+	}
+	out.Sensor = SensorDegraded
+	l.unchecked = false
+	if _, err := l.log.Append(session.VerifyReport, session.VerifyReportData{
+		Verdict: string(SensorDegraded),
+		Source:  "not run",
+		Paths:   out.Wrote,
+		Degraded: []string{
+			reason + ", so this turn's changes were not verified",
+		},
+		Bounce: out.Bounces,
+	}); err != nil && *runErr == nil {
+		*runErr = err
+	}
+}
+
 // maxNullRetries bounds how many times a turn will re-ask for a response that
 // carried nothing. Three, because the condition is transient and uncorrelated
 // in what was measured — a fourth consecutive null is a provider that is not
 // going to answer, and spending the whole step budget discovering that helps
 // nobody.
 const maxNullRetries = 3
+
+// maxPauses bounds how many times a turn continues a provider-hosted tool loop
+// that paused. Past it the turn ends on llm.StopPause and says so, unfinished.
+const maxPauses = 4
 
 // isNullResponse reports a response the server completed having generated
 // nothing: no text, no tool call, and no output tokens.

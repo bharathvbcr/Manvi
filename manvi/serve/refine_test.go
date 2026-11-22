@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,8 @@ type refineDevmap struct {
 	queries []mapclient.AdvancedQuery
 	// truncated makes every answer report a capped result with an incomplete walk.
 	truncated bool
+	// walkText replaces the incomplete-walk message of a truncated answer.
+	walkText string
 }
 
 func builtIndex() *mapclient.Status {
@@ -59,6 +62,9 @@ func (f *refineDevmap) Advanced(_ context.Context, q mapclient.AdvancedQuery) (m
 	walk := ""
 	if f.truncated {
 		walk = `,"walk_incomplete":"stopped at depth 2"`
+		if f.walkText != "" {
+			walk = `,"walk_incomplete":` + strconv.Quote(f.walkText)
+		}
 	}
 	var data string
 	switch q.Kind {
@@ -177,6 +183,17 @@ func TestRefineProposesGroundedChangesAndNeverAppliesThem(t *testing.T) {
 	}
 	if task := enhancementCall(t, env.client, "items.get", `{"id":"t"}`); !strings.Contains(string(task), `"revision":2`) {
 		t.Fatalf("refine modified the task: %s", task)
+	}
+}
+
+func TestRefineWalkIncompleteNoteWithholdsCallSiteSamples(t *testing.T) {
+	env := refineFixture(t, &refineDevmap{status: builtIndex(), known: map[string]bool{"EnhancementRunner": true}, truncated: true,
+		walkText: "1 call site(s) the resolver could not bind name a symbol this answer reached (ZQ97LEAK_sk_live.run) — an untyped receiver — so callers through them are not in it"})
+	env.answer(`{"acceptance_criteria":["E42 is fixed"],"split_into":[],"duplicate_of":[]}`)
+	got := env.mustRefine(t, "trunc")
+	s := got.Grounding.Symbols[0]
+	if s.Impact == nil || strings.Contains(s.Impact.WalkIncomplete, "ZQ97LEAK") || !strings.Contains(s.Impact.WalkIncomplete, "1 call site(s)") {
+		t.Fatalf("the walk note carried a call-site sample or lost its count: %+v", s.Impact)
 	}
 }
 

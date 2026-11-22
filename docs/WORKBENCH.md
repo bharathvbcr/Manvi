@@ -1181,7 +1181,7 @@ by the `manvi tools` listing, which prints what those two offer.
   the `codingagent` package imports neither the tool surface nor the registry
   (`TestManagedRunsHaveNoPathToTheBoardTools`).
 - *Counts.* The documented tool counts are the agent surface's and moved by six:
-  51 native tools, 50 with no skills (`docs/TOOLS_REFERENCE.md` section 14 specifies
+  53 native tools, 52 with no skills (`docs/TOOLS_REFERENCE.md` section 14 specifies
   the six; `TestDocumentedToolCountMatchesRegistry` measures them). The six are
   Extended, so the lean dynamic profile's offered set is unchanged.
 

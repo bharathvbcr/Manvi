@@ -1,6 +1,6 @@
 # DevCouncil Native Tool Suite Reference
 
-MANVI implements the DevCouncil development tool suite natively in Go and Rust — **50 core tools**, as reported by `manvi tools` in a repository with no skills: 40 `devcouncil_*` tools, 4 `mcp_*` tools and 6 `work_*` board tools, plus `devcouncil_load_skill` when the repository has skills (51 with it). That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
+MANVI implements the DevCouncil development tool suite natively in Go and Rust — **53 core tools**, as reported by `manvi tools` in a repository with no skills: 43 `devcouncil_*` tools, 4 `mcp_*` tools and 6 `work_*` board tools, plus `devcouncil_load_skill` when the repository has skills (54 with it). That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
 
 ---
 
@@ -9,11 +9,11 @@ MANVI implements the DevCouncil development tool suite natively in Go and Rust �
 | Category | Count | Primary Purpose |
 |---|---|---|
 | **Task Lifecycle** | 5 | Discover tasks, manage exclusive SQLite leases, and track progress. |
-| **Guarded Mutation & Workspace** | 10 | Read/write files, apply exact-match patches, run audited commands, and query directories. |
+| **Guarded Mutation & Workspace** | 12 | Read/write files, apply exact-match patches, run audited commands, query directories, batch independent lookups into one step, and chain dependent ones with a script. |
 | **Multi-Agent Coordination** | 1 | Dispatch and coordinate concurrent sub-agent execution pools. |
 | **Override Seam** | 1 | Request audited Human or Agent overrides for soft policy denials. |
 | **Verification & Evidence** | 4 | Inspect git diffs, run verification rigor gates, and obtain typed repair actions. |
-| **Code Graph & Navigation** | 3 | Query AST symbol definitions, detect dead code, and analyze blast radii. |
+| **Code Graph & Navigation** | 4 | Explore definitions, impact, traces and affected tests; query AST symbol definitions, detect dead code, and analyze blast radii. |
 | **Git Integration** | 6 | Structured version-control reads (status, log, branches, show) plus gate-arbitrated staging and committing. |
 | **External CLI Bridge** | 1 | Optional pin (`MANVI_DEVCOUNCIL_BINARY`) for a status/gaps/check inspect binary. The Python `dev` CLI is deleted; Go `devcouncil` does not implement those sections. Prefer native tools. |
 | **Tool Discovery & Activation** | 2 | Search the registry by capability and pull tools or whole groups into the model's active context. |
@@ -28,7 +28,7 @@ it is registered only when an operator sets `MANVI_FETCH_HOSTS`, so an
 unconfigured harness offers the counted set and a configured one offers exactly
 one more. See [Documentation lookup](#documentation-lookup).
 
-The fourteen rows above sum to the 51 tools `manvi tools` reports when the repository has skills: the 50 core tools, plus `devcouncil_load_skill`.
+The fourteen rows above sum to the 54 tools `manvi tools` reports when the repository has skills: the 53 core tools, plus `devcouncil_load_skill`.
 
 `devcouncil_load_skill` is the one tool counted above that is **registered only
 when the repository has skills**. It is decided once, when a session opens: the
@@ -72,13 +72,15 @@ schema means.
 | `devcouncil_policy_check_write` | Read-only | `path` (string), `task_id` (string, optional) | Probes the write gate policy without touching the filesystem. Returns decision and rule provenance. |
 | `devcouncil_read_file` | Read-only | `path` (string), `offset` (int, opt), `limit` (int, opt) | Reads file contents safely from within the workspace root. |
 | `devcouncil_load_skill` | Read-only | `name` (string) | Registered only when the repository has skills (decided at session open; see above). Loads one repository skill, the body of `.agents/skills/<name>/SKILL.md`, bounded to 32,000 runes. The name must match `[a-z0-9][a-z0-9_-]*`; an unknown name is refused with the skill directories that exist (at most 20 named), and a skill the loader rejected (no `description:`, `name:` not equal to its directory, a control or format character in a value, over 64 KiB, outside the repository) is refused with the reason. The body is untrusted repository content, like AGENTS.md. Agents cannot author skills under any posture: DevCouncil's prompt-input rule write-denies the `.agents/skills` roots at any depth, and yolo does not switch it off. |
-| `devcouncil_write_file` | Write | `path` (string), `content` (string), `task_id` (string, optional) | Performs an atomic write passing the 6-rung policy gate. Requires active lease under strict posture. |
-| `devcouncil_patch_file` | Write | `path` (string), `target` (string), `replacement` (string), `start_line` (int), `end_line` (int) | Performs targeted exact-block substring replacement bounded by line numbers. Fails closed on ambiguity. |
+| `devcouncil_write_file` | Write | `path` (string), `content` (string), `task_id` (string, optional) | Performs an atomic write passing the 6-rung policy gate. Requires active lease under strict posture. An existing file is overwritten only if this session read it in full and it is unchanged on disk since (a SHA-256 of the bytes shown or written is compared); otherwise the write is refused and asks for a fresh read. With a code index attached, the result ends with one impact line: up to 10 callers outside the file, labelled with the index generation (and stated stale when the index has not seen the write), or a line saying the impact check did not run. |
+| `devcouncil_patch_file` | Write | `path` (string), `target` (string), `replacement` (string), `start_line` (int), `end_line` (int) | Performs targeted exact-block substring replacement bounded by line numbers. Fails closed on ambiguity. Carries the same impact line as `devcouncil_write_file`. |
 | `devcouncil_delete_file` | Write | `path` (string), `task_id` (string, optional) | Safely deletes a file after passing policy gate and lease checks. |
 | `devcouncil_exec_command` | Write | `command` (string), `task_id` (string, optional), `timeout` (string, opt) | Executes shell commands guarded by the command gate and safety allowlists. |
 | `devcouncil_list_dir` | Read-only | `path` (string), `recursive` (bool, optional), `include_ignored` (bool, optional) | Without `recursive`, reports the literal directory as it is on disk — no ignore rules, because "what is in this directory" is a different question. With `recursive`, enumerates **exactly the files `devcouncil_grep` would search**, honouring ignore rules unless `include_ignored` is set. |
 | `devcouncil_find_files` | Read-only | `pattern` (string), `path` (string, optional), `max_results` (int, optional), `include_ignored` (bool, optional) | Glob matching (`*.go`, `src/**/*.rs`) over **exactly the files `devcouncil_grep` would search** — one walk, one set of ignore rules, so the two tools cannot describe different repositories. Globs are matched by the harness's own `fnmatch`, pinned to the 775-case CPython parity fixture. Reports `files_considered` and flags a truncated candidate list separately from a truncated match list. |
 | `devcouncil_grep` | Read-only | `pattern` (string), `path` (string, optional), `max_results` (int, optional), `include_ignored` (bool, optional), `case_insensitive` (bool, optional) | Regular-expression search across the workspace, on ripgrep's engine in the analysis plane. Honours `.gitignore`, `.ignore`, `.git/info/exclude` and hidden files unless `include_ignored` is set; never reads `.git` or `.devcouncil`. Reports files searched and files skipped, so a result is never mistaken for full coverage. Files the read gate refuses (credential paths, hard-linked files) are never opened by the search; they are listed under `withheld` from the file set alone, so no field of the reply depends on what is inside them. An unparseable pattern is an error, never an empty match list. |
+| `devcouncil_batch` | Read-only | `calls` (array of up to 16 `{tool, args, match, max_lines}`) | Runs independent lookups in one step, concurrently (at most 4 at once), and returns one result holding only the lines each call kept (`match`: RE2 filter; `max_lines`: default 200, at most 2000), with a line saying what was left out. The agent loop expands it, so every inner call passes the same offered-set check, repeat ledger, progress accounting and gate-evidence recording as a top-level call; inner calls are never wire messages. Only tools on an explicit allowlist run inside it (file reads, `grep`, `find_files`, `list_dir`, the graph tools, git reads, `get_diff`); writes, commands, activation, sub-agents, nested batches and `devcouncil_fetch_url` are refused per call. Calls cannot use each other's results. Each call may keep up to 32 KiB, and the batch up to 128 KiB in all, spent in call order. A `read_file` inside a batch counts as read for the overwrite guard only if its answer was shown whole. The tool's description lists the batchable tools as the registry marks them. The operator can withhold the tool with `harness.batch_tool: off`, which also removes the prompt's batch line and the serial-lookup rule. |
+| `devcouncil_script` | Read-only | `script` (string, Starlark, at most 16 KiB), `max_calls` (int, optional; default 16, at most 32) | Chains lookups in one step: a short Starlark program whose functions are the registry's tools, called by full name with keyword arguments only (`devcouncil_grep(pattern="x")`). Each call returns a struct with `text` (the answer, cut at 32 KiB), `error` (the call failed or was refused), `refused` (it was not run) and `truncated`; Starlark has no try, so a script branches on those fields. `json.decode` and `json.encode` are available, and `print()` is the only output (at most 128 KiB). The agent loop runs it, one call at a time, and every call passes exactly the admission a batch item passes (the shared `admitInner`: registered, offered this step, on the Batchable allowlist, not a batch or a script, inside the repeat ledger) with the same progress accounting and gate-evidence recording, under derived IDs `<call id>#<n>`; inner calls are never wire messages. Bounds: `max_calls`, 1,000,000 interpreter steps, 30 s of wall time (tool calls included; cancelling the turn ends it too), 32 KiB per answer, 128 KiB of output; a breach ends the script and keeps the output produced so far. Hermetic: the interpreter universe is only Starlark's pure builtins, `load()` fails (no loader is installed), and there is no file, network, clock or random access. A `read_file` inside a script is never counted as read for the overwrite guard, whatever the script prints. A step holding a script call is not a lone lookup for `harness.serial_lookups`. Withheld together with the batch tool by `harness.batch_tool: off`. |
 
 ---
 
@@ -113,6 +115,7 @@ schema means.
 
 | Native Tool | Access | Parameters | Description |
 |---|---|---|---|
+| `devcouncil_code` | Read-only | `kind` (`explore`\|`impact`\|`trace`\|`affected`), `query`, `to`, `targets`, `depth` (1–8, default 2), `budget` (default 3000 tokens) | Asks the code graph through DevCouncil's `devmap.Client.Advanced`, the same generation-qualified query `manvi serve` uses. Returns devmap's envelope with its completeness fields (`truncated`, `walk_incomplete`, unresolved namesakes) intact; every source excerpt is passed through the read gate, and one that cannot be attributed to a file is withheld. Core whenever a navigator is attached, Extended otherwise. When the index is behind the tree, the payload opens with `index_notice` naming the paths this session wrote that the index has not seen and saying an empty or partial answer is not a negative. A completeness field devmap repeats identically on every sub-envelope (`source_freshness`, and `walk_incomplete` when every envelope carries the same one) is hoisted once into `shared_envelope` and removed from each copy; differing values stay in place. |
 | `devcouncil_graph_query` | Read-only | `symbol` (string), `kind` (string, optional) | Searches AST symbol definitions and references with file paths and line spans. |
 | `devcouncil_code_dead` | Read-only | `path` (string, optional) | Identifies callerless dead code functions and structs with exemption annotations. |
 | `devcouncil_graph_context` | Read-only | `path` (string) | Performs blast-radius analysis: lists incoming callers and outgoing dependencies. |
@@ -282,7 +285,8 @@ Every tool execution follows a 4-phase pipeline:
 
 ## Documentation lookup
 
-`devcouncil_fetch_url` is this harness's only outbound network path. It is
+`devcouncil_fetch_url` is this harness's only host-side outbound network path
+(the optional hosted web search below is run by the provider, not here). It is
 **off by default** and does not appear on the tool surface at all until an
 operator sets a host allowlist:
 
@@ -321,3 +325,45 @@ Every response is bounded (20s, 2 MiB, 5 redirects) and returned wrapped in
 page text cannot forge the closing line) that tell the model the enclosed text,
 including the page URL and title folded to one line each, is evidence and not instruction. That framing is steering, not a boundary — the
 boundary is the policy gate that every subsequent tool call still passes.
+
+## Hosted web search (Anthropic only, optional)
+
+Not a Manvi tool: it does not appear in the tool tables or counts above.
+`llm.anthropic.web_search = on` (operator scope, default `off`) adds
+Anthropic's server-side `web_search_20250305` tool to a Messages request that
+already offers tools, with `max_uses` from `llm.anthropic.web_search_max_uses`
+(default 3). Anthropic runs the search; the harness never fetches anything.
+
+- **Security impact.** The query text is chosen by the model and reaches
+  Anthropic and its search backend, so it is a path for repository content to
+  leave the machine. It bypasses `MANVI_FETCH_HOSTS` and a role's tool list. The
+  results are encrypted for the model, so the harness cannot wrap them in the
+  untrusted frame it puts around fetched pages; while the tool is attached the
+  system prompt says search results are untrusted data and must not be obeyed.
+  Turning it on is an explicit act of the operator; a repository config that
+  sets either key is refused.
+- **Cost.** $10 per 1,000 searches, billed on top of tokens. The adapter reads
+  `usage.server_tool_use.web_search_requests`, prices it (`Prices.SearchRequest`)
+  and a request reserves `max_uses` searches against the budget ledger.
+- **Session log.** Search blocks and cited text are kept verbatim in the
+  assistant message's adapter-private replay state and sent back only while they
+  still match the message and the tool is on the request. Otherwise the turn is
+  replayed as its visible text alone. An unanswered search left by a cancelled
+  turn is dropped rather than sent before an unrelated user message. A message
+  that holds nothing but server blocks has no visible content, is omitted like
+  any other hollow reply, and its turn is asked again instead of continued.
+- **`pause_turn`.** A provider-paused turn is continued as a step of its own,
+  at most 4 times per turn; past that it ends marked unfinished (exit status 5).
+- **Other providers (not wired here; from their documentation, read
+  2026-11-20).** Gemini offers Grounding with Google Search, enabled by passing
+  the `google_search` tool (`{"type": "google_search"}`; older models use
+  `google_search_retrieval`). The model decides when to search, the response
+  lists the queries it ran, and text carries `url_citation` annotations. On
+  Gemini 3 and newer it is billed per executed query ($14 per 1,000 after 5,000
+  free a month) and may be combined with function calling
+  (aistudio.google.com/docs/google-search). xAI offers a `web_search` tool
+  (`{"type": "web_search"}`) with `allowed_domains` or `excluded_domains`
+  (up to 5 each, not together) and optional image options; the page read does
+  not state pricing, model support or combination with function calling
+  (docs.x.ai/docs/guides/tools/search-tools). Both would follow the same
+  opt-in, operator-scope rule if added.

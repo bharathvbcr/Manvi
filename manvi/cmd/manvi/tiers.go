@@ -208,7 +208,49 @@ var operatorScopeRules = []operatorScopeRule{
 				path, harnessSpecKey, flags.EnvKey(harnessSpecKey), harnessSpecKey, harness.SpecsDir)
 		},
 	},
+	{
+		matches: func(key string) bool { return key == serialLookupsKey },
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: it decides whether the agent loop enforces "+
+				"batching, and this file ships with a clone and can be written by an agent under a relaxed posture. "+
+				"Remove that line; set it with %s or 'manvi flags set %s MODE'",
+				path, serialLookupsKey, flags.EnvKey(serialLookupsKey), serialLookupsKey)
+		},
+	},
+	{
+		matches: func(key string) bool { return key == execContainmentKey },
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: it decides whether agent-authored shell commands "+
+				"are denied the repository's secret files, and this file ships with a clone and can be written by an "+
+				"agent under a relaxed posture. Remove that line; set it with %s or 'manvi flags set %s MODE'",
+				path, execContainmentKey, flags.EnvKey(execContainmentKey), execContainmentKey)
+		},
+	},
+	{
+		matches: isToolOfferingKey,
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: it decides which tools the agent is offered, "+
+				"and this file ships with a clone and can be written by an agent under a relaxed posture. "+
+				"Remove those lines; set %s with %s or 'manvi flags set %s VALUE'",
+				path, strings.Join(keys, ", "), keys[0], flags.EnvKey(keys[0]), keys[0])
+		},
+	},
+	{
+		matches: isWebSearchKey,
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: web search sends the query text the model writes "+
+				"to a third party outside this machine, and this file ships with a clone and can be written by an "+
+				"agent under a relaxed posture. Remove those lines; set %s in the environment, in %s, or with "+
+				"'manvi flags set %s on'",
+				path, strings.Join(keys, ", "), flags.EnvKey(keys[0]), userConfigHint(), webSearchKey)
+		},
+	},
 	{matches: isEndpointKey, refusal: refuseEndpointKeys},
+}
+
+// isToolOfferingKey matches the settings that choose which tools a turn offers.
+func isToolOfferingKey(key string) bool {
+	return key == coreToolsOnlyKey || key == dynamicToolsKey || key == batchToolKey
 }
 
 // refuseEndpointKeys is the refusal for endpoint keys set in the repository file.

@@ -1,0 +1,522 @@
+{
+ "preambles": {
+  "independent": "This is a read-only research task about the Manvi Go code in this repository (the Go module is under manvi/). Do not modify, create or delete any file. For each numbered item below, find the Go identifier that defines it and report, one line per item: the identifier, its value, and the file path relative to the repository root. Answer from the code itself, not from documentation.",
+  "dependent": "This is a read-only research task about the Manvi Go code in this repository (the Go module is under manvi/). Do not modify, create or delete any file. The numbered items below are a chain: each item after the first refers to what the previous item's answer is or names, so work through them in order. For each item, report one line: the identifier, its value (or the other thing the item asks for), and the file path relative to the repository root. Answer from the code itself, not from documentation.",
+  "trail": "This is a read-only research task over the record ledger under bench/batching2/fixtures/ledger/ in this repository. Do not modify, create or delete any file. Each record is one small file with a `record:` line naming its id, an `amount-code:` line, and a `refers-to:` line naming the id of another record; the files are spread over many directories and their names do not say which record they hold. The numbered items below are a trail: item 1 names the starting record, and each later item is the record that the previous item's record refers to. For each item, report one line: the record id, its amount-code, and the path of its file relative to the repository root. Answer from the record files themselves."
+ },
+ "nudge": "The devcouncil_script tool runs a short Starlark program whose calls are the read-only lookup tools, so a lookup that depends on the previous answer can be chained inside one devcouncil_script call instead of costing a step each. Prefer devcouncil_script for lookups that depend on each other.",
+ "tasks": [
+  {
+   "id": "chain-batch-switch",
+   "kind": "dependent",
+   "items": [
+    "The constant, in the CLI's harness settings file, that holds the settings key which switches the batch tool on or off.",
+    "The function in that same file that reads that key from the flag registry and reports whether the batch tool is withheld; also report the constant it compares the setting's value against.",
+    "In the CLI's harness.go, the field of the tool-dependencies struct that this function's result is assigned to, and the path of the file that declares that struct.",
+    "In the file that declares that struct, the tool-set builder offers a batch tool and one more tool unless that field is true. The identifier of the constant naming that other tool, and its string value.",
+    "The agent-package source file that implements that other tool, and the constant in it that bounds the interpreter's execution steps."
+   ],
+   "facts": [
+    {
+     "symbol": "batchToolKey",
+     "value": "harness\\.batch_tool",
+     "file": "promptspec.go",
+     "verify": [
+      [
+       "manvi/cmd/manvi/promptspec.go",
+       "batchToolKey\\s*=\\s*\"harness\\.batch_tool\""
+      ]
+     ]
+    },
+    {
+     "symbol": "batchToolWithheld",
+     "value": "batchToolOff",
+     "file": "promptspec.go",
+     "verify": [
+      [
+       "manvi/cmd/manvi/promptspec.go",
+       "func batchToolWithheld\\(reg"
+      ],
+      [
+       "manvi/cmd/manvi/promptspec.go",
+       "mode == batchToolOff"
+      ]
+     ]
+    },
+    {
+     "symbol": "WithholdBatch",
+     "value": "devcouncil/tools\\.go",
+     "file": "harness.go",
+     "verify": [
+      [
+       "manvi/cmd/manvi/harness.go",
+       "WithholdBatch:\\s+batchToolWithheld\\(reg\\)"
+      ],
+      [
+       "manvi/devcouncil/tools.go",
+       "WithholdBatch bool"
+      ]
+     ]
+    },
+    {
+     "symbol": "ScriptToolName",
+     "value": "devcouncil_script",
+     "file": "tools.go",
+     "verify": [
+      [
+       "manvi/tools/tools.go",
+       "ScriptToolName\\s*=\\s*\"devcouncil_script\""
+      ],
+      [
+       "manvi/devcouncil/tools.go",
+       "tools\\.ScriptTool\\(batchable"
+      ]
+     ]
+    },
+    {
+     "symbol": "scriptMaxSteps",
+     "value": "1[_,]?000[_,]?000|1e6|1\\s*million",
+     "file": "script.go",
+     "verify": [
+      [
+       "manvi/agent/script.go",
+       "scriptMaxSteps\\s*=\\s*1_000_000"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "chain-serial-rule",
+   "kind": "dependent",
+   "items": [
+    "The constant, in the CLI's harness settings file, holding the settings key for the mode of the rule that refuses a run of single lookups.",
+    "The function in that same file that turns that setting into an agent mode, and the mode constant it returns when the registry cannot answer.",
+    "In the CLI's turnloop.go, the field of the agent configuration that newTurnLoop assigns that mode to, and the turn-dependencies field it reads the mode from.",
+    "In the file that declares the type of that field, the constant for the run length at which the refuse mode refuses a lone lookup (not the shorter length that only earns a note).",
+    "The method on the agent loop, in that same file, that builds the refusal, and the first words of the text it returns after the opening bracket and harness label.",
+    "The field of the agent loop struct, in loop.go, that counts the consecutive one-lookup steps, and its type."
+   ],
+   "facts": [
+    {
+     "symbol": "serialLookupsKey",
+     "value": "harness\\.serial_lookups",
+     "file": "promptspec.go",
+     "verify": [
+      [
+       "manvi/cmd/manvi/promptspec.go",
+       "serialLookupsKey\\s*=\\s*\"harness\\.serial_lookups\""
+      ]
+     ]
+    },
+    {
+     "symbol": "serialLookupMode",
+     "value": "SerialLookupsRefuse",
+     "file": "promptspec.go",
+     "verify": [
+      [
+       "manvi/cmd/manvi/promptspec.go",
+       "func serialLookupMode\\(reg"
+      ],
+      [
+       "manvi/cmd/manvi/promptspec.go",
+       "return agent\\.SerialLookupsRefuse"
+      ]
+     ]
+    },
+    {
+     "symbol": "SerialLookups",
+     "value": "deps\\.serialLookups",
+     "file": "turnloop.go",
+     "verify": [
+      [
+       "manvi/cmd/manvi/turnloop.go",
+       "SerialLookups:\\s+deps\\.serialLookups"
+      ],
+      [
+       "manvi/agent/loop.go",
+       "SerialLookups SerialLookups"
+      ]
+     ]
+    },
+    {
+     "symbol": "serialLookupRefuse",
+     "value": "\\b5\\b",
+     "file": "batch.go",
+     "verify": [
+      [
+       "manvi/agent/batch.go",
+       "serialLookupRefuse\\s*=\\s*5"
+      ]
+     ]
+    },
+    {
+     "symbol": "refuseSerialLookup",
+     "value": "refused,? not run",
+     "file": "batch.go",
+     "verify": [
+      [
+       "manvi/agent/batch.go",
+       "func \\(l \\*Loop\\) refuseSerialLookup"
+      ],
+      [
+       "manvi/agent/batch.go",
+       "harness: refused, not run"
+      ]
+     ]
+    },
+    {
+     "symbol": "serialLookups",
+     "value": "\\bint\\b",
+     "file": "loop.go",
+     "verify": [
+      [
+       "manvi/agent/loop.go",
+       "serialLookups int"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "trail-a",
+   "kind": "trail",
+   "trail": {
+    "start": "RX-6752",
+    "hops": 8
+   },
+   "items": [
+    "The record with id RX-6752.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to."
+   ],
+   "facts": [
+    {
+     "symbol": "RX-6752",
+     "value": "basalt\\-51",
+     "file": "re920d.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s11/re920d.rec",
+       "record: RX-6752\\n[^\\n]*\\n[^\\n]*\\namount-code: basalt-51\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-2844",
+     "value": "rivet\\-54",
+     "file": "ra83fe.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s10/ra83fe.rec",
+       "record: RX-2844\\n[^\\n]*\\n[^\\n]*\\namount-code: rivet-54\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-2641",
+     "value": "quill\\-46",
+     "file": "rbe89b.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s0/rbe89b.rec",
+       "record: RX-2641\\n[^\\n]*\\n[^\\n]*\\namount-code: quill-46\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-6899",
+     "value": "tide\\-81",
+     "file": "r94738.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s6/r94738.rec",
+       "record: RX-6899\\n[^\\n]*\\n[^\\n]*\\namount-code: tide-81\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-5010",
+     "value": "quill\\-81",
+     "file": "rd5c2c.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s11/rd5c2c.rec",
+       "record: RX-5010\\n[^\\n]*\\n[^\\n]*\\namount-code: quill-81\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-8558",
+     "value": "moss\\-72",
+     "file": "rf0d8f.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s2/rf0d8f.rec",
+       "record: RX-8558\\n[^\\n]*\\n[^\\n]*\\namount-code: moss-72\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-5611",
+     "value": "wren\\-78",
+     "file": "r12519.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s8/r12519.rec",
+       "record: RX-5611\\n[^\\n]*\\n[^\\n]*\\namount-code: wren-78\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-4261",
+     "value": "basalt\\-24",
+     "file": "rb3ede.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s8/rb3ede.rec",
+       "record: RX-4261\\n[^\\n]*\\n[^\\n]*\\namount-code: basalt-24\\n"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "trail-b",
+   "kind": "trail",
+   "trail": {
+    "start": "RX-4057",
+    "hops": 8
+   },
+   "items": [
+    "The record with id RX-4057.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to.",
+    "The record that the previous item's record refers to."
+   ],
+   "facts": [
+    {
+     "symbol": "RX-4057",
+     "value": "cinder\\-48",
+     "file": "rb1256.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s7/rb1256.rec",
+       "record: RX-4057\\n[^\\n]*\\n[^\\n]*\\namount-code: cinder-48\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-4404",
+     "value": "wren\\-29",
+     "file": "r34894.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s0/r34894.rec",
+       "record: RX-4404\\n[^\\n]*\\n[^\\n]*\\namount-code: wren-29\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-2927",
+     "value": "lark\\-61",
+     "file": "rab053.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s5/rab053.rec",
+       "record: RX-2927\\n[^\\n]*\\n[^\\n]*\\namount-code: lark-61\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-7608",
+     "value": "wren\\-40",
+     "file": "rd1c3a.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s4/rd1c3a.rec",
+       "record: RX-7608\\n[^\\n]*\\n[^\\n]*\\namount-code: wren-40\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-7297",
+     "value": "lark\\-76",
+     "file": "raf28b.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s10/raf28b.rec",
+       "record: RX-7297\\n[^\\n]*\\n[^\\n]*\\namount-code: lark-76\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-1387",
+     "value": "wren\\-96",
+     "file": "r71a64.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s7/r71a64.rec",
+       "record: RX-1387\\n[^\\n]*\\n[^\\n]*\\namount-code: wren-96\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-9168",
+     "value": "lark\\-66",
+     "file": "r24e1d.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s1/r24e1d.rec",
+       "record: RX-9168\\n[^\\n]*\\n[^\\n]*\\namount-code: lark-66\\n"
+      ]
+     ]
+    },
+    {
+     "symbol": "RX-4425",
+     "value": "ember\\-22",
+     "file": "reeccb.rec",
+     "verify": [
+      [
+       "bench/batching2/fixtures/ledger/s11/reeccb.rec",
+       "record: RX-4425\\n[^\\n]*\\n[^\\n]*\\namount-code: ember-22\\n"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "limits-fetch",
+   "kind": "independent",
+   "items": [
+    "The default whole-request timeout of the web fetch tool.",
+    "The default cap on bytes read from a fetched body.",
+    "The default cap on redirect hops for a fetch.",
+    "The cap on a prompt piped to `manvi run` on stdin."
+   ],
+   "facts": [
+    {
+     "symbol": "defaultTimeout",
+     "value": "20\\s*(\\*\\s*time\\.Second|s\\b|sec)",
+     "file": "fetch.go",
+     "verify": [
+      [
+       "manvi/fetch/fetch.go",
+       "defaultTimeout\\s*=\\s*20 \\* time\\.Second"
+      ]
+     ]
+    },
+    {
+     "symbol": "defaultMaxBytes",
+     "value": "(2\\s*<<\\s*20|2\\s*MiB|2\\s*MB|2,?097,?152)",
+     "file": "fetch.go",
+     "verify": [
+      [
+       "manvi/fetch/fetch.go",
+       "defaultMaxBytes\\s*=\\s*2 << 20"
+      ]
+     ]
+    },
+    {
+     "symbol": "defaultMaxRedirects",
+     "value": "\\b5\\b",
+     "file": "fetch.go",
+     "verify": [
+      [
+       "manvi/fetch/fetch.go",
+       "defaultMaxRedirects\\s*=\\s*5"
+      ]
+     ]
+    },
+    {
+     "symbol": "maxPipedPromptBytes",
+     "value": "(1\\s*<<\\s*20|1\\s*MiB|1\\s*MB|1,?048,?576)",
+     "file": "run.go",
+     "verify": [
+      [
+       "manvi/cmd/manvi/run.go",
+       "maxPipedPromptBytes\\s*=\\s*1 << 20"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "session-calibration",
+   "kind": "independent",
+   "items": [
+    "How many sessions the session directory keeps at most.",
+    "The byte bound on one session file.",
+    "The byte bound on how much of a session file is ever loaded into memory.",
+    "The lower clamp of the token-estimate calibration ratio.",
+    "The upper clamp of the token-estimate calibration ratio."
+   ],
+   "facts": [
+    {
+     "symbol": "DefaultMaxSessions",
+     "value": "\\b50\\b",
+     "file": "store.go",
+     "verify": [
+      [
+       "manvi/session/store.go",
+       "DefaultMaxSessions\\s*=\\s*50"
+      ]
+     ]
+    },
+    {
+     "symbol": "DefaultMaxBytes",
+     "value": "(8\\s*<<\\s*20|8\\s*MiB|8\\s*MB|8,?388,?608)",
+     "file": "store.go",
+     "verify": [
+      [
+       "manvi/session/store.go",
+       "DefaultMaxBytes\\s*=\\s*8 << 20"
+      ]
+     ]
+    },
+    {
+     "symbol": "maxLoadBytes",
+     "value": "(8\\s*\\*\\s*DefaultMaxBytes|64\\s*MiB|64\\s*MB|67,?108,?864)",
+     "file": "store.go",
+     "verify": [
+      [
+       "manvi/session/store.go",
+       "maxLoadBytes\\s*=\\s*8 \\* DefaultMaxBytes"
+      ]
+     ]
+    },
+    {
+     "symbol": "CalibrationMin",
+     "value": "0\\.4\\b",
+     "file": "compaction.go",
+     "verify": [
+      [
+       "manvi/agent/compaction.go",
+       "CalibrationMin\\s*=\\s*0\\.4"
+      ]
+     ]
+    },
+    {
+     "symbol": "CalibrationMax",
+     "value": "2\\.5\\b",
+     "file": "compaction.go",
+     "verify": [
+      [
+       "manvi/agent/compaction.go",
+       "CalibrationMax\\s*=\\s*2\\.5"
+      ]
+     ]
+    }
+   ]
+  }
+ ]
+}

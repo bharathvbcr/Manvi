@@ -364,6 +364,28 @@ func TestVerifyAffectedTestsWalkIncompleteIsDegraded(t *testing.T) {
 	}
 }
 
+// The walk_incomplete note quotes receiver text from source files. It is
+// recorded in the verify record, which the model and the workbench read, so the
+// sample stays out of it.
+func TestVerifyWalkIncompleteNoteWithholdsCallSiteSamples(t *testing.T) {
+	const note = `1 call site(s) the resolver could not bind name a symbol this answer reached (ZQ97LEAK_sk_live.run) — an untyped receiver — so callers through them are not in it`
+	h := newVerifyHarness(t, []string{"adds A"}, nil)
+	h.devmap.tests = `{"items":[{"path":"pkg/a_test.go","depth":1}],"resolution":"Available","shown":1,"total":1,"hidden":0,"truncated":false,"tokens_used":3,"walk_incomplete":"` + note + `"}`
+	h.change()
+	record := h.settled("t", "req-1")
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "ZQ97LEAK") {
+		t.Errorf("a call-site sample reached the verify record: %s", encoded)
+	}
+	requireDegraded(t, record, "walk_incomplete")
+	if !strings.Contains(record.Tests.WalkIncomplete, "1 call site(s)") {
+		t.Errorf("the count was lost: %q", record.Tests.WalkIncomplete)
+	}
+}
+
 func TestVerifyAffectedTestsOverTheDevmapLimitAreQueriedInBatches(t *testing.T) {
 	h := newVerifyHarness(t, []string{"the change is tested"}, nil)
 	h.devmap.batchLimit = 16

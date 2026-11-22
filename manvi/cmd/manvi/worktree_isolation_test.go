@@ -55,8 +55,12 @@ func (p *isolatedWorktreeProvider) Stream(ctx context.Context, req llm.Request) 
 	case strings.HasPrefix(prompt, "ALPHA:"):
 		switch step {
 		case 1:
-			resp = wantToolCall("devcouncil_write_file", `{"path":"shared.txt","content":"alpha isolated content\n"}`)
+			// Read before overwriting: write_file refuses an existing file
+			// the session has not read (manvi/devcouncil/inspect.go).
+			resp = wantToolCall("devcouncil_read_file", `{"path":"shared.txt"}`)
 		case 3:
+			resp = wantToolCall("devcouncil_write_file", `{"path":"shared.txt","content":"alpha isolated content\n"}`)
+		case 5:
 			resp = wantToolCall("devcouncil_read_file", `{"path":"shared.txt"}`)
 		default:
 			lastTool := req.Messages[len(req.Messages)-1]
@@ -70,8 +74,12 @@ func (p *isolatedWorktreeProvider) Stream(ctx context.Context, req llm.Request) 
 	case strings.HasPrefix(prompt, "BETA:"):
 		switch step {
 		case 1:
-			resp = wantToolCall("devcouncil_write_file", `{"path":"shared.txt","content":"beta isolated content\n"}`)
+			// Read before overwriting: write_file refuses an existing file
+			// the session has not read (manvi/devcouncil/inspect.go).
+			resp = wantToolCall("devcouncil_read_file", `{"path":"shared.txt"}`)
 		case 3:
+			resp = wantToolCall("devcouncil_write_file", `{"path":"shared.txt","content":"beta isolated content\n"}`)
+		case 5:
 			resp = wantToolCall("devcouncil_read_file", `{"path":"shared.txt"}`)
 		default:
 			lastTool := req.Messages[len(req.Messages)-1]

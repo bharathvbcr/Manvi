@@ -173,6 +173,12 @@ func outcomeNotices(o agent.Outcome, maxSteps int) []outcomeNotice {
 			Text:     "the model refused this request — the turn ended on a refusal, not on the work being done",
 			Degraded: []string{"turn ended in a refusal"},
 		})
+	case llm.StopPause:
+		out = append(out, outcomeNotice{
+			Text: "the provider paused a hosted tool (web search) and kept pausing after this harness continued it " +
+				"the allowed number of times: the answer above is not finished",
+			Degraded: []string{"provider-hosted tool turn paused and was not finished"},
+		})
 	case llm.StopOther:
 		out = append(out, outcomeNotice{
 			Text: "the stream ended without a stop reason this adapter recognises: either the server sent one " +

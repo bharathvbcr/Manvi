@@ -481,6 +481,8 @@ printf '    covered: %s%% of statements across the tree (floor %s%%); weakest pa
 # The ruleguard DSL is lint-only — excluded from every build by its tag, which
 # is why it must NOT appear below: if it ever does, the tag has stopped working
 # and a lint dependency has entered a shipped binary.
+# go.starlark.net is the interpreter behind devcouncil_script: pure Go, standard
+# library only, and its universe holds no file, network, clock or random builtin.
 # DevCouncil's go_orchestrator is the component module this harness imports.
 # It arrives through the replace in manvi/go.mod, not through a proxy. gusset
 # is cgo: it is not part of the CGO_ENABLED=0 build and must not appear in that
@@ -518,7 +520,7 @@ step "Go — dependency surface"
 # The module itself is now a dotted path (github.com/bharathvbcr/Manvi/manvi),
 # so the domain-path filter below would report every package in this tree as an
 # unexpected dependency. Exclude it; the allowlist is for *external* packages.
-allowed_base='github\.com/awnumar/(memguard|memcall)|golang\.org/x/(crypto|sys)|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator'
+allowed_base='github\.com/awnumar/(memguard|memcall)|golang\.org/x/(crypto|sys)|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator|go\.starlark\.net'
 allowed_nocgo="^(${allowed_base})(/|$)"
 # The shipped configuration adds the Gusset engine's Go side: the cgo wrapper
 # and its FFI package. Nothing else may arrive with cgo.
@@ -726,8 +728,10 @@ export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
 # plane's engine check, the panic-firewall self-test against the archive this
 # repository links, and the serve package's policy path, all with cgo on.
 step "Go — gusset engine (cgo)"
-# Release binaries are this configuration, so cmd/manvi (buildGate hands its
-# gate the engine matcher) runs here too.
+# Release binaries are this configuration, so cmd/manvi runs here too. Its gate
+# leaves Matcher nil and decides patterns with fnmatch (cmd/manvi/gate.go, and
+# DevCouncil's docs/gusset-candidates.md); this step proves the linked archive
+# loads and contains a panic, not that policy runs on it.
 (eval "$ENGINE_EXPORTS" && cd manvi && go test -count=1 ./gussetcheck ./serve ./cmd/manvi \
   && go run ./cmd/manvi gusset-check) || fail "gusset engine with cgo on"
 
@@ -1527,7 +1531,8 @@ step "Bench — instrument, statistics and cell assembly"
 # that did not was the number being discarded. It is read and totalled instead.
 bench_ran=0
 for t in test_stats.py test_pool.py test_runtime.py test_compute.py test_tools.py stress_test.py \
-         test_gemini_wire.py test_cerebras_wire.py test_audit.py selftest.py paper/test_supplement.py; do
+         test_gemini_wire.py test_cerebras_wire.py test_audit.py selftest.py paper/test_supplement.py \
+         batching/test_batching.py batching2/test_batching2.py; do
   bench_out="$( (cd bench && python3 "$t") 2>&1 )" || { printf '%s\n' "$bench_out" >&2; fail "bench/$t"; }
   n="$(tail -1 <<<"$bench_out" | grep -oE '[0-9]+' | head -1 || true)"
   [[ -n "$n" ]] && (( n > 0 )) || { printf '%s\n' "$bench_out" >&2; fail "bench/$t reported no count on its summary line, so whether it ran anything is unknown"; }

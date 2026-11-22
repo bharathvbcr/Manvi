@@ -55,6 +55,7 @@ type subAgentConfig struct {
 	registry        *tools.Registry
 	coreToolsOnly   bool
 	assertInvariant bool
+	serialLookups   agent.SerialLookups
 	systemPrompt    string
 	// native is the devcouncil surface this run's tools are bound to. It is
 	// held so a child can be given its own lease session derived from the
@@ -623,6 +624,7 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 		systemPrompt:    systemPrompt,
 		coreToolsOnly:   cfg.coreToolsOnly,
 		assertInvariant: cfg.assertInvariant,
+		serialLookups:   cfg.serialLookups,
 		log:             log,
 		tools:           registry,
 	})
