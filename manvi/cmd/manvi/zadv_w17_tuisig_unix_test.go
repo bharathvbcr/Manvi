@@ -16,6 +16,24 @@ import (
 // through a stand-in ps in a directory outside the agent's reach, so the real
 // trust rule (trustedResolved) still applies to it.
 
+// sacrificialProcess starts a process that is not a child of the test: a shell
+// starts it and exits, so it is reparented away. Returns its pid; it is killed
+// when the test ends.
+func sacrificialProcess(t *testing.T) int {
+	t.Helper()
+	// #nosec G204 -- a literal shell command.
+	out, err := exec.CommandContext(t.Context(), "sh", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return pid
+}
+
 // zadvRealPS is the system ps the stand-ins delegate to.
 func zadvRealPS(t *testing.T) string {
 	t.Helper()

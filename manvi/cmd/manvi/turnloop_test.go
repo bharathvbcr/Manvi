@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -102,6 +103,38 @@ func TestTheTUIBoundsOutputAtItsDefault(t *testing.T) {
 	}
 	if got := reqs[0].MaxTokens; got != 8192 {
 		t.Fatalf("TUI request MaxTokens = %d, want the face's default 8192", got)
+	}
+}
+
+// TestTheTUIsDefaultBoundIgnoresTheOperatorsEnvironment: the default bound is
+// the face's own, whatever the machine running the test has configured. It sets
+// the environment a local-provider operator would have -- the provider and
+// output-cap variables, a config file under HOME and XDG_CONFIG_HOME -- and
+// asks for the unconfigured turn's bound.
+func TestTheTUIsDefaultBoundIgnoresTheOperatorsEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", home+"/xdg")
+	t.Setenv(flags.EnvKey(flags.LLMDefaultProvider), "local")
+	t.Setenv(flags.EnvKey(flags.LLMLocalMaxOutputTokens), "1234")
+	for _, dir := range []string{home + "/.manvi", home + "/xdg/manvi", home + "/.config/manvi"} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"config.yaml", "config.yml", "config.json"} {
+			body := "llm.provider.default: local\nllm.local.max_output_tokens: 1234\n"
+			if err := os.WriteFile(dir+"/"+name, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	reqs := tuiTurn(t, truncatedThenDone(), nil)
+	if len(reqs) == 0 {
+		t.Fatal("the model was never asked")
+	}
+	if got := reqs[0].MaxTokens; got != 8192 {
+		t.Fatalf("TUI request MaxTokens = %d under a conflicting environment, want the face's default 8192", got)
 	}
 }
 
