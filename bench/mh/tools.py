@@ -485,6 +485,38 @@ def default_protected_roots():
             + env_file_guards(BENCH_ROOT))
 
 
+class WorkspaceLayoutError(ContainmentUnavailable):
+    """The workspace root sits where concurrent episodes can read each other."""
+
+
+def require_protected_workspace_root(workspace_root, protected_roots=None):
+    """Refuse a workspace root that no protected root contains.
+
+    Reads outside the protected roots are left open (a compiler that cannot read
+    /usr is not a harness). What keeps one concurrent episode out of another's
+    workspace is therefore the deny on the protected root ABOVE both, with each
+    sandbox re-allowed only its own directory. A workspace root outside every
+    protected root has no such deny over it, so every episode's solution files
+    are readable to every other episode's shell. The supported layout is
+    bench/.work inside BENCH_ROOT; anything else is refused, not stamped.
+    Returns the protected root that contains workspace_root.
+    """
+    if protected_roots is None:
+        protected_roots = default_protected_roots()
+    real = os.path.realpath(workspace_root)
+    for p in protected_roots:
+        if not p:
+            continue
+        q = os.path.realpath(p)
+        if real == q or real.startswith(q + os.sep):
+            return q
+    raise WorkspaceLayoutError(
+        f"workspace root {real} is outside every protected root "
+        f"({', '.join(sorted(os.path.realpath(p) for p in protected_roots if p))}). "
+        f"Concurrent episodes there can read each other's workspaces. Use the "
+        f"supported layout, a directory inside {BENCH_ROOT}.")
+
+
 # --- one owner for a child's environment, temp directory and write roots -----
 #
 # Four kinds of child run in an episode: the model's shell, the shell-kind

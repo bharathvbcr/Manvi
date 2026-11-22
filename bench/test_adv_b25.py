@@ -569,14 +569,61 @@ def p_concurrent():
     r = sb1.run_shell(cmd=f"cat '{sh2}/note' 2>&1")
     check("test_adv_b25_parallel_episode_cannot_read_the_other_episodes_shell_temp",
           "A-SOLUTION" not in r, r[:160])
-    r = sb1.run_shell(cmd=f"cat '{s2}/app/invoice.py' 2>&1 | head -c 200")
-    check("test_open_b25_parallel_episode_cannot_read_the_other_episodes_workspace",
-          "def " not in r and "import" not in r, r[:160])
     sb1.close()
     sb2.close()
 
 
 guarded("test_adv_b25_concurrent", p_concurrent)
+
+
+def p_workspace_layout():
+    """Concurrent episodes cannot read each other's workspaces in the layout the runner supports.
+
+    Outside the protected tree nothing denies a sibling's workspace (reads are
+    open elsewhere), so the runner refuses that layout (see test_runtime) and
+    require_protected_workspace_root is its one check. Inside BENCH_ROOT the
+    protected root above both workspaces is what closes the cross-read.
+    """
+    outside = os.path.join(ADV, "open-layout")
+    try:
+        toolmod.require_protected_workspace_root(outside, CRYPTIC.guard_roots)
+        refused = False
+    except toolmod.WorkspaceLayoutError:
+        refused = True
+    check("test_adv_b25_workspace_root_outside_the_protected_tree_is_refused", refused,
+          f"{outside} was accepted")
+    link = os.path.join(ADV, "link-into-bench")
+    os.symlink(os.path.join(HERE, ".work"), link)
+    try:
+        inside = toolmod.require_protected_workspace_root(os.path.join(link, "w"), CRYPTIC.guard_roots)
+    finally:
+        os.unlink(link)
+    check("test_adv_b25_workspace_root_is_judged_by_its_realpath", inside == os.path.realpath(HERE), inside)
+    work = os.path.join(HERE, ".work")
+    os.makedirs(work, exist_ok=True)
+    parent = os.path.realpath(tempfile.mkdtemp(prefix="adv-b26-", dir=work))
+    try:
+        toolmod.require_protected_workspace_root(parent, CRYPTIC.guard_roots)
+        s1 = os.path.join(parent, "e1")
+        s2 = os.path.join(parent, "e2")
+        CRYPTIC.materialise(s1)
+        CRYPTIC.materialise(s2)
+        sb1 = Sandbox(s1, protected_roots=CRYPTIC.guard_roots)
+        sb2 = Sandbox(s2, protected_roots=CRYPTIC.guard_roots)
+        sb2.run_shell(cmd="echo OTHER-EPISODE-SENTINEL > app/note.txt")
+        own = sb1.run_shell(cmd="cat app/invoice.py 2>&1 | head -c 100")
+        r = sb1.run_shell(cmd=f"cat '{s2}/app/invoice.py' '{s2}/app/note.txt' 2>&1 | head -c 300")
+        check("test_adv_b25_supported_layout_episode_still_reads_its_own_workspace",
+              "def " in own or "import" in own, own[:160])
+        check("test_adv_b25_supported_layout_episode_cannot_read_the_other_episodes_workspace",
+              "def " not in r and "import" not in r and "OTHER-EPISODE-SENTINEL" not in r, r[:200])
+        sb1.close()
+        sb2.close()
+    finally:
+        unlock(parent)
+
+
+guarded("test_adv_b25_workspace_layout", p_workspace_layout)
 
 
 def p_concurrent_verify_window():

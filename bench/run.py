@@ -80,7 +80,8 @@ def require_containment():
     the layout bwrap's bind order exists for).
 
     Returns the backend. Refuses (SystemExit) on any failed probe, on a host
-    with no backend, and when the git checkouts to guard cannot be worked out
+    with no backend, on a workspace root outside every protected root, and when
+    the git checkouts to guard cannot be worked out
     (GitGuardError) -- including under the opt-out, since the guard set is
     computed regardless of backend. The one way past a failed probe or a host
     with no backend is the explicit opt-out, MH_UNCONTAINED_SHELL=1, which is
@@ -93,6 +94,15 @@ def require_containment():
         toolmod.default_protected_roots()
     except toolmod.GitGuardError as e:
         raise SystemExit(f"[runner] {e}")
+    # Only the supported layout closes the cross-read between concurrent
+    # episodes: the protected root above WORK is what denies a sibling's
+    # workspace. Under the explicit opt-out nothing is contained anyway, and
+    # the stamp says so.
+    if toolmod.containment_backend() != "off":
+        try:
+            toolmod.require_protected_workspace_root(WORK)
+        except toolmod.WorkspaceLayoutError as e:
+            raise SystemExit(f"[runner] refusing to run: {e}")
     os.makedirs(WORK, exist_ok=True)
     probe = tempfile.mkdtemp(prefix="containment-probe-", dir=WORK)
     try:
