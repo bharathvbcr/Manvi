@@ -111,7 +111,7 @@ func TestWriteDoesNotWaitOnAHungImpactLookup(t *testing.T) {
 	if hung == string(script) {
 		t.Fatal("the stub has no impact branch to hang")
 	}
-	if err := os.WriteFile(bin, []byte(hung), 0o700); err != nil { // #nosec G306 -- a stand-in devmap the test execs must be executable
+	if err := os.WriteFile(bin, []byte(hung), 0o700); err != nil { // #nosec G306 G703 -- a stand-in devmap the test execs must be executable; the path is under this test's t.TempDir
 		t.Fatal(err)
 	}
 
