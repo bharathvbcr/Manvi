@@ -47,8 +47,9 @@ const (
 const samplesFurtherWithheld = "[further text after the call-site sample withheld]"
 
 // partialAnswerPrefix is what DevCouncil's devmap client puts in front of a
-// walk_incomplete value (dc/devmap runQuery), so every graph tool sees the note
-// with it. The prefix is the client's own text, never the receiver's, and it
+// walk_incomplete value (dc/devmap runQuery), so the tools that read devmap
+// through that client see the note with it. Client.Advanced returns devmap's
+// data raw, so devcouncil_code's answer carries the bare note. The prefix is the client's own text, never the receiver's, and it
 // stands before the note's first clause, so it is set aside and put back.
 const partialAnswerPrefix = "devmap says the answer is partial: "
 
@@ -74,13 +75,14 @@ var (
 		{regexp.MustCompile(`in a language with no call extractor in this build$`), markerNoExtractor},
 		{regexp.MustCompile(`^no call into or out of (?:it|them) was ever extracted, so an empty or short answer here is the extractor's absence, not the code's$`), markerNoExtracted},
 		{regexp.MustCompile(`^[0-9]{1,9} more start file\(s\) were not checked for this$`), markerStartsSkipped},
-		{regexp.MustCompile(`^the unresolved ledger could not be read at generation [0-9]{1,9}, the one these edges came from \(it was pruned mid-query\)$`), markerLedgerGone},
+		{regexp.MustCompile(`^the unresolved ledger could not be read at generation [0-9]{1,9}, the one (?:these edges|this answer) came from \(it was pruned mid-query\)$`), markerLedgerGone},
 	}
 	// fixedClauses are clauses with no number and no free text in them, kept as
 	// they are: the markers above and devmap's own two number-free sentences.
 	fixedClauses = map[string]bool{
 		"they are listed in `unresolved_namesakes` as candidates to verify, not as callers": true,
 		"callers the resolver could not bind are not listed — ask again":                    true,
+		"whether calls the resolver could not bind touch this answer is unknown — ask again": true,
 		WithheldCallSiteSample: true, samplesFurtherWithheld: true,
 		markerKeysCapped: true, markerNamesCapped: true, markerNamesNotRead: true,
 		markerFailedParse: true, markerNoExtractor: true, markerNoExtracted: true,
@@ -144,12 +146,13 @@ func WithholdCallSiteSamples(text string) string {
 			}
 			segs[siteAt].swallow = true
 			segs[siteAt].capped = segs[siteAt].capped || cappedClause.MatchString(clause)
-		case callSiteNote.MatchString(clause):
-			seg := noteSegment{site: true}
-			if m := leadingCount.FindStringSubmatch(clause); m != nil {
-				seg.count = m[1]
-			}
-			segs = append(segs, seg)
+		case leadingCount.MatchString(clause) && callSiteNote.MatchString(clause):
+			// Only a clause that opens with a count is devmap's call-site
+			// clause. One that merely mentions call sites before it, the
+			// analysis-status note ("…so some ambiguous call sites carry a
+			// partial candidate list…"), is devmap's own text and is kept.
+			m := leadingCount.FindStringSubmatch(clause)
+			segs = append(segs, noteSegment{site: true, count: m[1]})
 			siteAt = len(segs) - 1
 		default:
 			segs = append(segs, noteSegment{text: clause})

@@ -143,3 +143,42 @@ func TestWithholdCallSiteSamplesIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+// At the pin, impact and dependencies write the analysis-status note before the
+// call-site note. It mentions call sites without opening with a count, so it is
+// devmap's own text, kept as written, and the counted clause after it is the
+// anchor: the count survives and nothing is reported as withheld from the status
+// note.
+func TestWithholdCallSiteSamplesAnchorsOnTheCountedClauseNotAStatusNote(t *testing.T) {
+	status := "the analysis is partial: resolution was capped by a budget, so some ambiguous call sites carry a partial candidate list or none: 2 site(s) lost their candidates; 1 more cut"
+	for _, in := range []string{
+		status + "; " + realCallers + "; " + realKeysCap,
+		realPrefix + status + "; " + realCallers + "; " + realKeysCap,
+	} {
+		got := WithholdCallSiteSamples(in)
+		wantTail := "3 call site(s) could not be bound; " + WithheldCallSiteSample + "; " + markerKeysCapped
+		if !strings.HasSuffix(got, wantTail) {
+			t.Errorf("the counted clause did not anchor:\n got %q\nwant suffix %q", got, wantTail)
+		}
+		if !strings.Contains(got, status) {
+			t.Errorf("the status note was not kept as written: %q", got)
+		}
+		if strings.Contains(got, "a.b") {
+			t.Errorf("sample reached the reader: %q", got)
+		}
+	}
+	if got := WithholdCallSiteSamples(status); got != status {
+		t.Errorf("a status note with no sample changed: %q", got)
+	}
+}
+
+// gaps.rs's radius note words the unreadable ledger differently from the
+// namesake note; both are devmap's templates.
+func TestWithholdCallSiteSamplesKnowsTheRadiusLedgerUnreadableNote(t *testing.T) {
+	note := "the unresolved ledger could not be read at generation 41, the one this answer came from (it was pruned mid-query); whether calls the resolver could not bind touch this answer is unknown — ask again"
+	got := WithholdCallSiteSamples(realCallers + "; " + note)
+	want := "3 call site(s) could not be bound; " + WithheldCallSiteSample + "; " + markerLedgerGone + "; whether calls the resolver could not bind touch this answer is unknown — ask again"
+	if got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}

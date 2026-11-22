@@ -364,7 +364,7 @@ func (w graphWithheld) notes() []string {
 		notes = append(notes, fmt.Sprintf("%d source excerpt(s) withheld by the read gate", w.excerpts))
 	}
 	if w.samples > 0 {
-		notes = append(notes, fmt.Sprintf("%d call-site sample(s) withheld from devmap's notes", w.samples))
+		notes = append(notes, fmt.Sprintf("%d devmap note(s) had a call-site sample withheld", w.samples))
 	}
 	return notes
 }

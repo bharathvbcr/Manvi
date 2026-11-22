@@ -150,8 +150,8 @@ func TestCodeGraphCountsAWithheldProseSample(t *testing.T) {
 	}
 }
 
-// Withholdings are counted per replacement, not per field: a prose field that
-// holds two samples (an array of notes) is two cuts.
+// Withholdings are counted per note: a prose field that holds two notes (an
+// array) is two cuts. Several samples inside one note are one cut.
 func TestCodeGraphCountsEveryProseReplacement(t *testing.T) {
 	raw := []byte(`{"notes":["1 call site(s) the resolver could not bind name a symbol this answer reached (a.run) — x","2 call site(s) inside what this answer walked could not be bound (b.run), so y"],` +
 		`"walk_incomplete":"3 call site(s) the resolver could not bind name a symbol this answer reached (c.run) — z"}`)
@@ -167,7 +167,7 @@ func TestCodeGraphCountsEveryProseReplacement(t *testing.T) {
 // The label tells a reader which kind of thing was cut.
 func TestGraphWithheldNotesNameEachKind(t *testing.T) {
 	got := strings.Join(graphWithheld{excerpts: 2, samples: 3}.notes(), "|")
-	want := "2 source excerpt(s) withheld by the read gate|3 call-site sample(s) withheld from devmap's notes"
+	want := "2 source excerpt(s) withheld by the read gate|3 devmap note(s) had a call-site sample withheld"
 	if got != want {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
