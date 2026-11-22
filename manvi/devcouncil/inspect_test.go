@@ -450,15 +450,22 @@ func TestCodeGraphGatesAskEvidenceUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withheld != 0 || strings.Count(string(kept), `"source_span":`) != spans {
-		t.Errorf("readable units lost excerpts: withheld %d of %d", withheld, spans)
+	// The fixture's coverage_gap quotes a call-site sample, which is withheld
+	// whatever the file (devmapprose.go) and counted: exactly one withholding,
+	// and every readable unit keeps its excerpt.
+	const proseSamples = 1
+	if strings.Count(string(kept), `"source_span":`) != spans {
+		t.Errorf("readable units lost excerpts: %d of %d kept", strings.Count(string(kept), `"source_span":`), spans)
+	}
+	if withheld != proseSamples || !strings.Contains(string(kept), "[call-site sample withheld]") {
+		t.Errorf("withheld %d, want only the %d call-site prose sample(s), marked", withheld, proseSamples)
 	}
 	_, withheld, err = withholdGraphSources(raw, func(string) string { return "path.secret_read" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withheld != spans {
-		t.Errorf("refused units: withheld %d, want all %d", withheld, spans)
+	if withheld != spans+proseSamples {
+		t.Errorf("refused units: withheld %d, want all %d spans plus %d prose sample(s)", withheld, spans, proseSamples)
 	}
 }
 
