@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -322,7 +323,26 @@ func (a *Adapter) validate(req llm.Request) error {
 // Legitimate ids (letters, digits, '/', ':', '.', '-', '_') pass through
 // unchanged, so matching a configured model against the listing is unaffected.
 func listenerString(s string) string {
-	return listenerNewlines.Replace(ui.Sanitize(strings.TrimSpace(s)))
+	return boundListenerString(listenerNewlines.Replace(ui.Sanitize(strings.TrimSpace(s))))
+}
+
+// maxListenerStringBytes bounds a model id or version a listener chose. Real
+// ones are far shorter; the bound keeps one listener from filling every listing,
+// doctor row and error that quotes it.
+const maxListenerStringBytes = 256
+
+// boundListenerString cuts s to maxListenerStringBytes on a rune boundary,
+// ending in an ellipsis so a cut value is never mistaken for a whole one.
+func boundListenerString(s string) string {
+	const ellipsis = "…"
+	if len(s) <= maxListenerStringBytes {
+		return s
+	}
+	cut := maxListenerStringBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
 }
 
 var listenerNewlines = strings.NewReplacer("\n", `\n`, "\t", `\t`)

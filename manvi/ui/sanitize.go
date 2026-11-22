@@ -40,8 +40,12 @@ func Sanitize(text string) string {
 func sanitizeSlow(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
-	for _, r := range text {
+	for i, r := range text {
 		switch {
+		case r == zwj && zwjJoinsEmoji(text, i):
+			// A joiner between two pictographs is what makes one emoji out of
+			// several; it is ordinary text, not a hidden character.
+			b.WriteRune(r)
 		case r == '\n' || r == '\t':
 			b.WriteRune(r)
 		case r == '\r':
@@ -53,7 +57,7 @@ func sanitizeSlow(text string) string {
 			b.WriteRune('�')
 		case unicode.IsControl(r):
 			b.WriteString(controlMarker(r))
-		case isBidiControl(r):
+		case isInvisibleFormat(r):
 			// Bidirectional overrides reorder displayed text without changing
 			// the bytes, so what a reviewer reads can differ from what is
 			// there. This is the Trojan Source problem, and a diff viewer is
@@ -89,7 +93,11 @@ func isPlain(text string) bool {
 		}
 		if c >= utf8.RuneSelf {
 			r, size := utf8.DecodeRuneInString(text[i:])
-			if r == utf8.RuneError || unicode.IsControl(r) || isBidiControl(r) {
+			if r == zwj && zwjJoinsEmoji(text, i) {
+				i += size - 1
+				continue
+			}
+			if r == utf8.RuneError || unicode.IsControl(r) || isInvisibleFormat(r) {
 				return false
 			}
 			i += size - 1
@@ -119,9 +127,59 @@ func markerFor(r rune) string {
 	if r <= 0xff {
 		return "\\x" + string([]byte{hex[(r>>4)&0xf], hex[r&0xf]})
 	}
+	if r > 0xffff {
+		return "\\U" + string([]byte{
+			hex[(r>>28)&0xf], hex[(r>>24)&0xf], hex[(r>>20)&0xf], hex[(r>>16)&0xf],
+			hex[(r>>12)&0xf], hex[(r>>8)&0xf], hex[(r>>4)&0xf], hex[r&0xf],
+		})
+	}
 	return "\\u" + string([]byte{
 		hex[(r>>12)&0xf], hex[(r>>8)&0xf], hex[(r>>4)&0xf], hex[r&0xf],
 	})
+}
+
+const zwj = '\u200d'
+
+// zwjJoinsEmoji reports whether the zero-width joiner at byte offset i of text
+// sits between two pictographs, looking through one emoji variation selector
+// on the left (as in a heart followed by VS16, a joiner and a flame).
+func zwjJoinsEmoji(text string, i int) bool {
+	prev, n := utf8.DecodeLastRuneInString(text[:i])
+	if prev == '\ufe0f' {
+		prev, _ = utf8.DecodeLastRuneInString(text[:i-n])
+	}
+	next, _ := utf8.DecodeRuneInString(text[i+utf8.RuneLen(zwj):])
+	return isPictograph(prev) && isPictograph(next)
+}
+
+// isPictograph is an approximation of Unicode's Extended_Pictographic, which
+// the standard library carries no table for: the emoji blocks and the symbol
+// ranges emoji sequences are built from.
+func isPictograph(r rune) bool {
+	switch {
+	case r >= 0x1F000 && r <= 0x1FAFF, r >= 0x2600 && r <= 0x27BF, r >= 0x2300 && r <= 0x23FF,
+		r >= 0x2190 && r <= 0x21FF, r >= 0x2B00 && r <= 0x2BFF:
+		return true
+	}
+	switch r {
+	case 0xA9, 0xAE, 0x203C, 0x2049, 0x2122, 0x2139, 0x24C2, 0x3030, 0x303D, 0x3297, 0x3299:
+		return true
+	}
+	return r >= 0x25AA && r <= 0x25FE
+}
+
+// isInvisibleFormat reports a rune that draws nothing (or reorders or breaks
+// what is drawn) yet changes what a reader sees: every Unicode format character
+// (Cf: bidi controls, zero-width space, joiners, soft hyphen, BOM, the tag
+// characters U+E0000 block) and the line and paragraph separators U+2028 and
+// U+2029, which a terminal or a log viewer may treat as a line break. Each is
+// shown as a visible escape. A zero-width joiner is marked even between emoji:
+// a joiner anywhere else is marked.
+//
+// The one exception is a zero-width joiner with a pictograph on each side
+// (zwjJoinsEmoji), which is how a family or a profession emoji is spelled.
+func isInvisibleFormat(r rune) bool {
+	return r == '\u2028' || r == '\u2029' || unicode.Is(unicode.Cf, r) || isBidiControl(r)
 }
 
 // isBidiControl reports whether a rune reorders displayed text.
