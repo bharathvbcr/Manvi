@@ -846,8 +846,13 @@ def sbpl_metadata_chain(allowed, protected):
 # the same user, and the pasteboard server keeps the clipboard. `(allow default)`
 # leaves mach-lookup open, so both are denied by name. The names are the ones
 # `launchctl print gui/<uid>` lists on the host.
+# notifyd (com.apple.system.notification_center) keeps notify_set_state values for
+# any same-user process, and distnoted (com.apple.distributed_notifications@<variant>,
+# matched by prefix because the suffix names the session type) delivers
+# NSDistributedNotificationCenter posts to listeners outside the episode.
 DENIED_MACH_SERVICES = ("com.apple.cfprefsd.agent", "com.apple.cfprefsd.daemon",
-                        "com.apple.pasteboard.1")
+                        "com.apple.pasteboard.1", "com.apple.system.notification_center")
+DENIED_MACH_SERVICE_PREFIXES = ("com.apple.distributed_notifications",)
 
 
 def _seatbelt_profile(allow_write, protected_roots):
@@ -859,7 +864,8 @@ def _seatbelt_profile(allow_write, protected_roots):
     """
     lines = ["(version 1)", "(allow default)",
              "(deny mach-lookup "
-             + " ".join(f'(global-name "{n}")' for n in DENIED_MACH_SERVICES) + ")",
+             + " ".join(f'(global-name "{n}")' for n in DENIED_MACH_SERVICES)
+             + " " + " ".join(f'(global-name-prefix "{p}")' for p in DENIED_MACH_SERVICE_PREFIXES) + ")",
              '(deny file-write* (subpath "/"))']
     for p in _writable_system_roots():
         if os.path.exists(p):
