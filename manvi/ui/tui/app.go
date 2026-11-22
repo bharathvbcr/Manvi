@@ -446,7 +446,8 @@ func approvalAlwaysLive(binding string) bool {
 		return true
 	}
 	switch resolve(binding, CtxApproval) {
-	case CmdQuit, CmdCancel:
+	case CmdQuit, CmdCancel, CmdPageUp, CmdPageDown:
+		// Paging only moves the window over a long subject; it answers nothing.
 		return true
 	}
 	return false
@@ -496,12 +497,13 @@ func (a *App) approvalRequested(t ActionApprovalRequest) []Effect {
 		return []Effect{denyEffect(t.Reply, "no session is attached to put this to an operator")}
 	}
 	card := NewApprovalCard(t.Request, t.Reply)
+	card.done = t.Done
 	card.clock = func() time.Time { return a.now() }
 	v.PushApproval(card)
 	v.Apply(ui.Event{
 		Kind: ui.KindApproval, At: time.Now().UTC(),
 		Text: t.Request.Reason, Rule: t.Request.Rule, Severity: t.Request.Severity,
-		Path: t.Request.Path, TaskID: t.Request.TaskID,
+		Path: t.Request.Path, Subject: t.Request.Subject, TaskID: t.Request.TaskID,
 		Grantable: t.Request.Grantable, ApprovalID: t.Request.ID,
 	})
 	// A blocked session pulls attention to itself, but never by hijacking the
@@ -572,6 +574,10 @@ func (a *App) dismiss() []Effect {
 	if v != nil && v.Approval() != nil {
 		card := v.Approval()
 		decision, done := card.Back()
+		if card.withdrawn() {
+			v.retireWithdrawn()
+			return nil
+		}
 		if !done {
 			return nil
 		}
@@ -579,7 +585,7 @@ func (a *App) dismiss() []Effect {
 		v.Apply(ui.Event{
 			Kind: ui.KindApprovalDone, At: time.Now().UTC(),
 			ApprovalID: card.Request.ID, Rule: card.Request.Rule,
-			Path: card.Request.Path, Text: decisionText(decision),
+			Path: card.Request.Path, Subject: card.Request.Subject, Text: decisionText(decision),
 		})
 		return []Effect{EffectDecide{Reply: card.Reply, Decision: decision}}
 	}

@@ -305,7 +305,7 @@ func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, 
 	a.sink.Emit(ui.Event{
 		Kind: ui.KindApproval, At: time.Now().UTC(),
 		Text: req.Reason, Rule: req.Rule, Severity: req.Severity,
-		Path: req.Path, TaskID: req.TaskID,
+		Path: req.Path, Subject: req.Subject, TaskID: req.TaskID,
 		Grantable: req.Grantable, ApprovalID: req.ID,
 		Choices: req.Choices, MultiSelect: req.MultiSelect,
 	})

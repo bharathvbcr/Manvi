@@ -194,11 +194,47 @@ func (v *AgentView) activity() string {
 }
 
 // Approval returns the card blocking this session, if any.
+//
+// A card whose caller has stopped waiting is retired here, before it is
+// returned: every path that reads the card — the keys, the frame, the tick —
+// comes through this accessor, so none of them can act on a withdrawn card.
 func (v *AgentView) Approval() *ApprovalCard {
 	if v == nil {
 		return nil
 	}
+	v.retireWithdrawn()
 	return v.approval
+}
+
+// retireWithdrawn removes every card whose caller was cancelled or timed out,
+// active or queued, and leaves a transcript entry saying so.
+func (v *AgentView) retireWithdrawn() {
+	for v.approval != nil && v.approval.withdrawn() {
+		v.noteWithdrawn(v.approval)
+		v.PopApproval()
+	}
+	if len(v.pending) == 0 {
+		return
+	}
+	kept := make([]*ApprovalCard, 0, len(v.pending))
+	for _, c := range v.pending {
+		if c.withdrawn() {
+			v.noteWithdrawn(c)
+			continue
+		}
+		kept = append(kept, c)
+	}
+	v.pending = kept
+}
+
+// noteWithdrawn records in the transcript that a card was retired unanswered.
+func (v *AgentView) noteWithdrawn(c *ApprovalCard) {
+	v.Apply(ui.Event{
+		Kind: ui.KindApprovalDone, At: time.Now().UTC(),
+		ApprovalID: c.Request.ID, Rule: c.Request.Rule,
+		Path: c.Request.Path, Subject: c.Request.Subject,
+		Text: withdrawnText,
+	})
 }
 
 // PushApproval queues a request, activating it if nothing is blocking.
@@ -223,6 +259,7 @@ func (v *AgentView) PendingApprovals() int {
 	if v == nil {
 		return 0
 	}
+	v.retireWithdrawn()
 	return len(v.pending)
 }
 
@@ -360,6 +397,9 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		area, queue = area.SplitBottom(h + 1)
 		v.drawQueue(b, queue, th)
 	}
+
+	// A card whose caller has gone is retired before it can be drawn.
+	v.retireWithdrawn()
 
 	// The working row, between the transcript and whatever is typed under it.
 	// An approval card takes its place: the turn is then waiting on the
