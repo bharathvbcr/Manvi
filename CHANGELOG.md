@@ -774,6 +774,27 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Security (code-graph read gate): devmap's unresolved call-site `receiver`
+  text, which is raw source, is withheld when the site's file is a secret path
+  or unnamed; call-site samples in devmap prose (`walk_incomplete`,
+  `coverage_gap`, notes and degraded reasons) are replaced by the count and
+  `[call-site sample withheld]`, in the code tool, `graph_context`,
+  test-selection caveats, the verify record and refine citations; identifiers
+  and source that merely mention "call site" are left alone, path fields are
+  never rewritten, and every withholding is counted. `graph_context` now applies
+  the read gate to its input files.
+- Security (`harness.exec_containment=secrets`): the profile also denies
+  writing, hard-linking, cloning and deleting secret files and renaming,
+  unlinking or cloning any directory above one, closing `mv .env y`, `mv cfg
+  cfg2` and `clonefile` of a parent directory or the repository root. Deleting
+  or moving a tree that contains a secret-named file fails while it is on.
+- `devcouncil_batch` stops an answer at the first line that exceeds its byte
+  budget instead of showing later lines across a silent gap.
+- `devcouncil_write_file` decides whether the read-before-overwrite guard
+  applies from what the write actually replaces, so a file that appears mid-call
+  is not overwritten unread.
+- `manvi run` help no longer says exit 10 covers the step ceiling (that exits
+  2).
 - devcouncil_write_file now re-checks, inside the atomic replace and immediately
   before the rename, that the file still holds the bytes the agent read. A
   change landing between the overwrite check and the replace is refused with the
