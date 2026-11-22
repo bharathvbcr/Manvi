@@ -147,9 +147,12 @@ Written 2026-11-22. Labels: **verified** (read in this tree or run on this host)
   should instead adopt the App Sandbox feature"; the page is dated March 9, 2017.
   The binary is still present and the live tests ran against it. The code calls
   the CLI only (`containment.go:85`), not `sandbox_init(3)`; the man page's SEE
-  ALSO lists `sandbox_init(3)`, `sandbox(7)`, `sandboxd(8)`. I did not find
-  `/usr/include/sandbox.h` on this machine, so whether the C entry points are
-  separately deprecated is **unverified**.
+  ALSO lists `sandbox_init(3)`, `sandbox(7)`, `sandboxd(8)`. `/usr/include/sandbox.h` is absent on this machine, but the Xcode SDK
+  (`xcrun --show-sdk-path`, `usr/include/sandbox.h`) has it: line 7 says "This
+  header is deprecated and may be removed in a future release", and
+  `sandbox_init` (line 49) carries `API_DEPRECATED("No longer supported",
+  macos(10.5, 10.8), ...)` (line 46), so the C entry point is deprecated since
+  macOS 10.8 as well (verified).
 - Watch: the failure mode of Apple removing the binary is closed, not open:
   `containmentLookup` stats the path and refuses when it is missing or not
   executable (`containment.go:38-44`), and `exec_command` then returns an error
@@ -167,7 +170,7 @@ Written 2026-11-22. Labels: **verified** (read in this tree or run on this host)
 The card says "refused there". That is true of the command, not of the setting:
 
 - The setting is accepted on any OS. `harness.exec_containment` is an enum of
-  `off|secrets` with no platform check (`cmd/manvi/promptspec.go:57-59`);
+  `off|secrets` with no platform check (`cmd/manvi/promptspec.go:58-59`);
   `execContainmentMode` just returns the value (`promptspec.go:104-110`). An
   operator on Linux or Windows can set `secrets` and nothing complains until a
   command runs. The description text names macOS but is not a gate.
@@ -178,14 +181,14 @@ The card says "refused there". That is true of the command, not of the setting:
   (`containment.go:35-36`); `containedShellArgv` turns that into
   `secret-file containment is on (harness.exec_containment=secrets) but
   unavailable: ...; the command was not run` (`containment.go:297-300`) and
-  `exec_command` returns it as a tool error before anything is spawned
+  `exec_command` returns it as a tool error before the command is spawned (the gate and its ref snapshot run first, `exec_tools.go:78`, `refguard.go:1244`)
   (`exec_tools.go:88-91`). So with `secrets` on, every shell command is refused
   on Linux and Windows: fail closed, matching the card, but late and per command.
-  With `off` (the default, `promptspec.go:57`) nothing changes.
+  With `off` (the default, `promptspec.go:58-59`) nothing changes.
 - Test coverage of that branch: **unverified on a real non-darwin host**. The
   fail-closed test stubs the lookup with a fake "plan9" error
-  (`containment_test.go:378-383`); the `runtime.GOOS != "darwin"` line itself is
-  exercised only by reading it.
+  (`containment_test.go:378-383`); the `runtime.GOOS != "darwin"` check runs on darwin, but its TRUE
+  branch (the one a Linux or Windows host takes) is untested.
 - Follow-up this implies (not done here, changes behaviour): reject
   `secrets` at `manvi doctor` / config-set time on a host with no launcher, so
   the refusal is not discovered mid-task.
@@ -249,8 +252,13 @@ Two candidate facilities. Both are **designs only**; nothing below runs.
   and `landlock_restrict_self`, then `exec`s `sh -c`. It slots in beside
   `seatbeltProfile` at `containArgv` (`containment.go:72-86`), reusing
   `findSecretDenials` unchanged. The raw syscalls need constants from
-  `golang.org/x/sys/unix` or hand-written ones; whether x/sys is already in
-  `go.mod` was not checked, and adding a dependency needs the owner's approval.
+  `golang.org/x/sys/unix`, which is already a direct requirement
+  (`manvi/go.mod:11`, `golang.org/x/sys v0.50.0`, no `// indirect`), so no new
+  dependency is needed. In that version's source, `unix/zerrors_linux.go` and
+  `unix/zsysnum_linux_amd64.go` match Landlock names (`rg -c` on
+  `LANDLOCK_CREATE_RULESET_VERSION|SYS_LANDLOCK_RESTRICT_SELF|LANDLOCK_ACCESS_FS_REFER`:
+  2 and 1 lines); I did not check which of the three each file defines, nor
+  the other architectures, so the full constant set is unverified.
 
 **bubblewrap** (https://github.com/containers/bubblewrap,
 https://manpages.debian.org/bookworm/bubblewrap/bwrap.1.en.html)
