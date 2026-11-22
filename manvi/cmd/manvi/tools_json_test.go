@@ -31,7 +31,7 @@ func TestToolsJSONIsTheTableAsAnArray(t *testing.T) {
 
 	var table bytes.Buffer
 	if err := run(&table, &bytes.Buffer{}, []string{"tools"}); err != nil {
-		t.Skipf("the native tool surface could not be built here: %v", err)
+		t.Fatalf("the native tool surface could not be built here, so this test examined nothing: %v", err)
 	}
 	var out bytes.Buffer
 	if err := run(&out, &bytes.Buffer{}, []string{"tools", "--json"}); err != nil {
@@ -68,7 +68,7 @@ func TestToolsWithoutAFlagStillPrintsTheTable(t *testing.T) {
 
 	var viaRun, direct bytes.Buffer
 	if err := run(&viaRun, &bytes.Buffer{}, []string{"tools"}); err != nil {
-		t.Skipf("the native tool surface could not be built here: %v", err)
+		t.Fatalf("the native tool surface could not be built here, so this test examined nothing: %v", err)
 	}
 	if err := listTools(&direct, newTestRegistry(t)); err != nil {
 		t.Fatal(err)
