@@ -412,10 +412,15 @@ def _checkout_top(start):
 
 
 def _walk_env_files(top):
-    """(guard paths, stats) for every `.env*` file or symlink under top.
+    """(guard paths, stats) for every `.env*` file, symlink or directory under top.
 
-    Bounded: .git, node_modules, target, virtualenvs and nested checkouts are
-    not entered, and at most ENV_GUARD_MAX_DIRS directories are visited. Hitting
+    Bounded: .git, node_modules, target and virtualenvs are not entered, and at
+    most ENV_GUARD_MAX_DIRS directories are visited. Nested checkouts (a
+    directory holding its own .git) ARE entered, under the same cap: an .env in
+    a vendored or nested checkout is as readable as any other, and
+    git_guard_roots names only registered worktrees. A directory named .env* is
+    one guard root as a whole (its files are not .env files by name) and is not
+    entered. Hitting
     that cap raises GitGuardError: a partial guard set leaves the .env files past
     the cap readable, and an episode run on it would look the same as one run on
     a complete scan. A symlink named .env* is
@@ -438,12 +443,11 @@ def _walk_env_files(top):
             if n.startswith(".env"):
                 found.add(os.path.join(dp, n))
         for n in dns:
-            full = os.path.join(dp, n)
-            if n.startswith(".env") and os.path.islink(full):
-                found.add(full)
+            if n.startswith(".env"):
+                found.add(os.path.join(dp, n))
         dns[:] = [n for n in dns if n not in ENV_GUARD_PRUNE
-                  and not os.path.islink(os.path.join(dp, n))
-                  and not os.path.lexists(os.path.join(dp, n, ".git"))]
+                  and not n.startswith(".env")
+                  and not os.path.islink(os.path.join(dp, n))]
     return tuple(sorted(found)), {"dirs": dirs, "cap": ENV_GUARD_MAX_DIRS}
 
 
