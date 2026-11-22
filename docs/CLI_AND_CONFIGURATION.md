@@ -25,7 +25,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Task Lease Release** | `manvi lease release TASK TOKEN` | Atomically relinquish a held task lease using its cryptographic token. |
 | **Policy Pre-Check** | `manvi check PATH [--task ID]` | Probe write gate policy for a file path without touching the filesystem; outputs decision, fired rules, and explanation. |
 | **Human Override** | `manvi allow PATH --reason TEXT` | Record an audited human grant in the ledger to unblock a soft policy denial. |
-| **Native Tools List** | `manvi tools` | List all 54 native tools (53 in a repository with no skills) and their parameter schemas. |
+| **Native Tools List** | `manvi tools [--json]` | List all 54 native tools (53 in a repository with no skills) with a read/write class and a one-sentence description. `--json` prints the same list as one JSON array of `{"name": string, "class": "read"\|"write", "description": string}` objects, in the table's order, and exits 0. Any other argument is refused with exit 1. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
 | **Cloud or Local** | `manvi use [cloud\|local] [--model ID] [--base-url URL] [--json]` | Make Manvi's own user config the one cloud/local switch for every app that runs manvi (a shell, GitPulse, a script). Bare, report which is in force, where that came from (`default`, `config`, `env`, `flag`), the model each mode would use, any environment variable that shadows the saved choice, and the user config path; `--json` prints the same as a host contract (fields are added, never renamed). `use cloud` saves `llm.provider.default: anthropic`, and with `--model` the main tier `llm.tier.main` (checked against the Anthropic catalogue). `use local` saves `llm.provider.default: local` and optionally `llm.local.base_url` (an http(s) URL with a host, no credentials, query or fragment) and `llm.local.model`. The write goes to the user config (refused when that path is inside the repository), is atomic (temporary file and rename, `0600`), keeps every other line, and is read back through the real loader so the status printed is what the next run sees. It touches no credential: the key is whatever the host already supplies, and the status carries no credential state. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
@@ -108,6 +108,21 @@ does not treat every block as a pass:
 
 These are pinned to the dispatch by `manvi/internal/contract`; a code added in one
 place and not the other fails the suite.
+
+### Tool Exit Codes (`manvi tool`)
+
+`manvi tool NAME [--json ARGS]` has two statuses. The same text is in `manvi --help`.
+
+| Exit Code | Meaning | Interpretation |
+|---|---|---|
+| `0` | **Answered** | The tool ran and its answer is on stdout. A grant that let it through is noted on stderr, not stdout. |
+| `1` | **Anything else** | No `NAME`; an unknown tool; `--json` that is not valid JSON; a tool that refused (a policy block included) or failed, with its text on stdout; a tool surface that could not be built; or an answer that could not be written. |
+
+No status above 1 is returned, and nothing in the status separates a refusal
+from a failure: read stderr and the tool's own text. This differs from
+`dev tool call` (DevCouncil), which exits 0 answered, 1 refused, 2 malformed and
+3 could not run here. `gitpulse-mcp call` has its own contract, which this
+document does not state.
 
 ---
 

@@ -287,23 +287,69 @@ func harnessFor(pipeline *tools.Registry) (*subAgentRunner, harnessCapability) {
 // tools included: the documented tool counts are this list's length. Listing is
 // all it does; `manvi tool` builds without the board (see agentTools).
 func listTools(out io.Writer, reg *flags.Registry) error {
-	_, pipeline, err := agentTools(reg, nil, "")
+	catalog, err := toolCatalog(reg)
 	if err != nil {
 		return err
+	}
+	for _, e := range catalog {
+		_, _ = fmt.Fprintf(out, "%-34s %-6s %s\n", e.Name, e.Class, e.Description)
+	}
+	_, _ = fmt.Fprintf(out, "\n%d tools, all native — no Python process is involved.\n", len(catalog))
+	return nil
+}
+
+// toolsUsage is what `manvi tools` answers to any argument it does not know.
+const toolsUsage = "usage: manvi tools [--json]"
+
+// toolCatalogEntry is one row of `manvi tools`, and one element of the array
+// `manvi tools --json` prints. The table and the JSON are both written from
+// this, so they cannot disagree about which tools exist, in what order, or
+// which are read-only.
+type toolCatalogEntry struct {
+	Name        string `json:"name"`
+	Class       string `json:"class"` // "read" or "write"
+	Description string `json:"description"`
+}
+
+// toolCatalog is the surface listTools describes, one entry per tool, in the
+// pipeline's own order.
+func toolCatalog(reg *flags.Registry) ([]toolCatalogEntry, error) {
+	_, pipeline, err := agentTools(reg, nil, "")
+	if err != nil {
+		return nil, err
 	}
 	readOnly := map[string]bool{}
 	for _, s := range pipeline.ReadOnlySchemas() {
 		readOnly[s.Name] = true
 	}
-	for _, s := range pipeline.Schemas() {
-		access := "write"
+	schemas := pipeline.Schemas()
+	catalog := make([]toolCatalogEntry, 0, len(schemas))
+	for _, s := range schemas {
+		class := "write"
 		if readOnly[s.Name] {
-			access = "read"
+			class = "read"
 		}
-		_, _ = fmt.Fprintf(out, "%-34s %-6s %s\n", s.Name, access, firstSentence(s.Description))
+		catalog = append(catalog, toolCatalogEntry{Name: s.Name, Class: class, Description: firstSentence(s.Description)})
 	}
-	_, _ = fmt.Fprintf(out, "\n%d tools, all native — no Python process is involved.\n", len(pipeline.Schemas()))
-	return nil
+	return catalog, nil
+}
+
+// toolsCommand is `manvi tools [--json]`. No argument prints the table; --json
+// prints the same catalog as one JSON array. Anything else is refused before
+// the tool surface is built, as `version` refuses an argument it does not know.
+func toolsCommand(out io.Writer, reg *flags.Registry, args []string) error {
+	switch {
+	case len(args) == 0:
+		return listTools(out, reg)
+	case len(args) == 1 && args[0] == "--json":
+		catalog, err := toolCatalog(reg)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(catalog)
+	default:
+		return errors.New(toolsUsage)
+	}
 }
 
 // callTool runs one tool through the caller's pipeline.

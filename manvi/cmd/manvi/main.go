@@ -37,7 +37,8 @@ Usage:
   manvi lease release TASK TOKEN    Release a lease
   manvi check PATH [--task ID]      Evaluate a write against policy, and say why
   manvi allow PATH --reason TEXT    Grant a human override for a blocked write
-  manvi tools                       List the native DevCouncil tools an agent can call
+  manvi tools [--json]              List the native DevCouncil tools an agent can call; --json prints
+                                    [{"name","class":"read"|"write","description"}], one per tool
   manvi tool NAME [--json ARGS]     Call one natively, the same path an agent takes
   manvi providers                   Show model providers and whether a credential is present
   manvi agents                      Show sub-agent roles: role → tier → model
@@ -86,6 +87,16 @@ Exit status:
   6  blocked by a rule a grant can clear — the 'manvi allow' line is printed
   7  blocked by a hard rule, which no grant clears by any authority
   1  the command itself failed
+
+Exit status of 'manvi tool NAME [--json ARGS]' (the same two statuses on every
+failure, so read the message on stderr and the tool's own text on stdout):
+  0  the tool ran and answered; the answer is on stdout
+  1  anything else: no NAME, an unknown tool, --json that is not valid JSON, a tool
+     that refused or failed (a policy refusal included; its text is on stdout), a
+     tool surface that could not be built, or an answer that could not be written
+  No status above 1 is returned. 'dev tool call' differs: 0 answered, 1 refused,
+  2 malformed, 3 could not run here; 'manvi tool' has no separate status for
+  a refusal, a malformed request or a tool that could not run.
 
 Options (any command):
   --yolo               Run in yolo posture: every gate off, hard rules included.
@@ -415,7 +426,7 @@ func run(out, notes io.Writer, args []string) error {
 	case "allow":
 		return withGate(out, reg, args[1:], allow)
 	case "tools":
-		return listTools(out, reg)
+		return toolsCommand(out, reg, args[1:])
 	case "tool":
 		_, pipeline, err := nativeTools(reg)
 		if err != nil {
