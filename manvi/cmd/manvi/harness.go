@@ -363,15 +363,17 @@ const toolUsage = "usage: manvi tool NAME [--json '{...}']"
 // value ran the tool with {} — a write tool then ran on empty arguments because
 // of a typo.
 func toolPayload(rest []string) (string, error) {
-	switch {
-	case len(rest) == 0:
+	if len(rest) == 0 {
 		return "{}", nil
-	case len(rest) == 2 && rest[0] == "--json":
-		return rest[1], nil
-	case len(rest) == 1:
-		if v, ok := strings.CutPrefix(rest[0], "--json="); ok {
-			return v, nil
+	}
+	if len(rest) > 1 {
+		if len(rest) == 2 && rest[0] == "--json" {
+			return rest[1], nil
 		}
+		return "", errors.New(toolUsage)
+	}
+	if v, ok := strings.CutPrefix(rest[0], "--json="); ok {
+		return v, nil
 	}
 	return "", errors.New(toolUsage)
 }

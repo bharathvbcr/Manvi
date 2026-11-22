@@ -315,6 +315,7 @@ func (advBrokenWriter) Write([]byte) (int, error) {
 func TestAdvB25ToolsBrokenStdoutIsNotZero(t *testing.T) {
 	advToolsEnv(t)
 	repo := os.Getenv("MANVI_PROJECT_ROOT")
+	// #nosec G703 -- repo is the test's own temporary repository.
 	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("hi\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -366,14 +367,25 @@ func TestAdvB25ToolsHelpAndDocsExitSectionsMatch(t *testing.T) {
 	}
 }
 
+// advSession returns the host's first session, failing the test if it is absent
+// so no caller passes a nil session to runCommand.
+func advSession(t *testing.T, h *harnessHost) *tuiSession {
+	t.Helper()
+	s := h.sessions["S1"]
+	if s == nil {
+		t.Fatal("the command host has no session S1")
+	}
+	return s
+}
+
 // TUI parity: /tool with a misspelt flag is refused and the session survives;
 // /tools --json is either handled or refused, not silently ignored.
 func TestAdvB25ToolsTUIToolRefusesMisspeltFlag(t *testing.T) {
 	var ran []string
 	h, _ := commandHost(t)
-	h.sessions["S1"].pipeline = advPipeline(t, false, &ran)
+	advSession(t, h).pipeline = advPipeline(t, false, &ran)
 	var out bytes.Buffer
-	_, err := h.runCommand(context.Background(), h.sessions["S1"], "S1", "tool", []string{"t", "--jsno", "{}"}, &out)
+	_, err := h.runCommand(context.Background(), advSession(t, h), "S1", "tool", []string{"t", "--jsno", "{}"}, &out)
 	if err == nil || len(ran) != 0 {
 		t.Fatalf("/tool t --jsno {}: err=%v ran=%q", err, ran)
 	}
@@ -383,12 +395,12 @@ func TestAdvB25ToolsTUIToolsFlagIsNotSilentlyIgnored(t *testing.T) {
 	advToolsEnv(t)
 	h, _ := commandHost(t)
 	var out bytes.Buffer
-	_, err := h.runCommand(context.Background(), h.sessions["S1"], "S1", "tools", []string{"--json"}, &out)
+	_, err := h.runCommand(context.Background(), advSession(t, h), "S1", "tools", []string{"--json"}, &out)
 	if err == nil && !strings.HasPrefix(out.String(), "[") {
 		t.Errorf("/tools --json printed the table, ignoring the argument: %.80q", out.String())
 	}
 	out.Reset()
-	_, err = h.runCommand(context.Background(), h.sessions["S1"], "S1", "tools", []string{"--bogus"}, &out)
+	_, err = h.runCommand(context.Background(), advSession(t, h), "S1", "tools", []string{"--bogus"}, &out)
 	if err == nil {
 		t.Errorf("/tools --bogus was accepted and ignored")
 	}
