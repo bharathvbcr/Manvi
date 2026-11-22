@@ -81,10 +81,14 @@ test("the suite run reports its failing packages and returns 2", () => {
 
 test("a package killed at -timeout is named as a timeout, apart from assertion failures", () => {
   const events = [
-    { Action: "output", Package: "p/slow", Test: "TestHang", Output: "=== RUN   TestHang\n" },
-    { Action: "output", Package: "p/slow", Output: "panic: test timed out after 20m0s\n" },
-    { Action: "output", Package: "p/slow", Output: "\trunning tests:\n" },
-    { Action: "output", Package: "p/slow", Output: "\t\tTestHang (19m59s)\n" },
+    // The shape go 1.27.4 emits: the panic and the running-tests list carry the
+    // innermost running test, and only the package gets a fail event.
+    { Action: "run", Package: "p/slow", Test: "TestHang" },
+    { Action: "run", Package: "p/slow", Test: "TestHang/sub" },
+    { Action: "output", Package: "p/slow", Test: "TestHang/sub", Output: "panic: test timed out after 20m0s\n" },
+    { Action: "output", Package: "p/slow", Test: "TestHang/sub", Output: "\trunning tests:\n" },
+    { Action: "output", Package: "p/slow", Test: "TestHang/sub", Output: "\t\tTestHang (20m0s)\n" },
+    { Action: "output", Package: "p/slow", Test: "TestHang/sub", Output: "\t\tTestHang/sub (20m0s)\n" },
     { Action: "fail", Package: "p/slow" },
     { Action: "output", Package: "p/bad", Test: "TestX", Output: "    x_test.go:9: attempts = 1, want 2\n" },
     { Action: "fail", Package: "p/bad", Test: "TestX" },
@@ -94,7 +98,7 @@ test("a package killed at -timeout is named as a timeout, apart from assertion f
     go: `${events.map((e) => `echo '${e}'`).join("\n")}\nexit 1`,
   });
   assert.match(r.out, /^status=2$/m, r.out + r.err);
-  assert.match(r.err, /TIMED OUT, not an assertion failure: p\/slow was killed by go test -timeout after 20m0s; running when it fired: TestHang/);
+  assert.match(r.err, /TIMED OUT, not an assertion failure: p\/slow was killed by go test -timeout after 20m0s; running when it fired: TestHang, TestHang\/sub/);
   assert.match(r.err, /1 package\(s\) timed out; 1 test\(s\) failed an assertion/);
   assert.match(r.err, /failed tests:\n {2}p\/bad\.TestX/);
   assert.doesNotMatch(r.err, /TIMED OUT.*p\/bad/);

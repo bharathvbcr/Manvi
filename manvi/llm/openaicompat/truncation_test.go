@@ -255,6 +255,9 @@ func muteCall(t *testing.T, url string) (int32, error) {
 	t.Helper()
 	a := adapterAt(url, func(o *Options) { o.HeaderTimeout = 50 * time.Millisecond })
 	a.client.Retry.MaxAttempts = 2
+	if got := a.client.ResponseHeaderTimeout; got != 50*time.Millisecond {
+		t.Fatalf("header timeout = %s, want the 50ms this test configures", got)
+	}
 	counter := &countingTransport{next: a.client.HTTP.Transport}
 	if counter.next == nil {
 		counter.next = http.DefaultTransport

@@ -19,7 +19,7 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
 const TERMINAL = new Set(["pass", "fail", "skip"]);
-const TIMED_OUT = /panic: test timed out after (\S+)/;
+const TIMED_OUT = /^panic: test timed out after (\S+)/;
 
 /** One `go test -json` line as an event, or null for anything else (build output, blank). */
 export function parseLine(line) {

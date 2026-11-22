@@ -130,8 +130,8 @@ failed, tests, out, by_test = set(), [], [], {}
 # an assertion failure (a hang, or a host too loaded to finish), so it is named
 # as one rather than left as the tail of an unlabelled FAIL.
 timed_out, running = {}, {}
-TIMEOUT = re.compile(r"panic: test timed out after (\S+)")
-RUNNING = re.compile(r"^\s+(Test\w+|Fuzz\w+|Benchmark\w+|Example\w+)(?:/\S*)? \(")
+TIMEOUT = re.compile(r"^panic: test timed out after (\S+)")
+RUNNING = re.compile(r"^\t\t(\S+) \(")
 for line in open(sys.argv[1], errors="replace"):
     line = line.strip()
     if not line.startswith("{"):
