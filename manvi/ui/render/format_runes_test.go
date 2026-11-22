@@ -26,8 +26,6 @@ func TestInvisibleFormatRunesNeverReachTheTTY(t *testing.T) {
 		"rlm":               0x200F,
 		"alm":               0x061C,
 		"zwsp":              0x200B,
-		"zwnj":              0x200C,
-		"zwj after text":    0x200D,
 		"word joiner":       0x2060,
 		"bom":               0xFEFF,
 		"tag latin a":       0xE0041,
@@ -93,5 +91,53 @@ func TestEmojiSequencesKeepTheirFormatRunes(t *testing.T) {
 	b.SetString(0, 0, "🏴\u0301\U000e0067", Plain)
 	if c := b.Cell(1, 0); strings.ContainsRune(c.Comb, 0xE0067) {
 		t.Fatalf("a tag was accepted after a non-tag mark: %q", c.Comb)
+	}
+}
+
+// A joiner joins only letters and marks. After a digit, a space, punctuation or
+// at the start of a line it is dropped; two in a row keep one.
+func TestJoinersAreDroppedWhereTheyJoinNothing(t *testing.T) {
+	for _, r := range []rune{0x200C, 0x200D} {
+		for name, text := range map[string]string{
+			"digit": "5" + string(r) + "b", "space": " " + string(r) + "b", "punct": "." + string(r) + "b",
+			"start": string(r) + "b",
+		} {
+			got := paint(t, 40, 2, text)
+			if strings.ContainsRune(got, r) {
+				t.Errorf("U+%04X after %s reached the tty: %q", r, name, got)
+			}
+		}
+	}
+}
+
+// The scripts that need a joiner paint exactly as they did before this rule
+// existed: refCells is the old store-every-zero-width-rune behaviour.
+func TestScriptJoinersPaintAsTheyDidAtTheBase(t *testing.T) {
+	for name, text := range map[string]string{
+		"persian":    "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+		"hindi zwj":  "\u0915\u094d\u200d\u0937",
+		"hindi zwnj": "\u0915\u094d\u200c\u0937",
+		"bengali":    "\u09b0\u200c\u09cd\u09af",
+		"sinhala":    "\u0dc1\u0dca\u200d\u0dbb\u0dd3",
+		"malayalam":  "\u0d28\u0d4d\u200d",
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := NewBuffer(40, 1)
+			b.SetString(0, 0, text, Plain)
+			want := refCells(text, 40)
+			for x := range want {
+				if got := b.Cell(x, 0); got.R != want[x].R || got.Comb != want[x].Comb {
+					t.Fatalf("cell %d = %q+%q, want %q+%q", x, got.R, got.Comb, want[x].R, want[x].Comb)
+				}
+			}
+			if got := paint(t, 40, 1, text); !strings.Contains(got, text) {
+				t.Fatalf("%q painted as %q", text, got)
+			}
+		})
+	}
+	b := NewBuffer(10, 1)
+	b.SetString(0, 0, "\u0628\u200c\u200c\u200d\u0628", Plain)
+	if got := b.Cell(0, 0).Comb; got != "\u200c" {
+		t.Fatalf("a run of joiners kept %q, want exactly one", got)
 	}
 }

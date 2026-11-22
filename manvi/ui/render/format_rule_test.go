@@ -13,10 +13,13 @@ func TestFormatMarkRule(t *testing.T) {
 			t.Fatalf("U+%04X is not Cf", r)
 		}
 	}
-	for _, base := range []rune{'a', 'é', '5', ' ', 'क', 0x0301} {
-		if formatMarkAllowed(0x200D, base, "") {
-			t.Fatalf("ZWJ allowed after %q", base)
+	for _, base := range []rune{'5', ' ', '.', 0} {
+		if formatMarkAllowed(0x200D, base, "") || formatMarkAllowed(0x200C, base, "") {
+			t.Fatalf("joiner allowed after %q", base)
 		}
+	}
+	if !formatMarkAllowed(0x200C, 'ی', "") || formatMarkAllowed(0x200C, 'ی', "\u200d") {
+		t.Fatal("one joiner after a letter, never two")
 	}
 	if !formatMarkAllowed(0x200D, 0x1F468, "") {
 		t.Fatal("ZWJ refused after an emoji")

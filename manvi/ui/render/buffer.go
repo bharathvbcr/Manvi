@@ -1,6 +1,7 @@
 package render
 
 import (
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -254,6 +255,12 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 		}
 		return 0
 	}
+	// A Cf rune that RuneWidth gives a column (U+00AD soft hyphen is the one
+	// below U+0300) is not a mark, but it is the same invisible format rune and
+	// would be stored as a base cell. Apply the format rule here too: drop it.
+	if unicode.Is(unicode.Cf, r) {
+		return 0
+	}
 	if x < 0 {
 		return w
 	}
@@ -283,33 +290,69 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 // several columns. A cell cannot grow, and RuneWidth promises callers this rune
 // is zero columns wide, so the closest faithful behaviour here is to drop it,
 // as SetRune already does for control characters; Sanitize remains the layer
-// that shows the reader something was there.
+// that shows the reader something was there. Bidi runes are dropped in every
+// context.
 //
-// Two uses are legitimate and kept. A zero-width joiner after a pictograph
-// builds an emoji sequence. Tag characters after the black flag U+1F3F4 spell a
-// subdivision flag (England, Scotland, Wales). Anywhere else they are dropped:
-// tag characters after ordinary text are invisible smuggled ASCII.
+// Three uses are legitimate and kept, each bounded so a cell cannot become a
+// carrier for hidden data:
+//   - A zero-width joiner after a pictograph builds an emoji sequence.
+//   - A joiner (ZWNJ U+200C or ZWJ U+200D) after a letter or combining mark is
+//     script shaping: Persian "می‌خواهم", Hindi क्‍ष, Bengali, Sinhala and the
+//     Malayalam chillu letters change meaning without it. Dropping it was a
+//     regression for those scripts. After a digit, space, punctuation or at the
+//     start of a line it joins nothing and is dropped.
+//   - Tag characters after the black flag U+1F3F4 spell a subdivision flag: the
+//     flag, one to six tag letters, then the cancel tag U+E007F, and nothing
+//     after the cancel tag. Anywhere else they are invisible smuggled ASCII.
+//
+// A cell holds at most ONE joiner of either kind (a run of them joins nothing
+// and is hidden payload), and at most one tag sequence.
 func formatMarkAllowed(r, base rune, comb string) bool {
 	switch {
-	case r == 0x200D:
-		return isPictographic(base)
+	case r == 0x200C || r == 0x200D:
+		if strings.ContainsRune(comb, 0x200C) || strings.ContainsRune(comb, 0x200D) {
+			return false
+		}
+		if r == 0x200D && isPictographic(base) {
+			return true
+		}
+		last := base
+		if comb != "" {
+			last, _ = utf8.DecodeLastRuneInString(comb)
+		}
+		return isLetterOrMark(base) && isLetterOrMark(last)
 	case r >= 0xE0020 && r <= 0xE007F:
 		if base != 0x1F3F4 {
 			return false
 		}
+		specs := 0
 		for _, c := range comb {
-			if c != 0xFE0F && (c < 0xE0020 || c > 0xE007F) {
+			switch {
+			case c == 0xE007F:
+				return false // nothing follows the cancel tag
+			case c >= 0xE0020 && c <= 0xE007E:
+				specs++
+			case c != 0xFE0F:
 				return false
 			}
 		}
-		return true
+		if r == 0xE007F {
+			return specs >= 1
+		}
+		return specs < maxFlagTagSpecs
 	}
 	return false
 }
 
+// maxFlagTagSpecs is the most tag letters a subdivision flag carries: an ISO
+// 3166-2 code is a two-letter region plus at most four characters.
+const maxFlagTagSpecs = 6
+
+func isLetterOrMark(r rune) bool { return unicode.IsLetter(r) || unicode.IsMark(r) }
+
 // isPictographic reports whether r can anchor a zero-width-joiner emoji
 // sequence: a symbol or emoji outside the scripts, which excludes letters,
-// digits and marks (a ZWJ after those is Indic or Arabic shaping, or hiding).
+// digits and marks.
 func isPictographic(r rune) bool {
 	return r >= 0x2190 && !unicode.IsLetter(r) && !unicode.IsDigit(r) && !unicode.IsMark(r) && !unicode.IsSpace(r)
 }
