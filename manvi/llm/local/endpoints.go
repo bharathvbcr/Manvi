@@ -552,12 +552,15 @@ type ResolveOptions struct {
 //     report them. Choosing between an operator's servers on their behalf is a
 //     guess, and this package does not make those.
 func ResolveEndpoint(ctx context.Context, opts ResolveOptions) Resolution {
+	// An address the operator declared is returned exactly as declared. Filling
+	// an empty one in with the shipped default would hand the harness's own
+	// guess back as something the operator named.
+	if opts.DeclaredByOperator {
+		return Resolution{BaseURL: opts.Declared, Configured: opts.Declared, Declared: true}
+	}
 	declared := opts.Declared
 	if declared == "" {
 		declared = DefaultBaseURL
-	}
-	if opts.DeclaredByOperator {
-		return Resolution{BaseURL: declared, Configured: declared, Declared: true}
 	}
 
 	endpoints := opts.Endpoints

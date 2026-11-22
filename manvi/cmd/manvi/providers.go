@@ -273,7 +273,7 @@ func resolveLocalEndpoint(ctx context.Context, reg *flags.Registry, declared str
 		// Nothing was established about the address, so nothing is sent to it.
 		return declared, nil
 	}
-	named := origin != flags.OriginDefault
+	named := localBaseURLNamed(declared, origin)
 	res := local.ResolveEndpoint(ctx, local.ResolveOptions{
 		Declared:           declared,
 		DeclaredByOperator: named,
@@ -316,6 +316,15 @@ func unnamedEndpointCredential(res local.Resolution, resolve func() (credentials
 		_, _ = fmt.Fprintf(notes, "manvi: %s\n", refusal)
 	}
 	return nil
+}
+
+// localBaseURLNamed reports whether llm.local.base_url is an address the
+// operator wrote down. A setting that is not at its default but is blank (an
+// exported-but-empty MANVI_LLM_LOCAL_BASE_URL) names nothing: the address in
+// force is then the shipped guess, and treating it as named would send a key to
+// it and switch off the scan.
+func localBaseURLNamed(base string, origin flags.Origin) bool {
+	return origin != flags.OriginDefault && strings.TrimSpace(base) != ""
 }
 
 // preferredLocalModel prefers an explicit request model (enhancement record)
@@ -985,17 +994,18 @@ func localReadiness(reg *flags.Registry) readiness {
 	// readiness report is not a request that has to succeed, and retrying a
 	// refused loopback connection four times made `manvi doctor` sit for three
 	// seconds to print a line it already knew.
+	pinned := localBaseURLNamed(declared, origin)
 	opts := local.ScanOptions{Credential: resolve}
-	if origin != flags.OriginDefault {
+	if pinned {
 		opts.Endpoints = []local.Endpoint{{BaseURL: declared, Named: true}}
 	}
 	servers := local.Scan(ctx, opts)
 	switch {
-	case len(servers) == 0 && origin != flags.OriginDefault:
+	case len(servers) == 0 && pinned:
 		return readiness{stateUnavailable, fmt.Sprintf("nothing answered %s (%s)", declared, origin)}
 	case len(servers) == 0:
 		return readiness{stateUnavailable, "no local server answered; run 'manvi local'"}
-	case len(servers) == 1 && servers[0].AuthRequired && origin != flags.OriginDefault:
+	case len(servers) == 1 && servers[0].AuthRequired && pinned:
 		return readiness{stateUnavailable, fmt.Sprintf("%s answered but refused the request (401/403); check the key the local provider reads (%s)",
 			declared, local.DedicatedCredentialEnvVar)}
 	case len(servers) == 1 && servers[0].AuthRequired:

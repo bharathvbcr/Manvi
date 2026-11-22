@@ -67,7 +67,7 @@ func showLocal(ctx context.Context, out io.Writer, reg *flags.Registry, args []s
 	if err != nil {
 		return err
 	}
-	pinned := origin != flags.OriginDefault
+	pinned := localBaseURLNamed(declared, origin)
 
 	if resolveOnly {
 		return resolveLocalSelection(ctx, out, reg, timeout)
