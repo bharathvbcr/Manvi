@@ -98,7 +98,7 @@ func TestRigorLeanTimeoutClampsTheKernelStep(t *testing.T) {
 		{"600001", 1870 * time.Second},
 		{"18446744073709551615", 1870 * time.Second},
 		{"18446744073709551616", 610 * time.Second},
-		{"+300000", 610 * time.Second},
+		{"+300000", 970 * time.Second},
 		{"-300000", 610 * time.Second},
 		{"5m", 610 * time.Second},
 		{" 300000 ", 970 * time.Second},
@@ -141,11 +141,22 @@ var dcverifyLeanTable = []struct {
 	{" 300000 ", 360 * time.Second},
 }
 
+// rustParseDiffers lists the table rows where DevCouncil's Go client and
+// dc-proc's Rust step parse disagree. The binary that runs each step is the
+// Rust one, and Rust's u64 FromStr accepts one leading '+', so "+300000" is
+// 240s for the Go client's table and 360s (a 300s step plus 60s) for the step
+// Manvi must budget.
+var rustParseDiffers = map[string]time.Duration{"+300000": 360 * time.Second}
+
 func TestRigorLeanStepClampMatchesDevCouncilTable(t *testing.T) {
 	for _, tc := range dcverifyLeanTable {
 		t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", tc.raw)
-		if got := max(leanKernelStep()+60*time.Second, 240*time.Second); got != tc.want {
-			t.Errorf("DC_LEAN_KERNEL_TIMEOUT_MS=%q: step clamp implies %v, DevCouncil's table says %v", tc.raw, got, tc.want)
+		want := tc.want
+		if rust, ok := rustParseDiffers[tc.raw]; ok {
+			want = rust
+		}
+		if got := max(leanKernelStep()+60*time.Second, 240*time.Second); got != want {
+			t.Errorf("DC_LEAN_KERNEL_TIMEOUT_MS=%q: step clamp implies %v, want %v (DevCouncil's table row is %v)", tc.raw, got, want, tc.want)
 		}
 	}
 }

@@ -95,9 +95,12 @@ const (
 
 // leanKernelStep mirrors dc-proc's configured_lean_kernel_timeout
 // (lean_kernel.rs): DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s, 180s when
-// unset or not an unsigned decimal.
+// unset or not an unsigned decimal. dc-proc parses with raw.trim().parse::<u64>(),
+// and Rust's integer FromStr accepts exactly one leading '+', which Go's
+// ParseUint does not, so that one sign is stripped here ("+300000" is 300s,
+// "++300000" and "+-1" are the default).
 func leanKernelStep() time.Duration {
-	raw := strings.TrimSpace(os.Getenv("DC_LEAN_KERNEL_TIMEOUT_MS"))
+	raw := strings.TrimPrefix(strings.TrimSpace(os.Getenv("DC_LEAN_KERNEL_TIMEOUT_MS")), "+")
 	if raw == "" {
 		return defaultLeanKernelStep
 	}
