@@ -14,8 +14,18 @@ import (
 // start time, by scanning /proc/<pid>/stat: field 5 is the process group and
 // field 22 the start time in clock ticks since boot. comm (field 2) may hold
 // spaces and parentheses, so fields are counted from after the last ')'. A
-// process that exits while the scan runs is skipped; it was not a member when
-// its stat was unreadable. Zombies are listed, as kill(2) counts them.
+// process that exits while the scan runs (ENOENT or ESRCH on its stat) is
+// skipped; it was not a member when its stat was unreadable. Any other read
+// error (EACCES under hidepid=1, say) returns an error, since an unreadable
+// process may be a member (listStatError).
+//
+// What that error does: sweepGroup records membersKnown = false when either of
+// its two listings fails, groupLive then answers from the bare probe alone (the
+// group reads live while kill(2) finds a member, which is the fail-closed
+// answer), and awaitGroup, the only waiter, polls that until its own
+// reapBudget deadline and returns "still has a live member". So an error costs
+// at most one reapBudget in close() and cannot hang the exit. Zombies are
+// listed, as kill(2) counts them.
 func groupMembers(pgid int) ([]groupMember, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -29,6 +39,9 @@ func groupMembers(pgid int) ([]groupMember, error) {
 		}
 		raw, err := os.ReadFile("/proc/" + e.Name() + "/stat")
 		if err != nil {
+			if skip := listStatError(pid, err); skip != nil {
+				return nil, skip
+			}
 			continue
 		}
 		group, start, ok := parseProcStat(string(raw))

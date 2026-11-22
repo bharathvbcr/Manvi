@@ -84,13 +84,13 @@ func endLeftoverChildren() string {
 	var live []childRow
 	var unchecked []int
 	for i, r := range rows {
-		if r.zombie {
-			continue // dead already; only its parent's Wait is missing
+		if !needsEnding(ctx, ps, r) {
+			continue
 		}
 		if ctx.Err() != nil {
 			// The shared bound ran out before this child's turn.
 			for _, rest := range rows[i:] {
-				if !rest.zombie {
+				if !rest.zombie || rest.pgid == rest.pid {
 					unchecked = append(unchecked, rest.pid)
 				}
 			}
@@ -130,6 +130,24 @@ func endLeftoverChildren() string {
 		problems = append(problems, fmt.Sprintf("child processes %v were still running at exit and could not be ended", left))
 	}
 	return strings.Join(problems, "; ")
+}
+
+// needsEnding says whether the sweep has anything to do about r. A live child
+// does. A zombie is dead already and only its parent's Wait is missing, so it
+// needs nothing itself; but a zombie that leads a group may have left live
+// members behind it (a leader that exited before the processes it forked), and
+// those are this process's to end like any other leftover. They are found the
+// way gone() finds them: allZombies reads the group from one table read. A
+// table that cannot be read answers "not all zombies", so the zombie leader is
+// signalled rather than skipped; that is safe, because an unreaped leader
+// still holds its pid and with it the group number, so the group is ours and
+// cannot have been handed to a stranger. A zombie that does not lead a group
+// belongs to a group that is not its own, and is left alone.
+func needsEnding(ctx context.Context, ps string, r childRow) bool {
+	if !r.zombie {
+		return true
+	}
+	return r.pgid == r.pid && !allZombies(ctx, ps, r)
 }
 
 // gonePoll is how often a killed child is looked for, which costs a ps each time.
