@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
@@ -375,6 +376,44 @@ func toolPayload(rest []string) (string, error) {
 	return "", errors.New(toolUsage)
 }
 
+// payloadEchoMax bounds how much of a refused --json value is quoted back in
+// the error. The value is whatever the caller typed or a script generated; the
+// error is printed to a terminal and recorded, so it carries a prefix and the
+// total length, never the whole payload. No size cap on tool arguments exists
+// elsewhere in manvi to reuse (the 1 MiB limit in run.go is for a prompt on
+// stdin), so none is invented here: the operating system already bounds argv,
+// and the TUI line is one typed line.
+const payloadEchoMax = 200
+
+// checkToolPayload refuses a --json value that is not a UTF-8 JSON object.
+// Valid JSON that is not an object ([], null, 123, "s") is not a tool's
+// arguments, and a tool that decodes into a struct reads some of those as the
+// zero value and runs on it.
+func checkToolPayload(payload string) error {
+	switch {
+	case !utf8.ValidString(payload):
+		return fmt.Errorf("--json is not valid UTF-8 (%d bytes): %s", len(payload), payloadPreview(payload))
+	case !json.Valid([]byte(payload)):
+		return fmt.Errorf("--json is not valid JSON (%d bytes): %s", len(payload), payloadPreview(payload))
+	case !strings.HasPrefix(strings.TrimLeft(payload, " \t\r\n"), "{"):
+		return fmt.Errorf("--json must be a JSON object (%d bytes): %s", len(payload), payloadPreview(payload))
+	}
+	return nil
+}
+
+// payloadPreview quotes at most payloadEchoMax bytes of s, cut on a rune
+// boundary, and says when it cut.
+func payloadPreview(s string) string {
+	if len(s) <= payloadEchoMax {
+		return fmt.Sprintf("%q", s)
+	}
+	cut := payloadEchoMax
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%q... (first %d bytes)", s[:cut], cut)
+}
+
 // callTool runs one tool through the caller's pipeline.
 //
 // The pipeline is passed in for the reason the gate is: an attended session's
@@ -396,8 +435,8 @@ func callTool(out io.Writer, notes io.Writer, scrubber *credentials.Scrubber, pi
 	if err != nil {
 		return err
 	}
-	if !json.Valid([]byte(payload)) {
-		return fmt.Errorf("--json is not valid JSON: %s", payload)
+	if err := checkToolPayload(payload); err != nil {
+		return err
 	}
 
 	result := pipeline.Run(context.Background(), tools.Call{

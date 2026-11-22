@@ -665,7 +665,7 @@ func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, 
 	case "issues":
 		return "", runQuickAction(ctx, out, projectRoot(), name, fields, osQuickCommandRunner{})
 	case "tools":
-		return "", listTools(out, h.reg) //nolint:contextcheck // buildMCP's only context goes to mcp.Manager.Discover, which never reads it
+		return "", toolsCommand(out, h.reg, fields) //nolint:contextcheck // buildMCP's only context goes to mcp.Manager.Discover, which never reads it
 	case "leases":
 		return "", lease(out, append([]string{"list"}, fields...))
 	case "lease":

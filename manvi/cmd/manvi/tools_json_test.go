@@ -205,3 +205,19 @@ func TestManviToolStillRunsWithWellFormedArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestPayloadPreviewIsBoundedAndCutOnARuneBoundary(t *testing.T) {
+	long := strings.Repeat("é", 500) // two bytes each, so byte 200 is a boundary and 201 is not
+	for _, s := range []string{long, "x" + long} {
+		got := payloadPreview(s)
+		if len(got) > payloadEchoMax*4+64 {
+			t.Errorf("preview is %d bytes for a %d byte payload", len(got), len(s))
+		}
+		if !strings.Contains(got, "first ") || strings.Contains(got, "\\x") {
+			t.Errorf("preview cut inside a rune or does not say it cut: %.60q", got)
+		}
+	}
+	if got := payloadPreview("{}"); got != `"{}"` {
+		t.Errorf("short payload previewed as %s", got)
+	}
+}
