@@ -368,6 +368,22 @@ func refuseUserConfigInside(path, root string) error {
 			"can write is not operator scope, so it was not read — move it, or point %s elsewhere",
 			path, root, envUserConfig)
 	}
+	// A path outside the tree can still be the tree's own file: a hard link has
+	// no path that leads back in. The repository cannot be searched for the
+	// file's other names, so a config with more than one link is refused, which
+	// is also the only way a clone could have given the operator's file a second
+	// name inside the checkout.
+	n, err := userConfigLinkCount(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	case err != nil:
+		return fmt.Errorf("could not tell whether the user config %s is linked from elsewhere: %w", path, err)
+	case n > 1:
+		return fmt.Errorf("the user config %s has %d hard links, so it may also be a file inside a repository; "+
+			"a setting a checked-out tree can write is not operator scope, so it was not read — copy it to a file of its own, or point %s elsewhere",
+			path, n, envUserConfig)
+	}
 	return nil
 }
 
