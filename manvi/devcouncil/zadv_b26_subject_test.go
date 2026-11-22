@@ -102,7 +102,7 @@ func TestAdvB26SubjectTwoChildrenHoldDistinctLeasesAndReleaseOwn(t *testing.T) {
 	}
 	la, _ := f.reg.deps.Store.Active(context.Background(), "TASK-001")
 	lb, _ := f.reg.deps.Store.Active(context.Background(), "TASK-002")
-	if la == nil || lb == nil || la.Owner != "worker-a" || lb.Owner != "worker-b" {
+	if la == nil || lb == nil || la.Owner != "agent:worker-a" || lb.Owner != "agent:worker-b" {
 		t.Fatalf("lease owner labels lost: %+v %+v", la, lb)
 	}
 	if res := f.callAs(a, "devcouncil_release_task", map[string]any{}); res.IsError {

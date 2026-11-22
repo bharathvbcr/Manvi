@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
@@ -76,6 +77,32 @@ func (r *Registry) getTask(ctx context.Context, call tools.Call) tools.Result {
 	return ok(task)
 }
 
+// maxLeaseLabel bounds a caller-supplied lease label.
+const maxLeaseLabel = 48
+
+// leaseLabel reduces a caller-supplied lease label to a short, printable token:
+// letters, digits, dot, underscore and hyphen, with anything else (colons,
+// spaces, controls) replaced by an underscore. It returns "" for a label with
+// nothing in it.
+func leaseLabel(raw string) string {
+	raw = strings.TrimSpace(raw)
+	var b strings.Builder
+	n := 0
+	for _, r := range raw {
+		if n == maxLeaseLabel {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+		n++
+	}
+	return b.String()
+}
+
 func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		TaskID string `json:"task_id"`
@@ -93,11 +120,14 @@ func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 	// labels the lease in the store.
 	identity := sess.State().Owner
 	if identity == "" {
-		identity = "manvi"
+		identity = defaultIdentity
 	}
-	owner := args.Owner
-	if owner == "" {
-		owner = identity
+	// The label is shown as who holds the task by `manvi lease` and the watch
+	// face, so it is stored with a prefix that says an agent chose it: a model
+	// that typed "human:operator" must not read as the operator.
+	owner := identity
+	if label := leaseLabel(args.Owner); label != "" {
+		owner = "agent:" + label
 	}
 
 	lease, err := r.deps.Store.Acquire(ctx, store.AcquireRequest{
