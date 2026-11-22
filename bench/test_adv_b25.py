@@ -582,6 +582,10 @@ def p_keystore():
            "keystore.names())", {"A_API_KEY": "1", "B_TOKEN": "2", "HOME_NOT_A_KEY": "3"})
     check("test_adv_b25_keystore_moves_every_secret_named_variable_out_of_the_environment",
           "LEFT [] ['A_API_KEY', 'B_TOKEN']" in r.stdout, (r.stdout + r.stderr)[:300])
+    r = ks("keystore.seal_environment(); import os, urllib.request as u; print('PX', u.getproxies().get('https'), keystore.names())",
+           {"HTTPS_PROXY": "http://user:pw@127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9"})
+    check("test_adv_b25_sealed_runner_keeps_a_credentialed_proxy_for_urllib_in_process",
+          "PX http://user:pw@127.0.0.1:9 ['HTTPS_PROXY']" in r.stdout, (r.stdout + r.stderr)[-300:])
     # Each entry point seals before it does anything else, or its exec-time environment is exposed.
     for entry in ("run.py", "grid.py"):
         tree = ast.parse(open(os.path.join(HERE, entry)).read())
