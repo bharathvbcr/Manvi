@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -207,7 +206,10 @@ const setsidHelperEnv = "MANVI_RUNPROC_SETSID_HELPER"
 func TestSetsidHelperProcess(t *testing.T) {
 	switch os.Getenv(setsidHelperEnv) {
 	case "sleeper":
-		time.Sleep(2 * time.Minute)
+		// Blocks until it is killed, so its liveness changes only through a
+		// kill (t.Cleanup SIGKILLs it by pid). A bounded sleep would let a
+		// descendant runProc failed to kill exit on its own and pass.
+		time.Sleep(time.Duration(1<<63 - 1))
 	case "parent-setsid", "parent-samegroup":
 		exe, err := os.Executable()
 		if err != nil {
@@ -224,90 +226,49 @@ func TestSetsidHelperProcess(t *testing.T) {
 	}
 }
 
-// The helper tests wait on other processes: a re-executed copy of this binary
-// has to start, and a killed descendant has to be reaped. How long that takes is
-// a property of the host's load, not of runProc, so a fixed 5 s or 30 s turns
-// "the machine is busy" into "runProc is broken". Each bound is instead a floor
-// scaled by how long a process start took here, now: a startup-only run of this
-// same binary is the baseline, measured once, so the bound stretches exactly as
-// far as the load does and stays tight on an idle host. A hung helper is still
-// bounded, by helperBudgetCeiling and by the test's own deadline.
-const (
-	helperBudgetScale   = 50
-	helperBudgetCeiling = 10 * time.Minute
-)
+// helperHangGuard is how long one helper test may spend waiting in total. Every
+// wait below ends the moment its event happens, so the guard only matters when
+// something is wrong; it is one deadline for the whole test, so it does not
+// multiply across rounds, and it sits far below the package -timeout so a real
+// hang fails as an assertion that prints the bound rather than as a package
+// timeout.
+const helperHangGuard = 3 * time.Minute
 
-// scaledBound is floor, raised to scale times the measured baseline and capped
-// at ceiling.
-func scaledBound(floor, baseline time.Duration, scale int, ceiling time.Duration) time.Duration {
-	bound := max(floor, time.Duration(scale)*baseline)
-	return min(bound, ceiling)
+type helperGuard struct {
+	deadline time.Time
+	bound    time.Duration
 }
 
-var (
-	helperBaselineOnce sync.Once
-	helperBaseline     time.Duration
-)
-
-// startupBaseline is how long runProc takes to start this test binary and have
-// it run no test, measured once per process.
-func startupBaseline(t *testing.T) time.Duration {
+func newHelperGuard(t *testing.T) helperGuard {
 	t.Helper()
-	helperBaselineOnce.Do(func() {
-		exe, err := os.Executable()
-		if err != nil {
-			t.Fatal(err)
-		}
-		start := time.Now()
-		res := runProc(context.Background(), procSpec{
-			argv:        []string{exe, "-test.run=^$"},
-			env:         childenv.Inherit(),
-			timeout:     helperBudgetCeiling,
-			stdoutLimit: 4096,
-		})
-		if res.err != nil || res.timedOut {
-			t.Fatalf("baseline start of the test binary failed: err=%v timedOut=%v (the host did not run it within %s)", res.err, res.timedOut, helperBudgetCeiling)
-		}
-		helperBaseline = time.Since(start)
-	})
-	return helperBaseline
-}
-
-// helperBound is the wait a helper test allows for what it is waiting on: floor
-// on an idle host, more under load, never past the test's own deadline.
-func helperBound(t *testing.T, floor time.Duration) time.Duration {
-	t.Helper()
-	ceiling := helperBudgetCeiling
+	bound := helperHangGuard
 	if d, ok := t.Deadline(); ok {
-		ceiling = min(ceiling, max(time.Until(d)/2, floor))
+		bound = min(bound, time.Until(d)/2)
 	}
-	return scaledBound(floor, startupBaseline(t), helperBudgetScale, ceiling)
+	return helperGuard{deadline: time.Now().Add(bound), bound: bound}
 }
 
-// TestScaledBoundStretchesWithTheBaselineAndStaysCapped pins the arithmetic the
-// helper tests rely on.
-func TestScaledBoundStretchesWithTheBaselineAndStaysCapped(t *testing.T) {
-	cases := []struct {
-		name                  string
-		floor, baseline, ceil time.Duration
-		scale                 int
-		want                  time.Duration
-	}{
-		{"an idle host keeps the floor", 5 * time.Second, 20 * time.Millisecond, time.Hour, 50, 5 * time.Second},
-		{"a loaded host stretches the bound", 5 * time.Second, 2 * time.Second, time.Hour, 50, 100 * time.Second},
-		{"a wedged host is capped", 5 * time.Second, time.Minute, 10 * time.Minute, 50, 10 * time.Minute},
-		{"a zero baseline keeps the floor", 30 * time.Second, 0, time.Hour, 50, 30 * time.Second},
-	}
-	for _, c := range cases {
-		if got := scaledBound(c.floor, c.baseline, c.scale, c.ceil); got != c.want {
-			t.Errorf("%s: scaledBound = %s, want %s", c.name, got, c.want)
+// remaining is the time left on the guard, never less than a second so a call
+// made just at the deadline still gets a bounded, non-zero timeout.
+func (g helperGuard) remaining() time.Duration {
+	return max(time.Until(g.deadline), time.Second)
+}
+
+// until polls cond every 10 ms and reports whether it became true before the
+// guard's deadline.
+func (g helperGuard) until(cond func() bool) bool {
+	for !cond() {
+		if !time.Now().Before(g.deadline) {
+			return false
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	return true
 }
 
 // startHelperTree runs the helper under runProc and returns the pid of the
 // descendant it left behind.
-func startHelperTree(t *testing.T, mode string) int {
+func startHelperTree(t *testing.T, g helperGuard, mode string) int {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -316,11 +277,11 @@ func startHelperTree(t *testing.T, mode string) int {
 	res := runProc(context.Background(), procSpec{
 		argv:        []string{exe, "-test.run=^TestSetsidHelperProcess$"},
 		env:         append(childenv.Inherit(), setsidHelperEnv+"="+mode),
-		timeout:     helperBound(t, 30*time.Second),
+		timeout:     g.remaining(),
 		stdoutLimit: 4096,
 	})
 	if res.timedOut {
-		t.Fatalf("helper timed out under runProc's deadline (host load, not an assertion about setsid): stderr=%s", res.stderr)
+		t.Fatalf("helper did not finish within the %s hang guard (the guard ends %s from now): stderr=%s", g.bound, time.Until(g.deadline).Round(time.Millisecond), res.stderr)
 	}
 	if res.err != nil {
 		t.Fatalf("helper failed: err=%v stderr=%s", res.err, res.stderr)
@@ -367,15 +328,12 @@ func processAlive(pid int) bool {
 // comment used to say "nothing the child started survives the call", which this
 // test observes to be false for the second case.
 func TestRunProcLeavesASetsidDescendantRunning(t *testing.T) {
-	grouped := startHelperTree(t, "parent-samegroup")
-	escaped := startHelperTree(t, "parent-setsid")
+	g := newHelperGuard(t)
+	grouped := startHelperTree(t, g, "parent-samegroup")
+	escaped := startHelperTree(t, g, "parent-setsid")
 
-	deadline := time.Now().Add(helperBound(t, 5*time.Second))
-	for processAlive(grouped) && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if processAlive(grouped) {
-		t.Errorf("descendant %d in the child's group survived the group kill", grouped)
+	if !g.until(func() bool { return !processAlive(grouped) }) {
+		t.Errorf("descendant %d in the child's group still alive %s after the group kill", grouped, g.bound)
 	}
 	if !processAlive(escaped) {
 		t.Errorf("setsid descendant %d did not survive: the documented limit no longer holds, update runProc's comment", escaped)
