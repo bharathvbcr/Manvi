@@ -49,6 +49,27 @@ func fakeDevmapBin(t *testing.T, probeBody, buildBody string) (bin, dir string) 
 	return bin, dir
 }
 
+// waitGone waits until the stand-in's shell (pid in DIR/pid) is gone, which is
+// after any trap handler it had has run to its exit: so a missing signal file
+// afterwards means no catchable signal arrived, not that it had not yet been
+// written.
+func waitGone(t *testing.T, dir string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "pid")) // #nosec G304 -- a path under t.TempDir.
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); zadvAlive(t, pid); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the stand-in (pid %d) was still running 10s after the run ended", pid)
+		}
+	}
+}
+
 func waitFile(t *testing.T, path string, within time.Duration) bool {
 	t.Helper()
 	for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
@@ -62,6 +83,8 @@ func waitFile(t *testing.T, path string, within time.Duration) bool {
 const trapBody = `echo $$ > "$DIR/pid"
 trap 'echo TERM > "$DIR/sig"; exit 0' TERM
 trap 'echo INT > "$DIR/sig"; exit 0' INT
+trap 'echo HUP > "$DIR/sig"; exit 0' HUP
+trap 'echo QUIT > "$DIR/sig"; exit 0' QUIT
 echo started > "$DIR/started"
 sleep 300 &
 wait`
@@ -90,6 +113,33 @@ func TestAdvB27RealBuildChildReceivesACatchableSignalOnCancel(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(sig)); got != "TERM" && got != "INT" {
 		t.Fatalf("signal recorded = %q, want TERM or INT", got)
+	}
+}
+
+// Control for the recorder: a SIGTERM sent straight to the stand-in's group is
+// recorded. Without this, "no record" in the tests below could be a recorder
+// that cannot record.
+func TestAdvB27TheSignalRecorderRecordsASIGTERM(t *testing.T) {
+	bin, dir := fakeDevmapBin(t, "", trapBody)
+	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), bin, "--json", "build", ".") // #nosec G204 -- the test's own stand-in.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Dir = dir
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(waited) }()
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); <-waited })
+	if !waitFile(t, filepath.Join(dir, "started"), 20*time.Second) {
+		t.Fatal("the stand-in never started")
+	}
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	<-waited
+	sig, err := os.ReadFile(filepath.Join(dir, "sig")) // #nosec G304 -- a path under t.TempDir.
+	if err != nil || strings.TrimSpace(string(sig)) != "TERM" {
+		t.Fatalf("the recorder did not record a direct SIGTERM: %q, %v", sig, err)
 	}
 }
 
@@ -124,7 +174,7 @@ func TestAdvB27CancelAloneDoesNotSIGKILLTheBuildGroup(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the refresh did not return after cancel")
 	}
-	time.Sleep(700 * time.Millisecond)
+	waitGone(t, dir)
 	_, sigErr := os.Stat(filepath.Join(dir, "sig"))
 	if sigErr != nil {
 		t.Fatalf("after cancel() alone the build child (pid %d, alive=%v) recorded no signal: the client's cancel is a SIGKILL of the group", pid, zadvAlive(t, pid))
@@ -148,7 +198,7 @@ func TestAdvB27RealProbeChildReceivesACatchableSignalOnCancel(t *testing.T) {
 		t.Fatal("the stand-in probe never started")
 	}
 	problem := endRun(cancel, done, indexRefreshBound, endLeftoverChildren)
-	time.Sleep(700 * time.Millisecond)
+	waitGone(t, dir)
 	if _, err := os.Stat(filepath.Join(dir, "sig")); err != nil {
 		t.Fatalf("the probe child recorded no catchable signal (endRun problem %q): the first signal it received was the sweep's SIGKILL; %v", problem, err)
 	}
@@ -343,10 +393,15 @@ func TestAdvB27FailedAllZombiesReadStillKillsTheLeadersOwnGroup(t *testing.T) {
 exec REAL "$@"`)
 	_, member := zombieLeaderWithLiveMember(t)
 	start := time.Now()
-	_ = endLeftoverChildren()
-	if d := time.Since(start); d > childrenReapBound+3*time.Second {
+	got := endLeftoverChildren()
+	d := time.Since(start)
+	if d > childrenReapBound+3*time.Second {
 		t.Fatalf("the sweep took %v", d)
 	}
+	if strings.Contains(got, strconv.Itoa(member)) {
+		t.Fatalf("the report names the live member that was killed, as a problem: %q", got)
+	}
+	t.Logf("sweep returned %q after %v (leader and its dead member stay zombies until the test reaps them)", got, d)
 	deadline := time.Now().Add(5 * time.Second)
 	for zadvAlive(t, member) {
 		if time.Now().After(deadline) {
