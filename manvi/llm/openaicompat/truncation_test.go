@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -231,18 +232,66 @@ func TestErrorChunkAfterContentIsNotRetried(t *testing.T) {
 	}
 }
 
+// countingTransport counts the requests the client issues, at the client.
+// Counting in a server handler measures how many requests the server got
+// around to reading, which under CPU contention is fewer than the client made:
+// a 50 ms header timeout can fire before the handler has run at all.
+type countingTransport struct {
+	next     http.RoundTripper
+	attempts atomic.Int32
+}
+
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.attempts.Add(1)
+	return c.next.RoundTrip(r)
+}
+
+// muteCall runs one Stream call against url with a 50 ms header timeout and one
+// retry, and returns its error and how many requests the client issued. The
+// caller's context is generous and is not what ends the call: only the header
+// timeout can, so no elapsed-time bound is needed to prove it was applied, and
+// a load-slow host cannot fail the assertion by being slow.
+func muteCall(t *testing.T, url string) (int32, error) {
+	t.Helper()
+	a := adapterAt(url, func(o *Options) { o.HeaderTimeout = 50 * time.Millisecond })
+	a.client.Retry.MaxAttempts = 2
+	if got := a.client.ResponseHeaderTimeout; got != 50*time.Millisecond {
+		t.Fatalf("header timeout = %s, want the 50ms this test configures", got)
+	}
+	counter := &countingTransport{next: a.client.HTTP.Transport}
+	if counter.next == nil {
+		counter.next = http.DefaultTransport
+	}
+	a.client.HTTP.Transport = counter
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	_, err := a.Stream(ctx, llm.Request{Model: "m"})
+	return counter.attempts.Load(), err
+}
+
+func requireHeaderTimeoutRetried(t *testing.T, attempts int32, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("a mute server was waited on forever")
+	}
+	var timeout *transport.ErrHeaderTimeout
+	if !errors.As(err, &timeout) {
+		t.Fatalf("err = %v, want a typed header timeout (the caller's context must not be what ended the call)", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want the timeout retried once", attempts)
+	}
+}
+
 // TestAMuteServerIsAbandonedAtTheHeaderTimeout: a server that accepts the
 // request and never answers must not hold the call for as long as the caller's
 // context lives.
 func TestAMuteServerIsAbandonedAtTheHeaderTimeout(t *testing.T) {
 	release := make(chan struct{})
-	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Read the body first: the server notices the client hanging up only
 		// once it has, and Close waits for this handler.
 		_, _ = io.Copy(io.Discard, r.Body)
-
-		attempts.Add(1)
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -251,23 +300,24 @@ func TestAMuteServerIsAbandonedAtTheHeaderTimeout(t *testing.T) {
 	defer server.Close()
 	defer close(release)
 
-	a := adapterAt(server.URL, func(o *Options) { o.HeaderTimeout = 50 * time.Millisecond })
-	a.client.Retry.MaxAttempts = 2
-	start := time.Now()
-	_, err := a.Stream(context.Background(), llm.Request{Model: "m"})
-	if err == nil {
-		t.Fatal("a mute server was waited on forever")
+	attempts, err := muteCall(t, server.URL)
+	requireHeaderTimeoutRetried(t, attempts, err)
+}
+
+// TestAStarvedServerStillGetsTheHeaderTimeoutRetried is the loaded host made
+// explicit: the listener's kernel backlog takes the connection but nothing
+// ever accepts or reads it, as when the machine is too busy to schedule the
+// server. The header timeout must still fire and be retried once. Counted at
+// the server, this reads zero attempts.
+func TestAStarvedServerStillGetsTheHeaderTimeoutRetried(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("took %s to give up", elapsed)
-	}
-	var timeout *transport.ErrHeaderTimeout
-	if !errors.As(err, &timeout) {
-		t.Fatalf("err = %v, want a typed header timeout", err)
-	}
-	if got := attempts.Load(); got != 2 {
-		t.Fatalf("attempts = %d, want the timeout retried once", got)
-	}
+	defer func() { _ = ln.Close() }()
+
+	attempts, callErr := muteCall(t, "http://"+ln.Addr().String())
+	requireHeaderTimeoutRetried(t, attempts, callErr)
 }
 
 // --- repair -------------------------------------------------------------

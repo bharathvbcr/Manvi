@@ -118,3 +118,45 @@ test("the command line reads a file and exits 0, and refuses a bad invocation", 
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /usage:/);
 });
+
+test("a package killed at -timeout is reported as a timeout, not as a failed test", () => {
+  const s = summarize([
+    // Verbatim shape from go 1.27.4: the panic and "running tests" lines carry the
+    // innermost running test, and no test-level fail event follows, only the
+    // package's.
+    ev({ Action: "start", Package: P }),
+    ev({ Action: "run", Package: P, Test: "TestSleepy" }),
+    ev({ Action: "run", Package: P, Test: "TestSleepy/sub" }),
+    ev({ Action: "output", Package: P, Test: "TestSleepy/sub", Output: "panic: test timed out after 20m0s\n" }),
+    ev({ Action: "output", Package: P, Test: "TestSleepy/sub", Output: "\trunning tests:\n" }),
+    ev({ Action: "output", Package: P, Test: "TestSleepy/sub", Output: "\t\tTestSleepy (20m0s)\n" }),
+    ev({ Action: "output", Package: P, Test: "TestSleepy/sub", Output: "\t\tTestSleepy/sub (20m0s)\n" }),
+    ev({ Action: "fail", Package: P, Elapsed: 1200 }),
+  ]);
+  assert.deepEqual(s.timedOutPackages, [{ pkg: P, after: "20m0s" }]);
+  assert.equal(s.failedTests, 0, "no test failed an assertion");
+  assert.deepEqual(s.unfinishedTests.map((t) => t.test).sort(), ["TestSleepy", "TestSleepy/sub"]);
+  const md = renderReport(s);
+  assert.match(md, /Timed out, not an assertion failure/);
+  assert.match(md, /package `manvi\/codingagent` after 20m0s/);
+});
+
+test("a test that merely prints the panic text is not a timeout", () => {
+  const s = summarize([
+    ev({ Action: "output", Package: P, Test: "TestA", Output: "    a_test.go:9: saw 'panic: test timed out after 1s' in the log\n" }),
+    ev({ Action: "fail", Package: P, Test: "TestA", Elapsed: 0.1 }),
+  ]);
+  assert.deepEqual(s.timedOutPackages, []);
+});
+
+test("an ordinary assertion failure is not called a timeout", () => {
+  const s = summarize([
+    ev({ Action: "run", Package: P, Test: "TestA" }),
+    ev({ Action: "output", Package: P, Test: "TestA", Output: "    a_test.go:9: attempts = 1, want 2\n" }),
+    ev({ Action: "fail", Package: P, Test: "TestA", Elapsed: 0.1 }),
+    ev({ Action: "fail", Package: P, Elapsed: 0.2 }),
+  ]);
+  assert.deepEqual(s.timedOutPackages, []);
+  assert.equal(s.failedTests, 1);
+  assert.doesNotMatch(renderReport(s), /Timed out/);
+});
