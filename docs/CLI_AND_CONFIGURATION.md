@@ -121,8 +121,11 @@ place and not the other fails the suite.
 No status above 1 is returned, and nothing in the status separates a refusal
 from a failure: read stderr and the tool's own text. This differs from
 `dev tool call` (DevCouncil), which exits 0 answered, 1 refused, 2 malformed and
-3 could not run here. `gitpulse-mcp call` has its own contract, which this
-document does not state.
+3 could not run here. It also differs from `gitpulse-mcp call` (GitPulse's
+shell face for its MCP tools; contract in the `gitpulse-insights` skill):
+
+- **Arguments.** `gitpulse-mcp call TOOL` takes `key=value` pairs typed by the tool's schema, or `--json '<object>'`, `--json -` (stdin) or `--json @file`, and needs `--write` for a tool that is not read-only. `manvi tool` takes only `--json VALUE` or `--json=VALUE`: no `key=value`, no `-`, no `@file` and no `--write` (the policy gate governs writes).
+- **Exits.** `gitpulse-mcp call` exits 0 answered, 1 tool error, 2 bad command line, 3 answer incomplete, 4 timed out. `manvi tool` has no 2, 3 or 4.
 
 ---
 
