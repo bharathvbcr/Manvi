@@ -47,6 +47,16 @@ TASKS = {t.name: t for t in load_tasks()}
 CRYPTIC, ENVBUILD = TASKS["cryptic"], TASKS["envbuild"]
 REF = open(os.path.join(CRYPTIC.dir, "reference", "app", "invoice.py")).read()
 PIDS = []   # explicit PIDs this suite started, killed at the end (never by name)
+# Probes that touch the operator's host outside the filesystem (the pasteboard, a
+# defaults domain, a setsid daemon on loopback) run only when asked for.
+HOST_PROBES = os.environ.get("MH_ADV_HOST_PROBES") == "1"
+
+
+def host_probe_skipped(what):
+    if HOST_PROBES:
+        return False
+    print(f"  skipped (opt-in) {what}: set MH_ADV_HOST_PROBES=1 to run it")
+    return True
 
 
 def info(name, text):
@@ -240,19 +250,29 @@ guarded("test_adv_b25_writes", p_writes)
 
 def p_defaults_pasteboard():
     """Non-filesystem channels that outlive an episode: cfprefsd and the pasteboard."""
-    if sys.platform != "darwin":
+    if sys.platform != "darwin" or host_probe_skipped("cfprefsd and pasteboard probes"):
         return
     key = f"mh.adv.b25.{os.getpid()}"
-    sb1, _ = sandbox_for(CRYPTIC)
-    sb1.run_shell(cmd=f"defaults write {key} marker -string DEFAULTS-SENTINEL 2>&1; echo PASTE-SENTINEL | pbcopy 2>&1")
-    sb1.close()
-    sb2, _ = sandbox_for(CRYPTIC)
-    r1 = sb2.run_shell(cmd=f"defaults read {key} marker 2>&1")
-    r2 = sb2.run_shell(cmd="pbpaste 2>&1")
-    subprocess.run(["/usr/bin/defaults", "delete", key], capture_output=True)
-    check("test_open_b25_cfprefsd_is_not_a_cross_episode_channel", "DEFAULTS-SENTINEL" not in r1, r1[:200])
-    check("test_open_b25_pasteboard_is_not_a_cross_episode_channel", "PASTE-SENTINEL" not in r2, r2[:200])
-    sb2.close()
+    # The operator's pasteboard is saved first (plain text only) and restored in
+    # the finally; the defaults key is deleted there too.
+    saved = subprocess.run(["/usr/bin/pbpaste"], capture_output=True).stdout
+    sbs = []
+    try:
+        sb1, _ = sandbox_for(CRYPTIC)
+        sbs.append(sb1)
+        sb1.run_shell(cmd=f"defaults write {key} marker -string DEFAULTS-SENTINEL 2>&1; echo PASTE-SENTINEL | pbcopy 2>&1")
+        sb1.close()
+        sb2, _ = sandbox_for(CRYPTIC)
+        sbs.append(sb2)
+        r1 = sb2.run_shell(cmd=f"defaults read {key} marker 2>&1")
+        r2 = sb2.run_shell(cmd="pbpaste 2>&1")
+        check("test_open_b25_cfprefsd_is_not_a_cross_episode_channel", "DEFAULTS-SENTINEL" not in r1, r1[:200])
+        check("test_open_b25_pasteboard_is_not_a_cross_episode_channel", "PASTE-SENTINEL" not in r2, r2[:200])
+    finally:
+        subprocess.run(["/usr/bin/defaults", "delete", key], capture_output=True)
+        subprocess.run(["/usr/bin/pbcopy"], input=saved, capture_output=True)
+        for s in sbs:
+            s.close()
 
 
 guarded("test_adv_b25_defaults_pasteboard", p_defaults_pasteboard)
@@ -549,6 +569,19 @@ guarded("test_adv_b25_concurrent_verify_window", p_concurrent_verify_window)
 
 def p_survivor():
     """A process that setsid()s out of the group outlives its episode; reads are open."""
+    if host_probe_skipped("setsid daemon probes"):
+        return
+    try:
+        _survivor()
+    finally:
+        for p in PIDS:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def _survivor():
     sb1, s1 = sandbox_for(CRYPTIC)
     daemon = textwrap.dedent(f'''
         import os, socket, sys, time, glob
@@ -603,11 +636,6 @@ def p_survivor():
     check("test_open_b25_survivor_cannot_carry_verifier_scope_contents_to_a_later_episode",
           "SURVIVOR-HIDDEN-ARGS" not in got, got[:200])
     sbV.close()
-    for p in PIDS:
-        try:
-            os.kill(p, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 guarded("test_adv_b25_survivor", p_survivor)
@@ -651,7 +679,8 @@ guarded("test_adv_b25_logging", p_logging)
 shutil.rmtree(ADV, ignore_errors=True)
 OPEN = [n for n in FAIL if n.startswith("test_open_b25_")]
 REAL = [n for n in FAIL if n not in OPEN]
-print(f"\n{len(PASS)} passed, {len(REAL)} failed, {len(OPEN)} known-open")
+# The summary is the LAST line: verify.sh reads its first number as the count.
 for n in OPEN:
     print("  known-open:", n)
+print(f"\n{len(PASS)} passed, {len(REAL)} failed, {len(OPEN)} known-open")
 sys.exit(1 if REAL else 0)
