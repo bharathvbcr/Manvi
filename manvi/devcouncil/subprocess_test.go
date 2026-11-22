@@ -197,7 +197,12 @@ func TestRunProcCapsAndSaysSo(t *testing.T) {
 	}
 }
 
-const setsidHelperEnv = "MANVI_RUNPROC_SETSID_HELPER"
+const (
+	setsidHelperEnv = "MANVI_RUNPROC_SETSID_HELPER"
+	// setsidOwnerEnv names the process whose liveness bounds a sleeper. See
+	// TestSetsidHelperProcess.
+	setsidOwnerEnv = "MANVI_RUNPROC_SETSID_OWNER"
+)
 
 // TestSetsidHelperProcess is not a test: it is the child that
 // TestRunProcLeavesASetsidDescendantRunning re-executes this binary as. "parent"
@@ -206,11 +211,22 @@ const setsidHelperEnv = "MANVI_RUNPROC_SETSID_HELPER"
 func TestSetsidHelperProcess(t *testing.T) {
 	switch os.Getenv(setsidHelperEnv) {
 	case "sleeper":
-		// Blocks until it is killed, so its liveness changes only through a
-		// kill (t.Cleanup SIGKILLs it by pid). A bounded sleep would let a
-		// descendant runProc failed to kill exit on its own and pass.
-		time.Sleep(time.Duration(1<<63 - 1))
-	case "parent-setsid", "parent-samegroup":
+		// Lives exactly as long as its owner, the test process that started
+		// the tree. While that test is running the sleeper's liveness changes
+		// only through a kill, so a failed group kill is still seen (a timed
+		// sleep would let it exit on its own and pass). When the owner is gone
+		// (the binary panicking at its timeout, SIGINT, a cancelled job, a
+		// fatal before its cleanup was registered) nothing is left to kill it,
+		// and it would live under init forever, so it exits. With no owner
+		// named there is nothing to bound it by, and it exits at once.
+		owner, err := strconv.Atoi(os.Getenv(setsidOwnerEnv))
+		if err != nil || owner <= 0 {
+			return
+		}
+		for processAlive(owner) {
+			time.Sleep(100 * time.Millisecond)
+		}
+	case "parent-setsid", "parent-samegroup", "owner-exits":
 		exe, err := os.Executable()
 		if err != nil {
 			t.Fatal(err)
@@ -218,7 +234,13 @@ func TestSetsidHelperProcess(t *testing.T) {
 		// #nosec G204 -- re-executes this very test binary.
 		cmd := exec.CommandContext(context.Background(), exe, "-test.run=^TestSetsidHelperProcess$")
 		cmd.Env = append(os.Environ(), setsidHelperEnv+"=sleeper")
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: os.Getenv(setsidHelperEnv) == "parent-setsid"}
+		if os.Getenv(setsidHelperEnv) == "owner-exits" {
+			// This process is the owner and exits right after printing the
+			// pid, which is what TestSetsidSleeperExitsWhenItsOwnerIsGone
+			// needs: a sleeper whose owner has gone away.
+			cmd.Env = append(cmd.Env, setsidOwnerEnv+"="+strconv.Itoa(os.Getpid()))
+		}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: os.Getenv(setsidHelperEnv) != "parent-samegroup"}
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -276,37 +298,44 @@ func startHelperTree(t *testing.T, g helperGuard, mode string) int {
 	}
 	res := runProc(context.Background(), procSpec{
 		argv:        []string{exe, "-test.run=^TestSetsidHelperProcess$"},
-		env:         append(childenv.Inherit(), setsidHelperEnv+"="+mode),
+		env:         append(childenv.Inherit(), setsidHelperEnv+"="+mode, setsidOwnerEnv+"="+strconv.Itoa(os.Getpid())),
 		timeout:     g.remaining(),
 		stdoutLimit: 4096,
 	})
+	// The pid is read and its kill registered before any check can fail the
+	// test: a parent that set a sleeper going and then timed out or errored
+	// has still left it running, and runProc's group kill does not reach one
+	// that called setsid.
+	pid := 0
+	for _, line := range strings.Split(string(res.stdout), "\n") {
+		if v, ok := strings.CutPrefix(line, "pid="); ok {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+				pid = n
+				// Killed by pid, and only this pid: it is the one process
+				// this test started that runProc may have left running.
+				t.Cleanup(func() { _ = syscall.Kill(n, syscall.SIGKILL) })
+			}
+		}
+	}
 	if res.timedOut {
 		t.Fatalf("helper did not finish within the %s hang guard (the guard ends %s from now): stderr=%s", g.bound, time.Until(g.deadline).Round(time.Millisecond), res.stderr)
 	}
 	if res.err != nil {
 		t.Fatalf("helper failed: err=%v stderr=%s", res.err, res.stderr)
 	}
-	for _, line := range strings.Split(string(res.stdout), "\n") {
-		if v, ok := strings.CutPrefix(line, "pid="); ok {
-			pid, err := strconv.Atoi(strings.TrimSpace(v))
-			if err != nil {
-				t.Fatalf("bad pid line %q", line)
-			}
-			// Killed by pid, and only this pid: it is the one process this test
-			// started that runProc may have left running.
-			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-			return pid
-		}
+	if pid == 0 {
+		t.Fatalf("helper printed no valid pid: %q", res.stdout)
 	}
-	t.Fatalf("helper printed no pid: %q", res.stdout)
-	return 0
+	return pid
 }
 
 // processAlive reports a process that is running. kill(pid, 0) succeeds on a
 // zombie, a killed process whose parent has not reaped it yet, so where /proc
 // exists its state is read and Z counts as dead.
 func processAlive(pid int) bool {
-	if syscall.Kill(pid, 0) != nil {
+	// kill(0, 0) signals the caller's own process group and succeeds, so a
+	// zero or negative pid would read as alive.
+	if pid <= 0 || syscall.Kill(pid, 0) != nil {
 		return false
 	}
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
@@ -337,5 +366,18 @@ func TestRunProcLeavesASetsidDescendantRunning(t *testing.T) {
 	}
 	if !processAlive(escaped) {
 		t.Errorf("setsid descendant %d did not survive: the documented limit no longer holds, update runProc's comment", escaped)
+	}
+}
+
+// TestSetsidSleeperExitsWhenItsOwnerIsGone proves the sleeper's failsafe: it
+// blocks while its owner lives, and an owner that went away (the test binary
+// panicking at its timeout, SIGINT, a cancelled CI job) must not leave it
+// running under init forever. The owner here is a helper process that starts a
+// setsid sleeper and exits.
+func TestSetsidSleeperExitsWhenItsOwnerIsGone(t *testing.T) {
+	g := newHelperGuard(t)
+	pid := startHelperTree(t, g, "owner-exits")
+	if !g.until(func() bool { return !processAlive(pid) }) {
+		t.Fatalf("sleeper %d outlived its owner by %s", pid, g.bound)
 	}
 }
