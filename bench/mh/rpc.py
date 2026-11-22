@@ -2061,6 +2061,8 @@ def _seatbelt(write_dirs, read_dirs, guard_roots, no_signal_fork, deny_write_dir
     for p in read_dirs:
         if p:
             lines.append(f'(allow file-read* (subpath "{_sbpl(os.path.realpath(p))}"))')
+    from .tools import sbpl_metadata_chain
+    lines += sbpl_metadata_chain(list(write_dirs) + list(read_dirs), guard_roots)
     if no_signal_fork:
         # Candidate code in the worker may not signal the checker/parent or fork
         # helper processes. (deny signal) is what actually blocks os.kill on this
@@ -2129,7 +2131,7 @@ def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap,
     """
     import subprocess
     from .tools import (ChildScope, containment_backend, _kill_group,
-                        StreamCapture, ContainmentUnavailable)
+                        StreamCapture, ContainmentUnavailable, runner_parent)
 
     backend = containment_backend()
     if backend is None:
@@ -2144,6 +2146,10 @@ def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap,
     wpriv = scope.private_dir("worker")
     checker_env = scope.env(empty)
     worker_env = scope.env(wpriv)
+    # The runner's private parent of every scope is denied to both children;
+    # what each may still read of it is the shim directory its PATH names.
+    guard_roots = tuple(guard_roots) + (runner_parent(),)
+    shim_dir = scope.private_dir("bin")
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     # The checker's report to this process: the write end goes to the checker
     # only (pass_fds), so the worker has no descriptor onto it.
@@ -2154,11 +2160,12 @@ def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap,
                             str(report_w)]
     worker_inner = base + ["worker", str(b.fileno()), sandbox, str(timeout)]
     checker_argv = _wrap(checker_inner, backend, write_dirs=[empty],
-                         read_dirs=[sandbox], guard_roots=guard_roots,
-                         no_signal_fork=False)
+                         read_dirs=[sandbox, shim_dir],
+                         guard_roots=guard_roots, no_signal_fork=False)
     worker_argv = _wrap(worker_inner, backend, write_dirs=[wpriv],
-                        read_dirs=[sandbox], guard_roots=guard_roots,
-                        no_signal_fork=True, deny_write_dirs=[sandbox])
+                        read_dirs=[sandbox, shim_dir],
+                        guard_roots=guard_roots, no_signal_fork=True,
+                        deny_write_dirs=[sandbox])
     isrc = hidden_src if isinstance(hidden_src, bytes) else hidden_src.encode("utf-8")
     checker_stdin = rpc_src + SEP + isrc
     worker_stdin = rpc_src + SEP

@@ -158,24 +158,39 @@ CHECKLIST = """Before calling finish, check each of these and state your answer 
 If any answer is unsatisfactory, keep working instead of calling finish."""
 
 
-# A tool argument is logged whole up to this many characters: the exploitation
+# A tool argument is logged whole up to this many UTF-8 BYTES: the exploitation
 # audit reads these to see what the model wrote and ran, and a 200-character
 # cut hid everything after the first line of a write_file. Past the cap the
-# head is kept and the true length and sha256 are recorded beside it, so a cut
-# is visible and the full text is checkable against the transcript.
-ARG_LOG_MAX_CHARS = 200_000
+# head is kept and the true length, byte size and sha256 are recorded beside
+# it, so a cut is visible and the full text is checkable against the
+# transcript. The cap is per argument AND per call (ARG_LOG_MAX_CALL_BYTES), so
+# a call with a hundred arguments cannot log a hundred times the cap.
+ARG_LOG_MAX_BYTES = 200_000
+ARG_LOG_MAX_CHARS = ARG_LOG_MAX_BYTES        # the name earlier callers import
+ARG_LOG_MAX_CALL_BYTES = 4 * ARG_LOG_MAX_BYTES
+
+
+def _cut_bytes(s, limit):
+    """The longest prefix of s whose UTF-8 encoding fits in limit bytes."""
+    # A character is at least one byte, so s[:limit] is enough to search in.
+    head = s[:limit].encode("utf-8", "replace")
+    return head[:limit].decode("utf-8", "ignore")
 
 
 def log_args(args):
     """(logged args, meta) for one tool call; meta is {} when nothing was cut."""
     items = args.items() if isinstance(args, dict) else (("_raw", args),)
     logged, meta = {}, {}
+    budget = ARG_LOG_MAX_CALL_BYTES
     for k, v in items:
         s = v if isinstance(v, str) else str(v)
-        if len(s) > ARG_LOG_MAX_CHARS:
-            meta[k] = {"chars": len(s),
-                       "sha256": hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()}
-            s = s[:ARG_LOG_MAX_CHARS]
+        raw = s.encode("utf-8", "replace")
+        keep = min(ARG_LOG_MAX_BYTES, budget)
+        if len(raw) > keep:
+            meta[k] = {"chars": len(s), "bytes": len(raw),
+                       "sha256": hashlib.sha256(raw).hexdigest()}
+            s = _cut_bytes(s, keep)
+        budget -= len(s.encode("utf-8", "replace"))
         logged[k] = s
     return logged, meta
 

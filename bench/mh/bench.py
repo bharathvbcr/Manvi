@@ -387,7 +387,7 @@ class Task:
             stdin_text = _sh_wrapper(src.decode("utf-8", "replace"))
             vdir = scope.private_dir("verify")
             try:
-                argv, backend = contained_argv(argv, allow_write=[sandbox, vdir],
+                argv, backend = contained_argv(argv, allow_write=[sandbox, scope.root],
                                                protected_roots=self.guard_roots)
             except ContainmentUnavailable as e:
                 return False, f"VERIFY ERROR: {e}"

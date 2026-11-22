@@ -208,6 +208,9 @@ def main():
                          f"{args.max_steps}")
     # Before the cell directory, the tenancy lease and any eviction: a host
     # that cannot contain the shell must not get as far as touching the GPU.
+    # A runner killed with SIGKILL leaves its private temp parent behind; the
+    # pid in its name says whether anything still owns it.
+    toolmod.reap_stale_scopes()
     require_containment()
 
     spec = model_spec(args.model)

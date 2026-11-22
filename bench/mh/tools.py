@@ -15,11 +15,13 @@ NOTE: this file is the measuring instrument. The frozen grid under bench/results
 collected and analysed with the pre-hardening version and is NOT to be re-run or
 re-scored; everything here applies to future runs only.
 """
+import atexit
 import codecs
 import errno
 import io
 import locale
 import os
+import re
 import selectors
 import signal
 import shlex
@@ -388,39 +390,88 @@ def git_guard_roots(*starts):
                         if os.path.exists(r) and r not in own))
 
 
-def env_file_guards(*starts):
-    """The `.env*` files in the checkout around each start, as guard roots.
+# `.env*` guards, bounded.
+ENV_GUARD_PRUNE = frozenset({".git", "node_modules", "target", "__pycache__",
+                              ".venv", "venv"})
+ENV_GUARD_MAX_DIRS = 50_000
+_ENV_GUARD_CACHE = {}
 
-    A provider key kept in the repository's `.env.local` is readable by any
-    shell that can read the checkout, and the checkout itself is deliberately
-    not guarded (it holds the benchmark's own toolchain). So every `.env*`
-    file in each directory from a start up to the top of its git work tree is a
-    guard root of its own. Tracked ones are guarded too: a file named `.env*`
-    is never something the model needs, and telling tracked from untracked would
-    need a git call whose failure would have to mean "guard nothing". An
+
+def _checkout_top(start):
+    """The top of the git work tree holding start, or start itself outside one."""
+    cur = start
+    while True:
+        if os.path.lexists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return start
+        cur = parent
+
+
+def _walk_env_files(top):
+    """(guard paths, stats) for every `.env*` file or symlink under top.
+
+    Bounded: .git, node_modules, target, virtualenvs and nested checkouts are
+    not entered, and at most ENV_GUARD_MAX_DIRS directories are visited. Hitting
+    that cap is recorded in the stats (and in every episode's containment
+    event), never presented as a complete scan. A symlink named .env* is
+    included without being followed; the profile resolves it to its target.
+    """
+    found, dirs, capped = set(), 0, False
+
+    def onerror(e):
+        raise GitGuardError(getattr(e, "filename", top) or top,
+                            f"{type(e).__name__}: {e}") from e
+
+    for dp, dns, fns in os.walk(top, followlinks=False, onerror=onerror):
+        dirs += 1
+        if dirs > ENV_GUARD_MAX_DIRS:
+            capped = True
+            break
+        for n in fns:
+            if n.startswith(".env"):
+                found.add(os.path.join(dp, n))
+        for n in dns:
+            full = os.path.join(dp, n)
+            if n.startswith(".env") and os.path.islink(full):
+                found.add(full)
+        dns[:] = [n for n in dns if n not in ENV_GUARD_PRUNE
+                  and not os.path.islink(os.path.join(dp, n))
+                  and not os.path.lexists(os.path.join(dp, n, ".git"))]
+    return tuple(sorted(found)), {"dirs": dirs, "cap": ENV_GUARD_MAX_DIRS,
+                                  "capped": capped}
+
+
+def env_file_guards(*starts):
+    """Every `.env*` file in the git work tree around each start.
+
+    A provider key kept in the repository's .env.local, or in a .env of any
+    subdirectory, is readable by any shell that can read the checkout, and the
+    checkout itself is deliberately not guarded (it holds the benchmark's own
+    toolchain). So each .env* file anywhere in the work tree is a guard root of
+    its own, symlinks included. Tracked ones are guarded too: a file named
+    .env* is never something the model needs, and telling tracked from untracked
+    would need a git call whose failure would have to mean "guard nothing". An
     unreadable directory raises GitGuardError for the same reason the git guard
-    does: an unguarded secrets file is indistinguishable from none.
+    does. Results are cached per work tree for the life of the process.
     """
     found = set()
     for start in starts:
         if not start:
             continue
-        cur = os.path.realpath(start)
-        while True:
-            try:
-                with os.scandir(cur) as it:
-                    for e in it:
-                        if e.name.startswith(".env") and e.is_file(follow_symlinks=False):
-                            found.add(os.path.join(cur, e.name))
-            except (FileNotFoundError, NotADirectoryError):
-                pass
-            except OSError as e:
-                raise GitGuardError(cur, f"{type(e).__name__}: {e}") from e
-            parent = os.path.dirname(cur)
-            if os.path.lexists(os.path.join(cur, ".git")) or parent == cur:
-                break
-            cur = parent
+        top = _checkout_top(os.path.realpath(start))
+        if top not in _ENV_GUARD_CACHE:
+            _ENV_GUARD_CACHE[top] = _walk_env_files(top)
+        found.update(_ENV_GUARD_CACHE[top][0])
     return tuple(sorted(found))
+
+
+def env_guard_stats():
+    """How far the .env* scans got: directories visited, the cap, and whether it bit."""
+    runs = [s for _, s in _ENV_GUARD_CACHE.values()]
+    return {"dirs": sum(s["dirs"] for s in runs), "cap": ENV_GUARD_MAX_DIRS,
+            "capped": any(s["capped"] for s in runs)}
 
 
 def default_protected_roots():
@@ -441,24 +492,137 @@ def default_protected_roots():
 
 # What a child may inherit. Nothing else gets through, so a provider key (any
 # *_API_KEY, CEREBRAS_*, OPENAI_*, ANTHROPIC_*, ...) is excluded by construction
-# rather than by a deny-list that has to name the next provider. The toolchain
-# homes are read-only locations a rustup/cargo, Go or JVM install needs to be
-# found; HOME, TMPDIR/TMP/TEMP are set by the scope, never inherited.
+# rather than by a deny-list that has to name the next provider. Every entry is
+# an exact name: a prefix such as LC_ would pass LC_SECRET or LC_ALL_KEY. The
+# toolchain homes are read-only locations a rustup/cargo, Go or JVM install
+# needs to be found; HOME, TMPDIR/TMP/TEMP are set by the scope, never
+# inherited.
 CHILD_ENV_ALLOW = ("PATH", "LANG", "LANGUAGE", "TERM", "TZ", "USER", "LOGNAME",
-                   "SHELL", "RUSTUP_HOME", "CARGO_HOME", "GOROOT", "JAVA_HOME")
-CHILD_ENV_ALLOW_PREFIXES = ("LC_",)
+                   "SHELL", "RUSTUP_HOME", "CARGO_HOME", "GOROOT", "JAVA_HOME",
+                   "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LC_MESSAGES",
+                   "LC_MONETARY", "LC_NUMERIC", "LC_TIME")
 CHILD_TEMP_VARS = ("TMPDIR", "TMP", "TEMP")
 
 
 def scrubbed_env(private_dir, environ=None):
     """The environment of a child whose home and temp directory are `private_dir`."""
     src = os.environ if environ is None else environ
-    env = {k: v for k, v in src.items()
-           if k in CHILD_ENV_ALLOW or k.startswith(CHILD_ENV_ALLOW_PREFIXES)}
+    env = {k: v for k, v in src.items() if k in CHILD_ENV_ALLOW}
     env["HOME"] = private_dir
     for k in CHILD_TEMP_VARS:
         env[k] = private_dir
     return env
+
+
+# --- scope placement, removal and reaping -------------------------------------
+#
+# Every ChildScope lives under ONE runner-private parent, mh-runner-<pid>-<rand>,
+# mode 0700, created under the host temp. Sandboxed children are denied that
+# parent outright and re-allowed only their own scope, so one episode's children
+# cannot read another's temp, or an in-flight verification's, even though reads
+# elsewhere stay open. The pid in the name lets the next runner reap the parent a
+# SIGKILLed runner left behind.
+
+RUNNER_PARENT_PREFIX = "mh-runner-"
+_RUNNER_PARENT_RE = re.compile(r"^mh-runner-(\d+)-")
+_RUNNER_PARENTS = {}
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True         # EPERM: it exists, and is not ours
+    return True
+
+
+def _open_up(path):
+    """Make every directory under path traversable and writable by its owner."""
+    stack = [path]
+    while stack:
+        p = stack.pop()
+        try:
+            if not stat.S_ISDIR(os.lstat(p).st_mode):
+                continue
+            os.chmod(p, 0o700)
+            with os.scandir(p) as it:
+                stack.extend(e.path for e in it if e.is_dir(follow_symlinks=False))
+        except OSError:
+            continue
+
+
+def remove_tree(path):
+    """Remove a tree a child may have locked; True when it is gone.
+
+    A worker that leaves a directory without its write bit (or without read and
+    search) defeats shutil.rmtree(ignore_errors=True), which then silently
+    leaves its files behind for the next episode. So directories are chmodded
+    open first, and a tree that still cannot be removed is reported on stderr
+    with its path rather than swallowed.
+    """
+    last = None
+    for _ in range(2):
+        _open_up(path)
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            return True
+        except OSError as e:
+            last = e
+        if not os.path.lexists(path):
+            return True
+    print(f"[mh] could not remove private temp {path}: {last}", file=sys.stderr,
+          flush=True)
+    return False
+
+
+def reap_stale_scopes(bases=None):
+    """Remove runner parents whose runner is dead; returns the paths removed.
+
+    Called when a runner starts. A parent whose pid is alive is left alone, and
+    so is this process's own.
+    """
+    bases = list(bases) if bases else [os.path.realpath(tempfile.gettempdir())]
+    reaped = []
+    for base in bases:
+        try:
+            # Lazily, and only the matching names kept: a host temp directory
+            # can hold tens of thousands of entries.
+            with os.scandir(base) as it:
+                names = [e.name for e in it if e.name.startswith(RUNNER_PARENT_PREFIX)]
+        except OSError:
+            continue
+        for name in names:
+            m = _RUNNER_PARENT_RE.match(name)
+            if not m or int(m.group(1)) == os.getpid() or _pid_alive(int(m.group(1))):
+                continue
+            full = os.path.join(base, name)
+            if remove_tree(full):
+                reaped.append(full)
+    return reaped
+
+
+def runner_parent():
+    """This process's private parent for every scope, created on first use.
+
+    A host temp whose path holds ':' or a newline would corrupt the PATH entry
+    the mktemp shim needs, so such a base is not used: the parent goes under
+    /tmp instead (it is 0700 and denied to children, so that costs nothing).
+    """
+    base = os.path.realpath(tempfile.gettempdir())
+    if os.pathsep in base or "\n" in base:
+        base = os.path.realpath("/tmp")
+    key = (os.getpid(), base)
+    if key not in _RUNNER_PARENTS:
+        reap_stale_scopes([base])
+        path = os.path.realpath(tempfile.mkdtemp(
+            prefix=f"{RUNNER_PARENT_PREFIX}{os.getpid()}-", dir=base))
+        os.chmod(path, 0o700)
+        _RUNNER_PARENTS[key] = path
+        atexit.register(remove_tree, path)
+    return _RUNNER_PARENTS[key]
 
 
 _DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
@@ -485,11 +649,12 @@ exec "$real" "$@" "$TMPDIR/${pfx:-tmp}.XXXXXXXXXX"
 class ChildScope:
     """A private directory tree for one episode's, or one verification's, children.
 
-    `root` is a fresh mkdtemp directory. A child gets a subdirectory of it
-    (`private_dir`), which is its HOME and its TMPDIR, and which is the only
-    place besides the workspace the child may write. `close()` removes the
-    whole tree; a scope that is dropped without being closed is removed by a
-    finalizer, so a crashed episode does not leave its temp behind.
+    `root` is a fresh mkdtemp directory under the runner-private parent. A
+    child gets a subdirectory of it (`private_dir`), which is its HOME and its
+    TMPDIR, and which is the only place besides the workspace the child may
+    write; `root` itself is what contained_argv re-allows to that child after
+    denying the parent. `close()` removes the whole tree (see remove_tree); a
+    scope that is dropped without being closed is removed by a finalizer.
 
     The shell's scope and each verification's scope are separate objects on
     purpose: a verifier child that wrote into the shell's temp would hand the
@@ -497,8 +662,9 @@ class ChildScope:
     """
 
     def __init__(self, parent=None, prefix="mh-scope-"):
-        self.root = os.path.realpath(tempfile.mkdtemp(prefix=prefix, dir=parent))
-        self._final = weakref.finalize(self, shutil.rmtree, self.root, True)
+        self.root = os.path.realpath(tempfile.mkdtemp(
+            prefix=prefix, dir=parent or runner_parent()))
+        self._final = weakref.finalize(self, remove_tree, self.root)
 
     def private_dir(self, name):
         path = os.path.join(self.root, name)
@@ -534,7 +700,7 @@ class ChildScope:
     def stamp(self):
         """The provenance record of what this scope enforces."""
         return {"shell_env": "scrubbed", "env_allow": list(CHILD_ENV_ALLOW),
-                "temp_root": self.root}
+                "temp_root": self.root, "env_guard": env_guard_stats()}
 
 
 def _sbpl(path):
@@ -551,6 +717,36 @@ def _writable_system_roots():
     what let one episode's leftovers reach the next.
     """
     return ["/dev"]
+
+
+def sbpl_metadata_chain(allowed, protected):
+    """SBPL rules letting a child stat the directories that lead to its roots.
+
+    A root the child is re-allowed (its own scope, a workspace inside the
+    benchmark tree) can sit under a protected root, whose deny covers the
+    metadata of every directory on the way down. Without it a plain chdir or
+    getcwd inside the child fails, so the compiler or shell dies for the wrong
+    reason. Metadata only, and only the literal directories on that chain:
+    listing them, or reading a sibling, stays refused.
+    """
+    prot = [os.path.realpath(p) for p in protected if p]
+    seen, lines = set(), []
+    for a in allowed:
+        if not a:
+            continue
+        r = os.path.realpath(a)
+        for q in prot:
+            if r == q or not r.startswith(q + os.sep):
+                continue
+            cur = os.path.dirname(r)
+            while len(cur) >= len(q):
+                if cur not in seen:
+                    seen.add(cur)
+                    lines.append(f'(allow file-read-metadata (literal "{_sbpl(cur)}"))')
+                if cur == q:
+                    break
+                cur = os.path.dirname(cur)
+    return lines
 
 
 def _seatbelt_profile(allow_write, protected_roots):
@@ -573,6 +769,7 @@ def _seatbelt_profile(allow_write, protected_roots):
         if p:
             q = _sbpl(os.path.realpath(p))
             lines.append(f'(allow file-read* file-write* (subpath "{q}"))')
+    lines += sbpl_metadata_chain(allow_write, protected_roots)
     return "\n".join(lines)
 
 
@@ -765,6 +962,10 @@ def contained_argv(argv, allow_write=(), protected_roots=None):
     """
     if protected_roots is None:
         protected_roots = default_protected_roots()
+    # Every scope lives under the runner's private parent, which no child may
+    # read; a child's own scope is re-allowed through allow_write, which the
+    # profile applies after the protected denies.
+    protected_roots = list(protected_roots) + [runner_parent()]
     backend = containment_backend()
     if backend == "sandbox-exec":
         profile = _seatbelt_profile(list(allow_write), list(protected_roots))
@@ -1004,7 +1205,7 @@ class Sandbox:
     def _wrap(self, argv):
         try:
             return contained_argv(
-                argv, allow_write=[self.root, self.scope.private_dir("shell")],
+                argv, allow_write=[self.root, self.scope.root],
                 protected_roots=self.protected_roots)
         except ContainmentUnavailable as e:
             raise ToolError(str(e))

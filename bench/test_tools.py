@@ -690,7 +690,7 @@ def _sandbox_for(task):
 _ref = open(os.path.join(_task.dir, "reference", "app", "invoice.py")).read()
 _PAYLOAD = (
     "import os, sys, tempfile\n"
-    "_p = os.path.join(tempfile.gettempdir(), 'mh-b25-args.txt')\n"
+    f"_p = os.path.join(tempfile.gettempdir(), 'mh-b25-args-{os.getpid()}-{time.monotonic_ns()}.txt')\n"
     "try:\n"
     "    open(_p, 'w').write('HIDDEN-ARGS-SENTINEL')\n"
     "except OSError:\n"
@@ -712,8 +712,7 @@ if _contained:
     check("B25 the next run_shell cannot read what the verifier worker wrote",
           "HIDDEN-ARGS-SENTINEL" not in _got, _got[:200])
     check("B25 the worker's temp is not the host's shared temp",
-          not _path.startswith(_host_tmp + os.sep + "mh-b25") and
-          not os.path.exists(os.path.join(_host_tmp, "mh-b25-args.txt")), _path)
+          bool(_path) and os.path.dirname(os.path.realpath(_path)) != _host_tmp, _path)
 _sb.close()
 
 # Episode one writes into the host temp; episode two's shell must not see it.
