@@ -53,6 +53,8 @@ func isAbsent(err error) bool {
 // process could not be examined, and a process that cannot be examined may be a
 // member: an error is returned, so the listing fails closed instead of reading
 // the group as emptier than it is. It is the same split memberInGroup makes.
+// On a hidepid=1 host that means every listing fails and groupLive runs on the
+// bare kill(-pgid, 0) probe (see groupMembers for what that costs).
 func listStatError(pid int, err error) error {
 	if isAbsent(err) {
 		return nil

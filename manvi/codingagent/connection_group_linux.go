@@ -19,6 +19,16 @@ import (
 // error (EACCES under hidepid=1, say) returns an error, since an unreadable
 // process may be a member (listStatError).
 //
+// The trade-off on a host mounted with hidepid=1: other users' /proc/<pid>/stat
+// is EACCES or EPERM, so every listing there fails, membersKnown stays false
+// and groupLive answers from the bare kill(-pgid, 0) probe alone. That is
+// fail-closed and costs at most one reapBudget, but it loses the distinction
+// the listing exists for: a stranger that took the group number after the
+// members died reads as the agent's live group. Under hidepid=2 other users'
+// pids are absent from the directory listing altogether, so no read fails; a
+// member that changed uid is simply not listed, and the bare probe is the
+// backstop for it too.
+//
 // What that error does: sweepGroup records membersKnown = false when either of
 // its two listings fails, groupLive then answers from the bare probe alone (the
 // group reads live while kill(2) finds a member, which is the fail-closed
