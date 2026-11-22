@@ -85,12 +85,19 @@ func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 		return tools.Errorf("bad arguments: %v", err)
 	}
 	sess := r.sessionFor(ctx)
+	// The identity this agent is known by to the policy ledger comes from the
+	// harness: the session's own, or "manvi". It is never taken from an argument,
+	// because the same name is recorded as the grantor of every override the
+	// agent issues to itself, and a model that could name its own grantor could
+	// make a grant read as another agent's. The caller's owner string only
+	// labels the lease in the store.
+	identity := sess.State().Owner
+	if identity == "" {
+		identity = "manvi"
+	}
 	owner := args.Owner
 	if owner == "" {
-		owner = sess.State().Owner
-	}
-	if owner == "" {
-		owner = "manvi"
+		owner = identity
 	}
 
 	lease, err := r.deps.Store.Acquire(ctx, store.AcquireRequest{
@@ -149,7 +156,7 @@ func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 	// do anything under it. A fan-out's cleanup can only give back a lease it
 	// was told about, and a child that took one and then died is exactly the
 	// case that has nobody left to tell it.
-	sess.adopt(lease.TaskID, lease.Token, owner)
+	sess.adopt(lease.TaskID, lease.Token, identity)
 
 	// The token is deliberately absent from the payload: it is a credential,
 	// and the model does not need it to work. The harness holds it.

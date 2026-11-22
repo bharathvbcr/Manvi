@@ -248,10 +248,11 @@ func (r *Registry) escalate(ctx context.Context, decision policy.Decision, subje
 		return decision, false
 	}
 
-	// Re-evaluated rather than patched. The decision returned here is the one
-	// the ledger actually produces for this write, so the qualification that
-	// travels onto the result is the real grant rather than one assembled at
-	// the call site.
+	// Patched, not re-evaluated: the decision the operator cleared is returned
+	// with the grant's identity written onto it, and the ledger is not asked
+	// again here. A caller whose operation has effects this decision did not
+	// cover judges them itself afterwards, as the exec tool does for a command's
+	// redirect targets.
 	authorised.Action = policy.Allow
 	authorised.GrantID = grant.ID
 	authorised.GrantedBy = string(grant.Grantor.Authority)
@@ -358,7 +359,13 @@ func (r *Registry) requestOverride(ctx context.Context, call tools.Call) tools.R
 		}
 		decision = cmdDecision
 	} else {
-		if args.Rule == string(policy.RuleOperation) || strings.Contains(args.Reason, "delete") || strings.Contains(args.Rule, "delete") {
+		// The operation comes from the rule the block named, which was validated
+		// above. It never comes from the reason: that is free text the caller
+		// writes to argue for the grant, and the scope this override persists
+		// takes its permission from op, so a reason that mentioned deleting —
+		// even to say "not a delete" — would have widened a modify grant to one
+		// that also covers deletes.
+		if args.Rule == string(policy.RuleOperation) || strings.Contains(args.Rule, "delete") {
 			op = dc.OpDelete
 		}
 		writeDecision, writeErr := r.deps.Gate.EvaluateWrite(target, task, op)
