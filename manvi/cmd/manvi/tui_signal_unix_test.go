@@ -380,24 +380,6 @@ func TestTUIStopSignalLeavesNoIndexerRunning(t *testing.T) {
 	}
 }
 
-// sacrificialProcess starts a process that is not a child of the test: a shell
-// starts it and exits, so it is reparented away. Returns its pid; it is killed
-// when the test ends.
-func sacrificialProcess(t *testing.T) int {
-	t.Helper()
-	// #nosec G204 -- a literal shell command.
-	out, err := exec.CommandContext(t.Context(), "sh", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-	return pid
-}
-
 // The sweep finds the process table through the system ps, never through PATH.
 // A ps placed first on PATH -- as a directory the agent can write to may be --
 // that names a process which is not this one's child must not get it killed,
