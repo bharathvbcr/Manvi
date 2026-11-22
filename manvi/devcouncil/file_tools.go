@@ -268,7 +268,7 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 
 // overwriteRefusal is the audit-first rule for write_file over an existing
 // file: the agent must have read it in full, and what it read must still be what
-// is on disk. nil means the overwrite may go ahead. A file that cannot be read
+// is on disk, and it must not show redacted to the agent now. nil means the overwrite may go ahead. A file that cannot be read
 // back to compare is refused, not waved through: a check that could not run is
 // not a check that passed.
 func (r *Registry) overwriteRefusal(ctx context.Context, path, normalized string) *tools.Result {
@@ -289,6 +289,16 @@ func (r *Registry) overwriteRefusal(ctx context.Context, path, normalized string
 	}
 	if sha256.Sum256(current) != seen {
 		res := tools.Errorf("%s", changedSinceReadMessage(path))
+		return &res
+	}
+	// Checked at write time, whatever showed the file since: the scrubber's
+	// watched set grows mid-session, and a range read, a grep, a batch view or a
+	// command can show this file redacted after a read in full. Text written
+	// back from that view would replace the credential with the placeholder.
+	if r.shownRedacted(ctx, string(current)) {
+		res := tools.Errorf("%s shows redacted to you (a credential in it is scrubbed from what you see), so "+
+			"it was not overwritten: write_file would replace the credential with the placeholder. "+
+			"Change it with devcouncil_patch_file", path)
 		return &res
 	}
 	return nil

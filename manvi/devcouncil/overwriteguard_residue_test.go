@@ -75,6 +75,53 @@ func TestLaterRedactedReadDropsAnEarlierReadInFullMark(t *testing.T) {
 	}
 }
 
+// The scrubber's watched set grows mid-session, and any tool can show the file
+// redacted afterwards: a range read, a grep. Whatever showed it, an overwrite of
+// a file that now shows redacted is refused at write time, so placeholder text
+// written back cannot replace the credential.
+func TestOverwriteOfAFileThatNowShowsRedactedIsRefused(t *testing.T) {
+	const secret = "sk-live-0123456789abcdef"
+	for name, show := range map[string]func(f *fixture){
+		"range read": func(f *fixture) {
+			r := f.call("devcouncil_read_file", map[string]any{"path": "src/calc.go", "offset": 1, "limit": 5})
+			if r.IsError || !strings.Contains(r.Text, "[REDACTED]") {
+				t.Fatalf("range read did not show the redacted text: %q", r.Text)
+			}
+		},
+		"grep": func(f *fixture) {
+			r := f.call("devcouncil_grep", map[string]any{"pattern": "key"})
+			if r.IsError || !strings.Contains(r.Text, "[REDACTED]") {
+				t.Fatalf("grep did not show the redacted text: error=%v %q", r.IsError, r.Text)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			checkedOut(t, f)
+			path := filepath.Join(f.root, "src", "calc.go")
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("package calc\nconst key = \""+secret+"\"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if r := f.call("devcouncil_read_file", map[string]string{"path": "src/calc.go"}); r.IsError {
+				t.Fatal(r.Text)
+			}
+			f.pipe.SetScrubber(func(s string) string { return strings.ReplaceAll(s, secret, "[REDACTED]") })
+			show(f)
+			res := f.call("devcouncil_write_file", map[string]string{"path": "src/calc.go", "content": "package calc\nconst key = \"[REDACTED]\"\n"})
+			if !res.IsError || !strings.Contains(res.Text, "shows redacted") {
+				t.Errorf("overwrite of a file that shows redacted was not refused: error=%v %q", res.IsError, res.Text)
+			}
+			got, err := os.ReadFile(path) // #nosec G304 -- a path under the test's own temp root
+			if err != nil || !strings.Contains(string(got), secret) {
+				t.Errorf("the credential was dropped from the file: %q %v", got, err)
+			}
+		})
+	}
+}
+
 // A read with nothing to redact still unlocks the overwrite.
 func TestUnredactedReadStillCountsAsReadInFull(t *testing.T) {
 	f := newFixture(t)
