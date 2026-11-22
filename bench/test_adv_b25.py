@@ -5,9 +5,10 @@ holds; a FAIL is a break. Nothing here fixes the implementation. Probes that onl
 observe a behaviour the brief says to report rather than judge print INFO and are
 not counted.
 
-Checks named test_open_b25_* are KNOWN-OPEN (out of this card's scope, filed as
-their own cards): they still run and still FAIL when the break is present, but the
-suite's exit status ignores them, and the summary line counts them separately.
+Checks named test_open_b25_* would be KNOWN-OPEN (a break found but not yet fixed):
+they still run and still FAIL when the break is present, but the suite's exit
+status ignores them, and the summary line counts them separately. None is open
+now; every former one gates as test_adv_b25_*.
 
 Run from bench/ with Python >= 3.11:  python3.14 test_adv_b25.py
 """
@@ -27,7 +28,7 @@ import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mh.tools as toolmod
-from mh.tools import Sandbox, ChildScope, scrubbed_env, env_file_guards, git_guard_roots
+from mh.tools import Sandbox, scrubbed_env, env_file_guards, git_guard_roots
 from mh.bench import load_tasks
 from mh.harness import log_args, ARG_LOG_MAX_CHARS
 from mh.checks import FAIL, PASS, check
@@ -441,42 +442,158 @@ def p_ps_env():
 guarded("test_adv_b25_ps_env", p_ps_env)
 
 
-def p_procargs_env():
-    """ps is blocked in the sandbox; sysctl(KERN_PROCARGS2) on the parent is not a binary."""
-    if sys.platform != "darwin":
-        return
+def procargs_reader_path():
     reader = os.path.join(ADV, "procargs_reader.py")
     open(reader, "w").write(textwrap.dedent('''
         import ctypes, sys
         libc = ctypes.CDLL(None)
-        mib = (ctypes.c_int * 3)(1, 49, int(sys.argv[1]))
-        size = ctypes.c_size_t(0)
-        libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0)
-        buf = ctypes.create_string_buffer(size.value)
-        rc = libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0)
-        print("SYSCTL_RC", rc, size.value)
-        print(buf.raw[:size.value].replace(b"\\0", b" ").decode("utf-8", "replace"))
+        for pid in sys.argv[1:]:
+            mib = (ctypes.c_int * 3)(1, 49, int(pid))
+            size = ctypes.c_size_t(0)
+            libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0)
+            buf = ctypes.create_string_buffer(size.value)
+            rc = libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0)
+            print("SYSCTL_RC", rc, size.value, "pid", pid)
+            print(buf.raw[:size.value].replace(b"\\0", b" ").decode("utf-8", "replace"))
     '''))
-    script = textwrap.dedent(f'''
+    return reader
+
+
+def sandboxed_shell_script(shell_cmd, seal, extra=""):
+    """A throwaway runner: optionally sealed first, then an episode shell running shell_cmd."""
+    return textwrap.dedent(f'''
         import os, sys, tempfile
         sys.path.insert(0, {HERE!r})
+        {"from mh import keystore; keystore.seal_environment()" if seal else ""}
         tempfile.tempdir = {ADV!r}
         from mh.tools import Sandbox
         from mh.bench import load_tasks
+        {extra}
         t = {{x.name: x for x in load_tasks()}}["cryptic"]
         d = tempfile.mkdtemp(prefix="ws-", dir={ADV!r}); s = os.path.join(d, "s"); t.materialise(s)
         sb = Sandbox(s, protected_roots=t.guard_roots)
-        print(sb.run_shell(cmd="python3 " + {reader!r} + " " + str(os.getpid()) + " 2>&1 | tail -c 6000"))
+        print(sb.run_shell(cmd={shell_cmd}))
         sb.close()
     ''')
+
+
+def run_py(script, env, timeout=90):
+    return subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True,
+                          timeout=timeout, env=env)
+
+
+def p_procargs_env():
+    """ps is blocked in the sandbox; sysctl(KERN_PROCARGS2) on the parent is not a binary.
+
+    No SBPL rule closes it (a same-uid process can read its parent's exec-time
+    environment), so the runner removes its keys from the environment it is
+    exec'd with: mh.keystore.seal_environment() re-execs it clean and hands the
+    keys over an inherited pipe.
+    """
+    if sys.platform != "darwin":
+        return
+    reader = procargs_reader_path()
+    read_self = '"python3 " + ' + repr(reader) + ' + " " + str(os.getpid()) + " 2>&1 | tail -c 6000"'
     env = {**os.environ, "CEREBRAS_API_KEY": "PROCARGS-SENTINEL-KEY"}
-    p = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True, timeout=60, env=env)
+    # Negative control: the same probe against a runner that did NOT seal reads the key,
+    # so a clean result below is the seal's doing and not a probe that cannot see.
+    p0 = run_py(sandboxed_shell_script(read_self, seal=False), env)
+    check("test_adv_b25_procargs_probe_detects_an_unsealed_runner", "PROCARGS-SENTINEL-KEY" in p0.stdout,
+          (p0.stdout + p0.stderr)[:300])
+    p = run_py(sandboxed_shell_script(read_self, seal=True), env)
     check("test_adv_b25_procargs_probe_ran", "SYSCTL_RC" in p.stdout, (p.stdout + p.stderr)[:300])
-    check("test_open_b25_model_shell_cannot_read_the_runners_environment_via_sysctl_procargs",
+    check("test_adv_b25_model_shell_cannot_read_the_runners_environment_via_sysctl_procargs",
           "PROCARGS-SENTINEL-KEY" not in p.stdout, p.stdout[:400])
+    # The runner still has its key: it is in memory, which is what Client() reads.
+    p2 = run_py(sandboxed_shell_script("'true'", seal=True,
+                                       extra="from mh import model; print('KEY', model._credential('CEREBRAS_API_KEY'), "
+                                             "'ENV', os.environ.get('CEREBRAS_API_KEY'))"), env)
+    check("test_adv_b25_sealed_runner_still_reads_its_key_from_the_key_store",
+          "KEY PROCARGS-SENTINEL-KEY ENV None" in p2.stdout, (p2.stdout + p2.stderr)[:300])
+    # Every ancestor of the shell: grid.py (outer) -> run.py (inner) -> shell. The shell reads
+    # the exec-time environment of both. The outer hands the key to the inner over keystore.handoff.
+    inner = sandboxed_shell_script(
+        '"python3 " + ' + repr(reader) + ' + " " + str(os.getpid()) + " " + str(os.getppid()) + " 2>&1 | tail -c 12000"',
+        seal=True, extra="from mh import model; print('INNER-KEY', model._credential('CEREBRAS_API_KEY'))")
+    outer = textwrap.dedent(f'''
+        import os, subprocess, sys
+        sys.path.insert(0, {HERE!r})
+        from mh import keystore
+        keystore.seal_environment()
+        env, fds, done = keystore.handoff(dict(os.environ))
+        try:
+            p = subprocess.run([sys.executable, "-I", "-c", {inner!r}], env=env, pass_fds=fds,
+                               capture_output=True, text=True, timeout=80)
+        finally:
+            done()
+        sys.stdout.write(p.stdout); sys.stderr.write(p.stderr)
+    ''')
+    p3 = run_py(outer, env, timeout=120)
+    both = p3.stdout.count("SYSCTL_RC")
+    check("test_adv_b25_shell_read_both_ancestors_exec_environments", both == 2, (p3.stdout + p3.stderr)[:400])
+    check("test_adv_b25_no_ancestor_of_the_shell_holds_a_key_in_its_exec_environment",
+          "PROCARGS-SENTINEL-KEY" not in p3.stdout.replace("INNER-KEY PROCARGS-SENTINEL-KEY", ""), p3.stdout[:600])
+    check("test_adv_b25_runner_launched_through_handoff_still_has_its_key",
+          "INNER-KEY PROCARGS-SENTINEL-KEY" in p3.stdout, (p3.stdout + p3.stderr)[:300])
 
 
 guarded("test_adv_b25_procargs_env", p_procargs_env)
+
+
+def p_keystore():
+    """The key hand-off fails closed, is bounded, and sits first in every entry point."""
+    import ast
+    base_env = {k: v for k, v in os.environ.items() if not k.upper().endswith(keystore_suffixes)}
+
+    def ks(code, extra_env=None, pass_fds=()):
+        return subprocess.run([sys.executable, "-I", "-c",
+                               f"import sys; sys.path.insert(0, {HERE!r})\nfrom mh import keystore\n" + code],
+                              capture_output=True, text=True, timeout=60, pass_fds=pass_fds,
+                              env={**base_env, **(extra_env or {})})
+    r = ks("print('SEAL', keystore.seal_environment())")
+    check("test_adv_b25_keystore_seal_with_nothing_to_hide_returns_without_re_exec",
+          "SEAL none" in r.stdout, (r.stdout + r.stderr)[:200])
+    r = ks("keystore.seal_environment()", {"MH_KEYSTORE_FD": "abc"})
+    check("test_adv_b25_keystore_refuses_a_non_numeric_descriptor", r.returncode != 0 and "KeystoreError" in r.stderr, r.stderr[-200:])
+    r = ks("keystore.seal_environment()", {"MH_KEYSTORE_FD": "1"})
+    check("test_adv_b25_keystore_refuses_a_standard_stream_as_the_pipe", r.returncode != 0 and "standard stream" in r.stderr, r.stderr[-200:])
+    rf = os.open(os.path.join(HERE, "run.py"), os.O_RDONLY)
+    os.set_inheritable(rf, True)
+    try:
+        r = ks("keystore.seal_environment()", {"MH_KEYSTORE_FD": str(rf)}, pass_fds=(rf,))
+    finally:
+        os.close(rf)
+    check("test_adv_b25_keystore_refuses_a_descriptor_that_is_not_a_pipe", r.returncode != 0 and "not a pipe" in r.stderr, r.stderr[-200:])
+    for label, data, want in (("not_json", b"nope", "not JSON"), ("not_a_name_value_object", b"[1,2]", "name -> value"),
+                              ("oversized", b'{"A_API_KEY":"' + b"x" * 9000 + b'"}', "exceeds its bound")):
+        rr, ww = os.pipe()
+        os.write(ww, data)
+        os.close(ww)
+        os.set_inheritable(rr, True)
+        try:
+            r = ks("keystore.seal_environment()", {"MH_KEYSTORE_FD": str(rr)}, pass_fds=(rr,))
+        finally:
+            os.close(rr)
+        check(f"test_adv_b25_keystore_refuses_a_payload_that_is_{label}", r.returncode != 0 and want in r.stderr, r.stderr[-200:])
+    r = ks("keystore.seal_environment()", {"BIG_API_KEY": "k" * 9000})
+    check("test_adv_b25_keystore_refuses_keys_over_the_hand_off_bound_rather_than_keep_them_in_the_environment",
+          r.returncode != 0 and "hand-off bound" in r.stderr, r.stderr[-200:])
+    r = ks("keystore.seal_environment(); import os; print('LEFT', sorted(k for k in os.environ if k.endswith('_TOKEN') or k.endswith('_API_KEY') or k == 'MH_KEYSTORE_FD'), "
+           "keystore.names())", {"A_API_KEY": "1", "B_TOKEN": "2", "HOME_NOT_A_KEY": "3"})
+    check("test_adv_b25_keystore_moves_every_secret_named_variable_out_of_the_environment",
+          "LEFT [] ['A_API_KEY', 'B_TOKEN']" in r.stdout, (r.stdout + r.stderr)[:300])
+    # Each entry point seals before it does anything else, or its exec-time environment is exposed.
+    for entry in ("run.py", "grid.py"):
+        tree = ast.parse(open(os.path.join(HERE, entry)).read())
+        main_block = next(n for n in tree.body if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                          and getattr(n.test.left, "id", "") == "__name__")
+        first = ast.unparse(main_block.body[0])
+        check(f"test_adv_b25_{entry.replace('.', '_')}_seals_its_environment_first_in_its_entry_point",
+              first == "keystore.seal_environment()", first)
+
+
+keystore_suffixes = ("_API_KEY", "_TOKEN", "_SECRET", "_SECRET_KEY", "_PASSWORD")
+guarded("test_adv_b25_keystore", p_keystore)
 
 # ---------------------------------------------------------------------------
 print("odd and hostile paths")

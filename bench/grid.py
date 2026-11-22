@@ -14,6 +14,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mh import keystore
 from mh.bench import load_tasks
 from mh.runtime import (CellError, cell_rows, ensure_sole_tenant,
                         is_api_model, is_starved_episode, observed_parallel_slots,
@@ -338,19 +339,30 @@ def main():
             continue
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
+        # The runner gets the provider keys over an inherited pipe, never in
+        # its environment, where the model's shell could read them back
+        # (mh.keystore).
+        env, key_fds, key_done = keystore.handoff(env)
         if args.parallel > 1:
             # One resident model, N cells in flight. The first cell loads the
             # weights; the rest must not evict them out from under it, which is
             # what --keep-resident means. run.py's lease still refuses a
             # sibling holding a DIFFERENT model, so this cannot silently become
             # the two-model case.
-            inflight.append((subprocess.Popen(cmd + ["--keep-resident"],
-                                              cwd=HERE, env=env), model, cfg, i))
+            try:
+                inflight.append((subprocess.Popen(cmd + ["--keep-resident"],
+                                                  cwd=HERE, env=env,
+                                                  pass_fds=key_fds), model, cfg, i))
+            finally:
+                key_done()
             if len(inflight) < args.parallel:
                 continue
             rc, model, cfg, i = _reap_one(inflight)
         else:
-            rc = subprocess.call(cmd, cwd=HERE, env=env)
+            try:
+                rc = subprocess.call(cmd, cwd=HERE, env=env, pass_fds=key_fds)
+            finally:
+                key_done()
         if rc == ACCOUNT_REFUSED_RC:
             # The provider refused the account. Every remaining cell fails the
             # same way, and a grid that keeps going fills itself with 0-token
@@ -386,4 +398,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # First, before any child exists: a key in this process's exec-time
+    # environment is readable by the model's shell, which descends from it.
+    keystore.seal_environment()
     sys.exit(main())

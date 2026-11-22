@@ -14,6 +14,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mh import keystore
 from mh import tools as toolmod
 from mh.bench import load_tasks
 from mh.compute import Sampler, tok_s
@@ -595,4 +596,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # First, before any lease or temp directory exists: the model's shell
+    # descends from this process and can read its exec-time environment.
+    # Replaces the process when keys were in the environment, so it is here
+    # and not in main(), which tests call in-process.
+    keystore.seal_environment()
     main()
