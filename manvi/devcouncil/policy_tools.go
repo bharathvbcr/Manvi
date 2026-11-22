@@ -359,22 +359,20 @@ func (r *Registry) requestOverride(ctx context.Context, call tools.Call) tools.R
 		}
 		decision = cmdDecision
 	} else {
-		// The operation comes from the rule the block named, which was validated
-		// above. It never comes from the reason: that is free text the caller
-		// writes to argue for the grant, and the scope this override persists
-		// takes its permission from op, so a reason that mentioned deleting —
-		// even to say "not a delete" — would have widened a modify grant to one
-		// that also covers deletes.
-		if args.Rule == string(policy.RuleOperation) || strings.Contains(args.Rule, "delete") {
-			op = dc.OpDelete
-		}
+		// The operation is what the gate re-evaluates, not what the caller says.
+		// Neither the reason (free text written to argue for the grant) nor the
+		// rule the caller named (it picks which block to look at, and a model can
+		// name any known rule) may choose it: the scope this override persists
+		// takes its permission from op, so a delete is recorded only when the
+		// delete evaluation is the one that is actually blocked.
 		writeDecision, writeErr := r.deps.Gate.EvaluateWrite(target, task, op)
 		if writeErr != nil {
 			return unavailable("policy decision", writeErr)
 		}
-		if !writeDecision.Blocked() && op != dc.OpDelete {
+		if !writeDecision.Blocked() {
 			if delDec, delErr := r.deps.Gate.EvaluateWrite(target, task, dc.OpDelete); delErr == nil && delDec.Blocked() {
 				writeDecision = delDec
+				op = dc.OpDelete
 			}
 		}
 		decision = writeDecision
