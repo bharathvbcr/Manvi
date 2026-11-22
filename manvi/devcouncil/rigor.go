@@ -77,38 +77,64 @@ const (
 	maxPatchReadBytes = 64 << 20
 )
 
+// Lean kernel deadline model. dc-proc's lean_kernel.rs applies the per-step
+// timeout to each child process separately, and a single check runs at least
+// three of them one after the other: the Lean compile, the `#print axioms`
+// driver, and `lean4checker --fresh` (steps 1-3 there), after a libdir probe
+// capped at 10s. The deadline here must cover that sequence, not one step.
+const (
+	defaultRigorTimeout      = 30 * time.Second
+	defaultLeanKernelStep    = 180 * time.Second
+	minLeanKernelStep        = 50 * time.Millisecond
+	maxLeanKernelStep        = 600 * time.Second
+	leanKernelSequentialRuns = 3
+	leanKernelLibdirProbe    = 10 * time.Second
+	leanKernelMargin         = 60 * time.Second
+	minLeanRigorTimeout      = 240 * time.Second
+)
+
+// leanKernelStep mirrors dc-proc's configured_lean_kernel_timeout
+// (lean_kernel.rs): DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s, 180s when
+// unset or not an unsigned decimal.
+func leanKernelStep() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("DC_LEAN_KERNEL_TIMEOUT_MS"))
+	if raw == "" {
+		return defaultLeanKernelStep
+	}
+	ms, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return defaultLeanKernelStep
+	}
+	switch {
+	case ms < uint64(minLeanKernelStep/time.Millisecond):
+		return minLeanKernelStep
+	case ms > uint64(maxLeanKernelStep/time.Millisecond):
+		return maxLeanKernelStep
+	default:
+		return time.Duration(ms) * time.Millisecond
+	}
+}
+
 // effectiveTimeout is the dcverify deadline. An explicit Timeout wins. With
 // DC_VERIFY_LEAN_KERNEL on (auto or require, the only values dcverify accepts:
-// it fails closed on anything else, so 1 and true do not widen the deadline)
-// it is the Lean kernel step (DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s,
-// 180s when unset or unparseable) plus 60s, and never under 240s. Otherwise it
-// is 30s.
+// dc-verify's rigor.rs fails closed on anything else, so 1 and true do not
+// widen the deadline) it covers the sequential Lean steps: three kernel steps
+// of leanKernelStep each, the libdir probe and a 60s margin, and never under
+// 240s. Otherwise it is 30s.
+//
+// DevCouncil's dcverify.Client.effectiveTimeout is unexported and its Lean
+// headroom is one step plus 60s, so it cannot be called from here; the
+// step clamp is pinned against its table in rigor_hijack_test.go instead.
 func (c rigorClient) effectiveTimeout() time.Duration {
 	if c.Timeout > 0 {
 		return c.Timeout
 	}
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("DC_VERIFY_LEAN_KERNEL")))
 	if mode == "auto" || mode == "require" {
-		step := 180 * time.Second
-		if raw := strings.TrimSpace(os.Getenv("DC_LEAN_KERNEL_TIMEOUT_MS")); raw != "" {
-			if ms, err := strconv.ParseUint(raw, 10, 64); err == nil {
-				switch {
-				case ms < 50:
-					step = 50 * time.Millisecond
-				case ms > 600_000:
-					step = 600 * time.Second
-				default:
-					step = time.Duration(ms) * time.Millisecond
-				}
-			}
-		}
-		expanded := step + 60*time.Second
-		if expanded < 240*time.Second {
-			expanded = 240 * time.Second
-		}
-		return expanded
+		expanded := leanKernelSequentialRuns*leanKernelStep() + leanKernelLibdirProbe + leanKernelMargin
+		return max(expanded, minLeanRigorTimeout)
 	}
-	return 30 * time.Second
+	return defaultRigorTimeout
 }
 
 // run feeds a diff to the verifier and returns its findings.
@@ -260,11 +286,10 @@ func gapsFrom(taskID string, result *rigorResult) ([]Gap, []NextAction) {
 			action.Action = fmt.Sprintf(
 				"Deconstruct and implement placeholder at %s:%d completely; avoid placeholders or fake values in delivered code.", f.Path, f.Line)
 		case "runner_hijack":
-			action.Action = fmt.Sprintf(
-				"Security/anti-reward-hack violation: Remove the test-runner bypass at %s:%d (`os._exit`, `os.Exit(0)`, `TestMain` omitting `m.Run()`, `exitstatus = 0`, or stack inspection) so the real test suite executes every assertion.", f.Path, f.Line)
+			// Wording is DevCouncil's (devcouncil/verify/next_actions.go at the pin).
+			action.Action = "Remove the test-runner hijack in " + f.Path + " so the real test harness executes and reports failures honestly."
 		case "lean_tcb":
-			action.Action = fmt.Sprintf(
-				"Formal verification TCB violation: Discharge the Lean 4 soundness hole, metaprogramming escape, or kernel/lean4checker rejection at %s:%d (`sorry`, `admit`, `native_decide`, `axiom`, `opaque`, `unsafe`, `@[extern]`, `@[implemented_by]`, `@[csimp]`, or `elab`/`macro`/`syntax`/`#eval`) with a kernel-checked proof.", f.Path, f.Line)
+			action.Action = "Replace the Lean 4 TCB soundness hole, metaprogramming escape, or non-standard axiom/extern hook in " + f.Path + " with a kernel- and lean4checker-verified proof, then re-verify."
 		default:
 			action.Action = f.Message
 		}
