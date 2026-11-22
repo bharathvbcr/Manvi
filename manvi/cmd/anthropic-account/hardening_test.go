@@ -171,3 +171,24 @@ func TestTheWalkStopsAtHomeEvenWhenHomeIsReachedThroughASymlink(t *testing.T) {
 		t.Fatalf("a marker in home was honoured through a symlink: path=%q name=%q err=%v", path, name, err)
 	}
 }
+
+// TestAMissingRepoDirectoryMeansNoMarker: a --repo that does not exist holds no
+// marker, which is an answer and not an error; the walk goes on to the
+// directories above it.
+func TestAMissingRepoDirectoryMeansNoMarker(t *testing.T) {
+	h := newHarness(t, "main\nalt\n")
+	missing := filepath.Join(h.home, "proj", "not", "there")
+	if code := h.run("", "which", "--json", "--repo", missing); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "\"account\":\"main\"") {
+		t.Fatalf("a missing directory did not fall back to the default: %s", h.stdout.String())
+	}
+	write(t, filepath.Join(h.home, "proj", markerName), "alt\n")
+	if code := h.run("", "which", "--json", "--repo", missing); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "\"account\":\"alt\"") {
+		t.Fatalf("the marker in an existing ancestor of a missing directory was not found: %s", h.stdout.String())
+	}
+}

@@ -198,15 +198,28 @@ func findMarker(dir, home string) (path, name string, err error) {
 	}
 	for {
 		resolvedDir, err := filepath.EvalSymlinks(dir)
-		if err != nil {
+		switch {
+		case err == nil:
+			if resolvedDir == resolvedHome {
+				return "", "", nil
+			}
+		case errors.Is(err, os.ErrNotExist):
+			// A directory that is not there holds no marker; the walk goes on
+			// to its parent, as it always has for a --repo that is missing.
+		default:
 			return "", "", fmt.Errorf("resolving %s: %w", dir, err)
-		}
-		if resolvedDir == resolvedHome {
-			break
 		}
 		candidate := filepath.Join(dir, markerName)
 		data, err := readSmall(candidate, maxMarkerBytes)
 		if err == nil {
+			// O_NOFOLLOW guards only the last path component. A marker read
+			// through a symlinked directory sits somewhere the repository
+			// does not own, so it is refused rather than honoured.
+			if link, linkErr := symlinkedBelow(dir, home); linkErr != nil {
+				return "", "", linkErr
+			} else if link != "" {
+				return "", "", fmt.Errorf("%s is reached through the symbolic link %s; the account marker must sit in the directory tree it names", candidate, link)
+			}
 			fields := strings.Fields(string(data))
 			if len(fields) == 0 {
 				return "", "", fmt.Errorf("%s is empty", candidate)
@@ -223,6 +236,33 @@ func findMarker(dir, home string) (path, name string, err error) {
 		dir = parent
 	}
 	return "", "", nil
+}
+
+// symlinkedBelow returns the first symbolic link among the components of dir
+// that the operator did not put there, or "" when there is none. Components at
+// or above home are the operator's own environment (and a top-level link such
+// as macOS's /var or /tmp is how the platform spells its temporary directory);
+// anything below them is part of the tree being walked.
+func symlinkedBelow(dir, home string) (string, error) {
+	home = filepath.Clean(home)
+	var prefix string
+	for _, part := range strings.Split(filepath.Clean(dir), string(filepath.Separator)) {
+		prefix = filepath.Join(prefix, string(filepath.Separator)+part)
+		if prefix == string(filepath.Separator) || filepath.Dir(prefix) == string(filepath.Separator) {
+			continue
+		}
+		if prefix == home || strings.HasPrefix(home, prefix+string(filepath.Separator)) {
+			continue
+		}
+		info, err := os.Lstat(prefix)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return prefix, nil
+		}
+	}
+	return "", nil
 }
 
 // readSmall reads a marker file and nothing else that happens to sit at its path.
