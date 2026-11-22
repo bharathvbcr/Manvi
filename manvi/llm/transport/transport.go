@@ -422,7 +422,9 @@ func isLoopbackURL(rawURL string) bool {
 	if err != nil {
 		return false
 	}
-	host := u.Hostname()
+	// Hostnames are case-insensitive (RFC 4343) and may carry a root-label dot,
+	// so "LOCALHOST" and "localhost." name this machine as "localhost" does.
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "0.0.0.0" {
 		return true
 	}
