@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -210,11 +211,18 @@ func TestAdvB27NeedsEndingReadsTheWholeGroup(t *testing.T) {
 	}
 }
 
-// When ps fails on the allZombies read, the sweep signals the zombie leader's
-// group. That group cannot be a stranger's here: the leader is unreaped, so it
-// holds the number. The live member dies and the sweep stays bounded.
+// When the table read gone() makes after the kill fails (the listing the sweep
+// started from succeeded, every later one does not), the sweep still signals the
+// zombie leader's group, which cannot be a stranger's: the leader is unreaped, so
+// it holds the number. The live member dies and the sweep stays bounded. What it
+// cannot do is confirm the group gone, and it must say that, not that a child is
+// "still running": the child that was killed is not known to be running.
 func TestAdvB27FailedAllZombiesReadStillKillsTheLeadersOwnGroup(t *testing.T) {
-	zadvUsePS(t, `[ "$*" = "-A -o pid=,pgid=,stat=" ] && exit 1
+	count := filepath.Join(t.TempDir(), "table-reads")
+	zadvUsePS(t, `if [ "$*" = "-A -o pid=,ppid=,pgid=,stat=" ]; then
+  if [ -e '`+count+`' ]; then exit 1; fi
+  : > '`+count+`'
+fi
 exec REAL "$@"`)
 	_, member := zombieLeaderWithLiveMember(t)
 	start := time.Now()
@@ -223,10 +231,16 @@ exec REAL "$@"`)
 	if d > childrenReapBound+3*time.Second {
 		t.Fatalf("the sweep took %v", d)
 	}
-	if strings.Contains(got, strconv.Itoa(member)) {
-		t.Fatalf("the report names the live member that was killed, as a problem: %q", got)
+	if _, err := os.Stat(count); err != nil {
+		t.Fatalf("the stub never saw the first table read, so the injected failure did not happen: %v", err)
 	}
-	t.Logf("sweep returned %q after %v (leader and its dead member stay zombies until the test reaps them)", got, d)
+	if strings.Contains(got, "still running") || strings.Contains(got, "could not be ended") {
+		t.Fatalf("a killed child whose group could not be re-read was reported as still running: %q", got)
+	}
+	if !strings.Contains(got, "could not be confirmed gone") {
+		t.Fatalf("the sweep did not say the group could not be confirmed gone: %q", got)
+	}
+	t.Logf("sweep returned %q after %v", got, d)
 	deadline := time.Now().Add(5 * time.Second)
 	for zadvAlive(t, member) {
 		if time.Now().After(deadline) {
@@ -239,7 +253,7 @@ exec REAL "$@"`)
 // A leader that was listed as an unreaped zombie of ours but is already reaped
 // when the sweep gets to it (the abandoned goroutine's Wait won the race), whose
 // group number is held by a live stranger group, must not get that group
-// signalled even when the allZombies read fails: the re-check of the parent
+// signalled even when the table read fails: the re-check of the parent
 // finds no such pid.
 func TestAdvB27ReapedLeaderWhoseGroupNumberIsInUseIsNotSignalled(t *testing.T) {
 	leader := exec.CommandContext(context.WithoutCancel(t.Context()), "sh", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!") // #nosec G204 -- literal.
@@ -258,8 +272,7 @@ func TestAdvB27ReapedLeaderWhoseGroupNumberIsInUseIsNotSignalled(t *testing.T) {
 		t.Fatalf("setup: the leader's group %s is gone: %v", lp, err)
 	}
 	self := strconv.Itoa(os.Getpid())
-	zadvUsePS(t, `[ "$*" = "-A -o pid=,pgid=,stat=" ] && exit 1
-case "$*" in
+	zadvUsePS(t, `case "$*" in
 *-p*) exec REAL "$@";;
 esac
 echo "`+lp+` `+self+` `+lp+` Z"`)

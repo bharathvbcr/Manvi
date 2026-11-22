@@ -115,16 +115,24 @@ func endLeftoverChildren() string {
 		}
 		live = append(live, r)
 	}
-	var left []int
+	var left, unverified []int
 	for _, r := range live {
-		if !gone(ctx, ps, r) {
+		switch gone(ctx, ps, r) {
+		case goneNo:
 			left = append(left, r.pid)
+		case goneUnknown:
+			unverified = append(unverified, r.pid)
 		}
 	}
 	var problems []string
 	if len(unchecked) > 0 {
 		problems = append(problems, fmt.Sprintf(
 			"%d child process(es) could not be checked and were left running: %v", len(unchecked), unchecked))
+	}
+	if len(unverified) > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"%d child process(es) were signalled but could not be confirmed gone, because the process table could not be read: %v",
+			len(unverified), unverified))
 	}
 	if len(left) > 0 {
 		problems = append(problems, fmt.Sprintf("child processes %v were still running at exit and could not be ended", left))
@@ -150,37 +158,66 @@ func needsEnding(r childRow) bool {
 // gonePoll is how often a killed child is looked for, which costs a ps each time.
 const gonePoll = 50 * time.Millisecond
 
+// goneState is what gone found: the child is gone, is still there, or could not
+// be told either way because the process table would not be read.
+type goneState int
+
+const (
+	goneYes goneState = iota
+	goneNo
+	goneUnknown
+)
+
 // gone waits, until ctx ends, for the child to be gone. A child that has died
 // but not been waited for is a zombie, which kill(2) still finds, so it counts
 // as gone too: a group is gone when no member of it is anything but a zombie.
 // Its parent's Wait is what removes it, in the goroutine that abandoned it.
-func gone(ctx context.Context, ps string, r childRow) bool {
+// When ctx ends the answer is goneNo only if the table was read and showed a
+// live member; a table that could not be read at the last look is goneUnknown,
+// which is reported as unverified and never as "still running".
+func gone(ctx context.Context, ps string, r childRow) goneState {
 	target := r.pid
 	if r.pgid == r.pid {
 		target = -r.pid
 	}
+	var state goneState
 	for {
 		if err := syscall.Kill(target, 0); err == syscall.ESRCH {
-			return true
+			return goneYes
 		}
-		if allZombies(ctx, ps, r) {
-			return true
+		switch allZombies(ctx, ps, r) {
+		case zombiesAll:
+			return goneYes
+		case zombiesUnread:
+			state = goneUnknown
+		default:
+			state = goneNo
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return state
 		case <-time.After(gonePoll):
 		}
 	}
 }
 
-// allZombies reports whether every member of r's group (or r alone, when it
-// does not lead one) is a zombie or gone, from one read of the table. A table
-// that cannot be read answers false: not shown to be gone.
-func allZombies(ctx context.Context, ps string, r childRow) bool {
+// zombieRead is what one read of the table showed about a group.
+type zombieRead int
+
+const (
+	zombiesAll    zombieRead = iota // every member is a zombie or gone
+	zombiesLive                     // a member is alive
+	zombiesUnread                   // the table could not be read: nothing is shown
+)
+
+// allZombies reports, from one read of the table, whether every member of r's
+// group (or r alone, when it does not lead one) is a zombie or gone. A table
+// that cannot be read is zombiesUnread: not shown to be gone, and not shown to
+// be alive either.
+func allZombies(ctx context.Context, ps string, r childRow) zombieRead {
 	rows, _, err := readTable(ctx, ps)
 	if err != nil {
-		return false
+		return zombiesUnread
 	}
 	for _, row := range rows {
 		member := row.pid == r.pid
@@ -188,10 +225,10 @@ func allZombies(ctx context.Context, ps string, r childRow) bool {
 			member = row.pgid == r.pid
 		}
 		if member && !row.zombie {
-			return false
+			return zombiesLive
 		}
 	}
-	return true
+	return zombiesAll
 }
 
 // procRow is one row of the process table.
