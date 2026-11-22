@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	mapclient "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
@@ -192,7 +191,7 @@ func TestWarmDevmapPoolReusesUpToBoundAndClosesCleanly(t *testing.T) {
 		t.Fatal("WarmDevmapPool created distinct clients for canonical root and its symlink")
 	}
 
-	pooled := []*mapclient.Client{c1}
+	pooled := []*PooledDevmap{c1}
 	for i := 1; i < maxWarmDevmapPoolEntries; i++ {
 		r := resolvedDir(t)
 		c := pool.ForRoot(r)
@@ -202,15 +201,16 @@ func TestWarmDevmapPoolReusesUpToBoundAndClosesCleanly(t *testing.T) {
 		pooled = append(pooled, c)
 	}
 
-	// Overflow root (#17) gets a fresh unpooled client without evicting the existing 16.
+	// Overflow root (#17) is warm too: the pool is an LRU, so it evicts the least
+	// recently used idle client (realRoot, the first looked up) rather than
+	// pooling beyond the bound. Eviction is covered in devmap_pool_test.go.
 	overflowRoot := resolvedDir(t)
 	over1 := pool.ForRoot(overflowRoot)
-	over2 := pool.ForRoot(overflowRoot)
-	if over1 == over2 {
-		t.Fatal("overflow root past maxWarmDevmapPoolEntries was pooled beyond the bound")
+	if over1 != pool.ForRoot(overflowRoot) {
+		t.Fatal("overflow root was not pooled once an idle client was evicted")
 	}
-	if pool.ForRoot(realRoot) != pooled[0] {
-		t.Fatal("overflow lookup evicted an existing warm session")
+	if pool.ForRoot(realRoot) == pooled[0] {
+		t.Fatal("the least recently used client survived a full pool")
 	}
 
 	if err := pool.Close(); err != nil {
