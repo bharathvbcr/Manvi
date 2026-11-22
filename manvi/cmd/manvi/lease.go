@@ -17,6 +17,7 @@ func lease(out io.Writer, args []string) error {
 		return errors.New("lease needs a subcommand: list, acquire, release")
 	}
 	client := storeClient()
+	defer client.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 

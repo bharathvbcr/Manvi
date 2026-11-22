@@ -53,6 +53,7 @@ func watch(out io.Writer, reg *flags.Registry, args []string) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	client := storeClient()
+	defer client.Close()
 	if err := client.Available(ctx); err != nil {
 		sink.Emit(ui.Event{Kind: ui.KindError, At: time.Now().UTC(),
 			Text: fmt.Sprintf("store unreachable: %v", err)})
