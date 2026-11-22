@@ -24,7 +24,8 @@
 #   MODEL        model to drive          (default gemini-3.7-flash)
 #   FANOUT       max concurrent children (default 6)
 #   MAX_STEPS    step ceiling per turn   (default 60)
-#   WORKSPACE    where the agent works   (default a fresh scratch repo)
+#   WORKSPACE    where the agent works   (default a fresh mktemp -d scratch repo,
+#                                         outside the checkout, removed on exit)
 #   NO_PROXY_CAPTURE=1                   talk to Google directly, record nothing
 set -uo pipefail
 
@@ -89,8 +90,11 @@ go -C "$REPO_ROOT/manvi" build -o "$OUT/geminiproxy" ./cmd/geminiproxy || exit 1
 if [ -n "${WORKSPACE:-}" ]; then
   WORK="$WORKSPACE"
 else
-  WORK="$OUT/workspace"
-  rm -rf "$WORK"; mkdir -p "$WORK/src"
+  # Outside the checkout: the agent runs --yolo, and a workspace under
+  # bench/results is a directory inside the tree it could read the key file from.
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/manvi-live-workspace.XXXXXX")" || exit 1
+  OWN_WORK=1
+  mkdir -p "$WORK/src"
   cat > "$WORK/go.mod" <<'EOF'
 module benchwork
 
@@ -155,7 +159,10 @@ if [ "${NO_PROXY_CAPTURE:-0}" != "1" ]; then
   sleep 1
   BASE_URL="http://127.0.0.1:8899/v1beta"
 fi
-cleanup() { [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null; }
+cleanup() {
+  [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null
+  [ -n "${OWN_WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
+}
 trap cleanup EXIT
 
 export MANVI_LLM_PROVIDER_DEFAULT=gemini

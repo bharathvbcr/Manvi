@@ -1365,7 +1365,10 @@ check("C6 container keyword arguments are named unenforced", any("keyword" in u 
 check("C6 containers nested in a tuple argument are named unenforced",
       any("inside a tuple" in u and u.startswith("writeback: 1 ") for u in _u), _u)
 check("C6 the arguments of a call that raised are named unenforced", any("call that raised" in u for u in _u), _u)
-check("C6 every worker record names the worker's temp files", any(u.startswith("worker-temp") for u in _u), _u)
+# The residual this used to name is closed: the worker's TMPDIR is a private
+# directory removed with its ChildScope, and the host's shared temp is not
+# writable (B25 checks in test_tools.py and "contained temp" below prove both).
+check("C6 no worker-temp residual is named: the worker's temp is private and removed", not any(u.startswith("worker-temp") for u in _u), _u)
 
 # -- the queue ban: no module reachable from the harness, and the C half is banned too
 _CQ_G = ("\nimport sys as _s\n_Q = _s.modules['__main__']._g['queue']\n"
@@ -2020,6 +2023,66 @@ else:
         check("the bench tree has no enclosing git dir to guard (an export)",
               not any(os.path.lexists(os.path.join(d, ".git"))
                       for d in [BENCH_ROOT, os.path.dirname(BENCH_ROOT)]))
+
+print("contained temp: a write to the shared temp in one sandbox is absent in the next")
+from mh.tools import contained_argv, ChildScope
+_shared = os.path.join(os.path.realpath(tempfile.gettempdir()), f"mh-b25-leak-{os.getpid()}")
+
+
+def _run_sh(script, contained, allow):
+    argv = ["/bin/sh", "-c", script]
+    if contained:
+        argv, _ = contained_argv(argv, allow_write=allow)
+    return subprocess.run(argv, capture_output=True, text=True)
+
+
+_wa, _wb = tmpdir(), tmpdir()
+# Precondition, shown first: with no containment the write lands and a second
+# sandbox reads it. Without this the contained half proves nothing.
+_run_sh(f"echo leaked > '{_shared}'", False, [_wa])
+check("contained temp precondition: uncontained, a /tmp file reaches the next sandbox",
+      _run_sh(f"cat '{_shared}'", False, [_wb]).stdout.strip() == "leaked")
+os.remove(_shared)
+if containment_backend() in ("sandbox-exec", "bwrap"):
+    _run_sh(f"echo leaked > '{_shared}'", True, [_wa])
+    _seen = _run_sh(f"cat '{_shared}'", True, [_wb])
+    check("contained temp: a file written to the shared temp in one contained sandbox is absent in a second",
+          "leaked" not in _seen.stdout and not os.path.exists(_shared), _seen.stdout[:80])
+    _sc = ChildScope()
+    _pd = _sc.private_dir("t")
+    _w = _run_sh(f"echo mine > '{_pd}/f' && cat '{_pd}/f'", True, [_wa, _pd])
+    check("contained temp: a scope's private dir is writable", "mine" in _w.stdout, _w.stderr[:120])
+    _sc.close()
+    check("contained temp: closing the scope removes it", not os.path.exists(_sc.root))
+    # The probe must make the backend prove temp isolation, not just reads of
+    # the bench tree: a profile that re-allows the shared temp (every profile
+    # before this change) is refused. Darwin only: the leaky profile is a
+    # sandbox-exec profile.
+    if containment_backend() == "sandbox-exec":
+        import mh.tools as _tm
+        _orig = _tm.contained_argv
+        _tmp_real = os.path.realpath(tempfile.gettempdir())
+
+        def _leaky(argv, allow_write=(), protected_roots=None):
+            wrapped, be = _orig(argv, allow_write=allow_write, protected_roots=protected_roots)
+            wrapped[2] += f'\n(allow file-write* (subpath "{_tmp_real}"))'
+            return wrapped, be
+
+        _tm.contained_argv = _leaky
+        try:
+            _lok, _lbe, _ldetail = _tm.containment_proves_itself(tmpdir())
+        finally:
+            _tm.contained_argv = _orig
+        check("containment_proves_itself refuses a backend whose temp is shared",
+              (not _lok) and "shared temp" in _ldetail, _ldetail)
+        _gok, _gbe, _gdetail = _tm.containment_proves_itself(tmpdir())
+        check("containment_proves_itself accepts the real backend, temp isolation included",
+              _gok, _gdetail)
+else:
+    check("contained temp is only checkable with a backend, or an explicit opt-out",
+          containment_backend() == "off")
+shutil.rmtree(_wa, ignore_errors=True)
+shutil.rmtree(_wb, ignore_errors=True)
 
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

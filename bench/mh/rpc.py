@@ -1300,15 +1300,6 @@ SOURCE_RACE_RESIDUAL = (
     "module's source")
 
 
-# The worker's containment lets it write to the temp directories (the interpreter and
-# the tools share one profile that re-allows them), and nothing removes what it
-# leaves there after the verification: a file or process-less state in /tmp
-# outlives the run and a later verification on the same host can read it.
-WORKER_TEMP_RESIDUAL = (
-    "worker-temp: files the worker writes under the temp directories are not "
-    "removed after the verification and can be read by a later one on this host")
-
-
 class CheckerEndpoint(Endpoint):
     """The checker side: serves only the callback ops of `CHECKER_OPS`."""
 
@@ -1348,7 +1339,6 @@ class CheckerEndpoint(Endpoint):
                 unenforced.append(
                     f"writeback: {n} {what}: a mutation of them is not attested at all "
                     f"(the report covers only the exact-builtin positional containers of a call that returned)")
-        unenforced.append(WORKER_TEMP_RESIDUAL)
         for names in self.static_only:
             unenforced.append(
                 "import-ban: runtime: " + ", ".join(names) + " are banned by the static "
@@ -2037,40 +2027,31 @@ def _sbpl(path):
     return path.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _temp_roots():
-    import tempfile
-    roots = {"/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev"}
-    for p in (tempfile.gettempdir(), os.environ.get("TMPDIR") or ""):
-        if p:
-            roots.add(os.path.realpath(p))
-    return sorted(roots)
-
-
 def _seatbelt(write_dirs, read_dirs, guard_roots, no_signal_fork, deny_write_dirs=()):
     # (deny network*) is the seatbelt counterpart of bwrap's --unshare-net, so a
     # candidate that touches the network behaves the same on both platforms.
     # Already-open descriptors (the checker/worker socketpair) are unaffected.
     lines = ["(version 1)", "(allow default)", "(deny network*)",
              '(deny file-write* (subpath "/"))']
-    for p in _temp_roots():
-        if os.path.exists(p):
-            lines.append(f'(allow file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
+    # Only /dev is writable by default; the host's shared temp directories are
+    # not. A child's temp is its ChildScope directory, re-allowed below.
+    lines.append('(allow file-write* (subpath "/dev"))')
     for p in guard_roots:
         if p:
             q = _sbpl(os.path.realpath(p))
             lines.append(f'(deny file-read* (subpath "{q}"))')
             lines.append(f'(deny file-write* (subpath "{q}"))')
-    # The private scratch dirs are fresh mkdtemp directories the harness made
-    # for this process, so they are re-allowed AFTER the guard denies: a guarded
-    # work tree that contains TMPDIR (the nested-checkout layout) must not take
+    # The private scratch dirs are fresh directories of this verification's
+    # ChildScope, so they are re-allowed AFTER the guard denies: a guarded work
+    # tree that contains the scope (the nested-checkout layout) must not take
     # the worker's own scratch space with it. bwrap already orders its binds so.
     for p in write_dirs:
         if p:
             lines.append(f'(allow file-read* file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
-    # Deny writes to the sandbox explicitly, after the temp-root allows: in a
-    # test layout the sandbox lives under /tmp, which those allows would
-    # otherwise re-open. The worker may read the candidate's source but never
-    # write the sandbox, so it can leave nothing behind for the next turn.
+    # Deny writes to the sandbox explicitly, after the allows above: in a test
+    # layout the sandbox can live under a scratch dir that is writable. The
+    # worker may read the candidate's source but never write the sandbox, so it
+    # can leave nothing behind for the next turn.
     for p in deny_write_dirs:
         if p:
             lines.append(f'(deny file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
@@ -2095,11 +2076,11 @@ def _seatbelt(write_dirs, read_dirs, guard_roots, no_signal_fork, deny_write_dir
 # on a Linux host. The sandbox-exec profile is the one stress_test.py C6 proves.
 def _bwrap_argv(exe, argv, write_dirs, read_ro_dirs, guard_roots):
     out = [exe, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
-    tmp = os.environ.get("TMPDIR") or "/tmp"
-    out += ["--bind", os.path.realpath(tmp), os.path.realpath(tmp)]
     for p in guard_roots:
         if p:
-            out += ["--tmpfs", os.path.realpath(p)]
+            r = os.path.realpath(p)
+            out += (["--ro-bind", "/dev/null", r] if os.path.isfile(r)
+                    else ["--tmpfs", r])
     for p in read_ro_dirs:
         if p:
             r = os.path.realpath(p)
@@ -2131,18 +2112,24 @@ def _module_source():
         return f.read()
 
 
-def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap):
+def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap,
+                  scope=None):
     """Run a Python hidden test in a checker, the candidate in a worker.
 
     Returns a dict: rc (checker exit code; 0 == pass), stdout/stderr (the
     checker's = the hidden test's own output, capped), worker_output (capped,
     for the record only -- never shown to the model), timed_out, backend.
     Raises ContainmentUnavailable when no backend exists and no opt-out is set.
+
+    Both children get their environment, HOME/TMPDIR and write root from
+    `scope` (tools.ChildScope): the checker and the worker each a private
+    directory of their own, nothing else writable, no inherited secrets. A scope
+    made here (none was passed) is removed on return; a caller's is the
+    caller's to close.
     """
     import subprocess
-    import tempfile
-    from .tools import (containment_backend, _kill_group, StreamCapture,
-                        ContainmentUnavailable)
+    from .tools import (ChildScope, containment_backend, _kill_group,
+                        StreamCapture, ContainmentUnavailable)
 
     backend = containment_backend()
     if backend is None:
@@ -2150,8 +2137,13 @@ def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap):
             "no containment backend: refusing to run the candidate uncontained")
 
     rpc_src = _module_source().encode("utf-8")
-    empty = tempfile.mkdtemp(prefix="mh-checker-")
-    wpriv = tempfile.mkdtemp(prefix="mh-worker-")
+    own_scope = scope is None
+    if own_scope:
+        scope = ChildScope(prefix="mh-verify-")
+    empty = scope.private_dir("checker")
+    wpriv = scope.private_dir("worker")
+    checker_env = scope.env(empty)
+    worker_env = scope.env(wpriv)
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     # The checker's report to this process: the write end goes to the checker
     # only (pass_fds), so the worker has no descriptor onto it.
@@ -2196,11 +2188,11 @@ def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap):
     timed_out = False
     try:
         wproc = subprocess.Popen(
-            worker_argv, cwd=sandbox, stdin=subprocess.PIPE,
+            worker_argv, cwd=sandbox, env=worker_env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             pass_fds=[b.fileno()], start_new_session=True)
         cproc = subprocess.Popen(
-            checker_argv, cwd=empty, stdin=subprocess.PIPE,
+            checker_argv, cwd=empty, env=checker_env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             pass_fds=[a.fileno(), report_w], start_new_session=True)
         a.close()
@@ -2255,9 +2247,8 @@ def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap):
                     os.close(fd)
                 except OSError:
                     pass
-        import shutil
-        shutil.rmtree(empty, ignore_errors=True)
-        shutil.rmtree(wpriv, ignore_errors=True)
+        if own_scope:
+            scope.close()
 
 
 def _read_report(fd, cap=1 << 16):

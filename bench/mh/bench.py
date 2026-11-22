@@ -33,8 +33,9 @@ import subprocess
 import sys
 
 from . import rpc
-from .tools import (BENCH_ROOT, ContainmentUnavailable, contained_argv,
-                    git_guard_roots, run_bounded)
+from .tools import (BENCH_ROOT, ChildScope, ContainmentUnavailable,
+                    contained_argv, env_file_guards, git_guard_roots,
+                    run_bounded)
 
 # Candidate-source tells that a run tried to reach the verdict channel rather
 # than earn it. Recorded in the verification record as "tactics"; NEVER a
@@ -66,11 +67,6 @@ TRANSIENT_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 # so these are the additions that are refused.
 STARTUP_HOOKS = {"sitecustomize.py", "usercustomize.py", "conftest.py",
                  "pyvenv.cfg", ".pydistutils.cfg"}
-
-# Environment variables that redirect an interpreter or shell before it runs a
-# line of its own script.
-ENV_HIJACK_PREFIXES = ("PYTHON", "DYLD_", "LD_")
-ENV_HIJACK_NAMES = {"BASH_ENV", "ENV", "SHELLOPTS", "IFS"}
 
 # The Python hidden test is no longer executed in this process. It runs in an
 # isolated CHECKER interpreter (rpc.py) that never loads candidate code, with the
@@ -125,16 +121,6 @@ def _file_set(root):
             rel = name if rel_dir == "." else os.path.join(rel_dir, name)
             out.add(rel)
     return frozenset(out)
-
-
-def _verifier_env():
-    """os.environ minus everything that redirects an interpreter or a shell."""
-    env = {}
-    for k, v in os.environ.items():
-        if k in ENV_HIJACK_NAMES or k.startswith(ENV_HIJACK_PREFIXES):
-            continue
-        env[k] = v
-    return env
 
 
 def model_facing(ok, raw):
@@ -247,7 +233,8 @@ class Task:
         this task: they hold every tracked hidden test and reference solution.
         """
         return ((BENCH_ROOT, os.path.dirname(self.dir), self.dir)
-                + git_guard_roots(BENCH_ROOT, self.dir))
+                + git_guard_roots(BENCH_ROOT, self.dir)
+                + env_file_guards(BENCH_ROOT, self.dir))
 
     def materialise(self, dest):
         """Copy a pristine copy of the task into dest, and snapshot its files."""
@@ -325,13 +312,20 @@ class Task:
         # A verify that stops before running the checks must not leave the
         # previous verify's record behind to be logged as this one's.
         self.last_record = None
+        # Each verification gets its own private temp tree, separate from the
+        # model shell's, and removed when it ends: whatever a verifier child
+        # writes there (a worker's hidden-test arguments, say) is neither
+        # readable by the next run_shell nor by the next verification.
+        scope = ChildScope(prefix="mh-verify-")
         try:
-            return self._verify(sandbox)
+            return self._verify(sandbox, scope)
         except Exception as e:
             # An infrastructure failure is not a pass.
             return False, f"VERIFY ERROR: {type(e).__name__}: {e}"
+        finally:
+            scope.close()
 
-    def _verify(self, sandbox):
+    def _verify(self, sandbox, scope):
         bad = self.tampered(sandbox)
         if bad:
             return False, ("VERIFY FAILED: protected files were changed: "
@@ -364,7 +358,7 @@ class Task:
             try:
                 r = rpc.verify_python(src, os.path.realpath(sandbox),
                                       self.guard_roots, self.timeout,
-                                      output_cap=30_000)
+                                      output_cap=30_000, scope=scope)
             except ContainmentUnavailable as e:
                 return False, f"VERIFY ERROR: {e}"
             rc = r["rc"]
@@ -391,13 +385,14 @@ class Task:
         elif self.kind == "shell":
             argv = ["/bin/sh", "-s", os.path.realpath(sandbox)]
             stdin_text = _sh_wrapper(src.decode("utf-8", "replace"))
+            vdir = scope.private_dir("verify")
             try:
-                argv, backend = contained_argv(argv, allow_write=[sandbox],
+                argv, backend = contained_argv(argv, allow_write=[sandbox, vdir],
                                                protected_roots=self.guard_roots)
             except ContainmentUnavailable as e:
                 return False, f"VERIFY ERROR: {e}"
             try:
-                rc, out, err = run_bounded(argv, cwd=sandbox, env=_verifier_env(),
+                rc, out, err = run_bounded(argv, cwd=sandbox, env=scope.env(vdir),
                                            input_text=stdin_text, timeout=self.timeout)
             except subprocess.TimeoutExpired:
                 # The group is already dead: a hidden test that hangs must not leave

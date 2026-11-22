@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import weakref
 
 MAX_OUTPUT_BYTES = 30_000       # Terminus-KIRA's cap, inherited by the paper's harness
 SHELL_TIMEOUT_S = 120
@@ -387,9 +388,154 @@ def git_guard_roots(*starts):
                         if os.path.exists(r) and r not in own))
 
 
+def env_file_guards(*starts):
+    """The `.env*` files in the checkout around each start, as guard roots.
+
+    A provider key kept in the repository's `.env.local` is readable by any
+    shell that can read the checkout, and the checkout itself is deliberately
+    not guarded (it holds the benchmark's own toolchain). So every `.env*`
+    file in each directory from a start up to the top of its git work tree is a
+    guard root of its own. Tracked ones are guarded too: a file named `.env*`
+    is never something the model needs, and telling tracked from untracked would
+    need a git call whose failure would have to mean "guard nothing". An
+    unreadable directory raises GitGuardError for the same reason the git guard
+    does: an unguarded secrets file is indistinguishable from none.
+    """
+    found = set()
+    for start in starts:
+        if not start:
+            continue
+        cur = os.path.realpath(start)
+        while True:
+            try:
+                with os.scandir(cur) as it:
+                    for e in it:
+                        if e.name.startswith(".env") and e.is_file(follow_symlinks=False):
+                            found.add(os.path.join(cur, e.name))
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            except OSError as e:
+                raise GitGuardError(cur, f"{type(e).__name__}: {e}") from e
+            parent = os.path.dirname(cur)
+            if os.path.lexists(os.path.join(cur, ".git")) or parent == cur:
+                break
+            cur = parent
+    return tuple(sorted(found))
+
+
 def default_protected_roots():
     """What a shell must not touch when the caller names nothing narrower."""
-    return (BENCH_ROOT,) + git_guard_roots(BENCH_ROOT)
+    return ((BENCH_ROOT,) + git_guard_roots(BENCH_ROOT)
+            + env_file_guards(BENCH_ROOT))
+
+
+# --- one owner for a child's environment, temp directory and write roots -----
+#
+# Four kinds of child run in an episode: the model's shell, the shell-kind
+# verifier and the two RPC children of the Python verifier. Each used to build
+# its own env and its own write roots: three inherited the runner's whole
+# environment (provider keys included) and all could write the host's shared
+# temp directories, so a verifier worker could leave its hidden-test arguments in
+# /tmp for the next run_shell to read back. Everything below is the only place
+# that decides those three things.
+
+# What a child may inherit. Nothing else gets through, so a provider key (any
+# *_API_KEY, CEREBRAS_*, OPENAI_*, ANTHROPIC_*, ...) is excluded by construction
+# rather than by a deny-list that has to name the next provider. The toolchain
+# homes are read-only locations a rustup/cargo, Go or JVM install needs to be
+# found; HOME, TMPDIR/TMP/TEMP are set by the scope, never inherited.
+CHILD_ENV_ALLOW = ("PATH", "LANG", "LANGUAGE", "TERM", "TZ", "USER", "LOGNAME",
+                   "SHELL", "RUSTUP_HOME", "CARGO_HOME", "GOROOT", "JAVA_HOME")
+CHILD_ENV_ALLOW_PREFIXES = ("LC_",)
+CHILD_TEMP_VARS = ("TMPDIR", "TMP", "TEMP")
+
+
+def scrubbed_env(private_dir, environ=None):
+    """The environment of a child whose home and temp directory are `private_dir`."""
+    src = os.environ if environ is None else environ
+    env = {k: v for k, v in src.items()
+           if k in CHILD_ENV_ALLOW or k.startswith(CHILD_ENV_ALLOW_PREFIXES)}
+    env["HOME"] = private_dir
+    for k in CHILD_TEMP_VARS:
+        env[k] = private_dir
+    return env
+
+
+_DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+_MKTEMP_SHIM = r"""#!/bin/sh
+real=/usr/bin/mktemp
+[ -n "${TMPDIR:-}" ] || exec "$real" "$@"
+for a in "$@"; do [ "$a" = -p ] && exec "$real" "$@"; done
+n=$#; mode=; pfx=; tmpl=
+while [ "$n" -gt 0 ]; do
+  a=$1; shift; n=$((n - 1))
+  if [ "$mode" = t ]; then pfx=$a; mode=; continue; fi
+  case "$a" in
+    -t) mode=t ;;
+    -*) set -- "$@" "$a" ;;
+    *) tmpl=$a; set -- "$@" "$a" ;;
+  esac
+done
+[ -n "$tmpl" ] && exec "$real" "$@"
+exec "$real" "$@" "$TMPDIR/${pfx:-tmp}.XXXXXXXXXX"
+"""
+
+
+class ChildScope:
+    """A private directory tree for one episode's, or one verification's, children.
+
+    `root` is a fresh mkdtemp directory. A child gets a subdirectory of it
+    (`private_dir`), which is its HOME and its TMPDIR, and which is the only
+    place besides the workspace the child may write. `close()` removes the
+    whole tree; a scope that is dropped without being closed is removed by a
+    finalizer, so a crashed episode does not leave its temp behind.
+
+    The shell's scope and each verification's scope are separate objects on
+    purpose: a verifier child that wrote into the shell's temp would hand the
+    model whatever it wrote.
+    """
+
+    def __init__(self, parent=None, prefix="mh-scope-"):
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix=prefix, dir=parent))
+        self._final = weakref.finalize(self, shutil.rmtree, self.root, True)
+
+    def private_dir(self, name):
+        path = os.path.join(self.root, name)
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        return path
+
+    def env(self, private_dir):
+        """The scrubbed environment for a child whose HOME/TMPDIR is `private_dir`."""
+        env = scrubbed_env(private_dir)
+        if sys.platform == "darwin":
+            # macOS mktemp ignores TMPDIR for a bare `mktemp -d` and for -t, and
+            # writes under the per-user temp directory, which a child may not
+            # write. A task whose own test calls it (envbuild) would fail for the
+            # wrong reason. A first-on-PATH mktemp that honours TMPDIR keeps
+            # every toolchain working without re-opening the shared temp.
+            bindir = self.private_dir("bin")
+            shim = os.path.join(bindir, "mktemp")
+            if not os.path.exists(shim):
+                with open(shim, "w", encoding="utf-8") as f:
+                    f.write(_MKTEMP_SHIM)
+                os.chmod(shim, 0o700)
+            env["PATH"] = bindir + os.pathsep + env.get("PATH", _DEFAULT_PATH)
+            # A login shell's /etc/profile rebuilds PATH and would drop the shim
+            # behind /usr/bin; its own profile puts it back in front.
+            with open(os.path.join(private_dir, ".bash_profile"), "w",
+                      encoding="utf-8") as f:
+                f.write(f'PATH={shlex.quote(bindir)}:"$PATH"\nexport PATH\n')
+        return env
+
+    def close(self):
+        self._final()
+
+    def stamp(self):
+        """The provenance record of what this scope enforces."""
+        return {"shell_env": "scrubbed", "env_allow": list(CHILD_ENV_ALLOW),
+                "temp_root": self.root}
+
 
 def _sbpl(path):
     """Quote a path for a Seatbelt profile literal."""
@@ -397,25 +543,22 @@ def _sbpl(path):
 
 
 def _writable_system_roots():
-    """Places a build legitimately writes to: /dev and the temp directories.
+    """The one place outside the caller's roots a child may write: /dev.
 
-    A compiler that cannot write its own temp files is not containment, it is a
-    broken toolchain, and every task would fail for the wrong reason.
+    The host's shared temp directories are NOT here. A toolchain that needs a
+    temp file writes to the TMPDIR its ChildScope gave it, which is inside
+    `allow_write`; leaving /tmp, /var/folders and the host TMPDIR writable is
+    what let one episode's leftovers reach the next.
     """
-    roots = {"/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev"}
-    for p in (tempfile.gettempdir(), os.environ.get("TMPDIR") or ""):
-        if p:
-            roots.add(os.path.realpath(p))
-    return sorted(roots)
+    return ["/dev"]
 
 
 def _seatbelt_profile(allow_write, protected_roots):
     """Deny writes everywhere, deny the benchmark tree outright, then re-allow.
 
     Rule order is significant: in SBPL the last matching rule wins, so the
-    sandbox's own allow must come after both denies. Temp roots are allowed
-    before the protected denies so that a protected root living under a temp
-    directory (the layout every test fixture uses) is still protected.
+    sandbox's own allow must come after both denies, which keeps a workspace
+    that lives inside a protected root usable.
     """
     lines = ["(version 1)", "(allow default)", '(deny file-write* (subpath "/"))']
     for p in _writable_system_roots():
@@ -450,7 +593,7 @@ def containment_backend():
     return None
 
 
-def containment_event(backend):
+def containment_event(backend, scope=None):
     """The provenance record of this episode's containment.
 
     Only a missing backend and an explicit opt-out are uncontained. Naming one
@@ -462,36 +605,30 @@ def containment_event(backend):
     ev = {"t": "containment", "backend": backend}
     if backend in (None, "off"):
         ev["note"] = "shell commands are not OS-contained in this episode"
+    if scope is not None:
+        ev.update(scope.stamp())
     return ev
 
 
 def _bwrap_argv(exe, argv, allow_write, protected_roots):
     """bubblewrap arguments. Order matters: later binds win over earlier ones.
 
-    Everything is readable and nothing is writable by default. The order is
-    therefore: the temp root read-write, then the protected roots covered with
-    an empty tmpfs so they are neither readable nor writable, then the sandbox
-    -- which lives *under* one of those roots -- bound back read-write. That
-    sequence is what lets a sandbox inside the benchmark tree stay usable while
-    the tree around it disappears, AND keeps a protected root that happens to
-    live under TMPDIR masked rather than re-exposed by the temp bind.
+    Everything is readable and nothing is writable by default; the host's
+    shared temp directories are not bound read-write. The order is: the
+    protected roots covered with an empty tmpfs (a file, such as a `.env`, is
+    covered with /dev/null) so they are neither readable nor writable, then
+    every `allow_write` root -- the workspace, which lives *under* one of
+    those roots, and the episode's private temp -- bound back read-write.
+    Implemented, untested on Linux: this host is macOS.
     """
     out = [exe, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
-    # The temp root FIRST, because a later bind wins and this one must not be
-    # allowed to undo the masks below. It used to come last, which re-exposed
-    # everything under TMPDIR read-write -- including any protected root that
-    # happened to live there. On a box where the benchmark tree sits outside
-    # /tmp that is invisible, and the Linux containment assertions were gated
-    # to macOS so nothing ever tried it: the hidden tests were readable and
-    # writable from the model's shell.
-    tmp = os.environ.get("TMPDIR") or "/tmp"
-    out += ["--bind", os.path.realpath(tmp), os.path.realpath(tmp)]
-    # Then the masks, so a protected root under TMPDIR is still protected.
     for p in protected_roots:
         if p:
-            out += ["--tmpfs", os.path.realpath(p)]
-    # Then the sandbox, last, because it lives *under* a masked root and has to
-    # win over the tmpfs that just covered its parent.
+            r = os.path.realpath(p)
+            out += (["--ro-bind", "/dev/null", r] if os.path.isfile(r)
+                    else ["--tmpfs", r])
+    # The write roots last, because they live *under* a masked root and have to
+    # win over the tmpfs that just covered their parent.
     for p in allow_write:
         if p:
             r = os.path.realpath(p)
@@ -545,6 +682,11 @@ def containment_proves_itself(sandbox=None):
     # live. (The first version of this probe used TMPDIR and reported the real
     # macOS backend as broken -- the probe was wrong, not the backend.)
     outside = os.path.join(BENCH_ROOT, "mh-probe-escape.txt")
+    # A write into the host's shared temp directory, which is what carries one
+    # episode's leftovers to the next. It must be refused: a backend that cannot
+    # give a child a private temp makes every verdict depend on its neighbours.
+    shared_tmp = os.path.join(tempfile.gettempdir(),
+                              f"mh-probe-shared-{os.getpid()}-{time.monotonic_ns()}")
     # The enclosing repository's git dirs hold every tracked hidden test and
     # reference solution; a shell that can read one has read them all.
     canaries = [canary] + [os.path.join(r, "HEAD") for r in git_guard_roots(BENCH_ROOT)
@@ -553,6 +695,7 @@ def containment_proves_itself(sandbox=None):
         f'if cat {shlex.quote(c)} >/dev/null 2>&1; then echo "READ_OK {c}"; fi; '
         for c in canaries) + (
         f'if echo x > {shlex.quote(outside)} 2>/dev/null; then echo WRITE_OK; fi; '
+        f'if echo x > {shlex.quote(shared_tmp)} 2>/dev/null; then echo TEMP_OK; fi; '
         f'echo PROBE_RAN')
     escaped = False
     try:
@@ -569,6 +712,7 @@ def containment_proves_itself(sandbox=None):
         # past that is MH_UNCONTAINED, which removes the protection for the
         # entire grid. Checked before the cleanup below deletes the evidence.
         escaped = os.path.exists(outside)
+        shared = os.path.exists(shared_tmp)
     except Exception as e:  # a backend that cannot even start is not containment
         res = (False, backend, f"probe failed to run: {type(e).__name__}: {e}")
         _PROBE_CACHE[key] = res
@@ -576,10 +720,11 @@ def containment_proves_itself(sandbox=None):
     finally:
         if made:
             shutil.rmtree(work, ignore_errors=True)
-        try:
-            os.remove(outside)
-        except OSError:
-            pass
+        for leftover in (outside, shared_tmp):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
 
     if "PROBE_RAN" not in out:
         res = (False, backend, f"probe did not run under {backend}: {out.strip()[:200]}")
@@ -591,6 +736,11 @@ def containment_proves_itself(sandbox=None):
     elif escaped:
         res = (False, backend,
                f"{backend} let a write reach {outside} on the host filesystem")
+    elif shared:
+        res = (False, backend,
+               f"{backend} let a write reach the host's shared temp directory "
+               f"{os.path.dirname(shared_tmp)}: episodes would share it. "
+               f"Refusing rather than run with a shared temp")
     elif "WRITE_OK" in out:
         res = (True, backend,
                f"{backend} confined reads; the write succeeded into a masked "
@@ -817,6 +967,24 @@ class Sandbox:
         self.containment = None      # set on first run_shell
         self._containment_checked = False
         self.last_shell_stats = None  # byte counts of the latest run_shell
+        self._scope = None           # the shell's ChildScope, made on first use
+
+    @property
+    def scope(self):
+        """This episode's private temp tree; the shell's HOME and TMPDIR live in it."""
+        if self._scope is None:
+            self._scope = ChildScope(prefix="mh-episode-")
+        return self._scope
+
+    def shell_env(self):
+        """The environment every child of this sandbox's shell starts with."""
+        return self.scope.env(self.scope.private_dir("shell"))
+
+    def close(self):
+        """End of the episode: remove its private temp. Idempotent."""
+        if self._scope is not None:
+            self._scope.close()
+            self._scope = None
 
     def resolve(self, path):
         """Resolve a model-supplied path inside the sandbox, or refuse."""
@@ -835,8 +1003,9 @@ class Sandbox:
 
     def _wrap(self, argv):
         try:
-            return contained_argv(argv, allow_write=[self.root],
-                                  protected_roots=self.protected_roots)
+            return contained_argv(
+                argv, allow_write=[self.root, self.scope.private_dir("shell")],
+                protected_roots=self.protected_roots)
         except ContainmentUnavailable as e:
             raise ToolError(str(e))
 
@@ -870,6 +1039,7 @@ class Sandbox:
         argv = self._shell_argv(cmd)
         try:
             rc, out, err = run_bounded_capture(argv, cwd=self.root,
+                                               env=self.shell_env(),
                                                timeout=SHELL_TIMEOUT_S,
                                                limit=self.output_cap)
         except subprocess.TimeoutExpired:
