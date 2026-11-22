@@ -1,6 +1,7 @@
 package devcouncil
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"path/filepath"
@@ -84,13 +85,15 @@ func changedSinceReadMessage(path string) string {
 }
 
 // shownRedacted reports whether the text the agent would be shown for raw
-// differs from raw because the registry's credential scrubber changed it. With
-// no registry attached nothing scrubs, so nothing differs.
-func (r *Registry) shownRedacted(raw string) bool {
-	if r.toolsReg == nil {
+// differs from raw because the credential scrubber changed it. The scrubber is
+// the dispatching registry's, the one Run scrubs this result with, so the two
+// cannot diverge. With no registry attached nothing scrubs, so nothing differs.
+func (r *Registry) shownRedacted(ctx context.Context, raw string) bool {
+	reg := r.dispatchingRegistry(ctx)
+	if reg == nil {
 		return false
 	}
-	return r.toolsReg.Scrub(raw) != raw
+	return reg.Scrub(raw) != raw
 }
 
 // has reports whether the agent has read or written p at all, whatever the

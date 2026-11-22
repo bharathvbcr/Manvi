@@ -43,6 +43,38 @@ func TestRedactedReadDoesNotCountAsReadInFull(t *testing.T) {
 	}
 }
 
+// A file read in full before its credential was watched keeps its mark unless
+// a later redacted read drops it: the scrubber's watched set grows mid-session,
+// so the second read says "write_file will refuse" and that must be true.
+func TestLaterRedactedReadDropsAnEarlierReadInFullMark(t *testing.T) {
+	f := newFixture(t)
+	checkedOut(t, f)
+	const secret = "sk-live-0123456789abcdef"
+	path := filepath.Join(f.root, "src", "calc.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("package calc\nconst key = \""+secret+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.call("devcouncil_read_file", map[string]string{"path": "src/calc.go"}); r.IsError {
+		t.Fatal(r.Text)
+	}
+	f.pipe.SetScrubber(func(s string) string { return strings.ReplaceAll(s, secret, "[REDACTED]") })
+	read := f.call("devcouncil_read_file", map[string]string{"path": "src/calc.go"})
+	if !strings.Contains(read.Text, "will refuse to overwrite it") {
+		t.Fatalf("no redaction note: %q", read.Text)
+	}
+	res := f.call("devcouncil_write_file", map[string]string{"path": "src/calc.go", "content": "package calc\nconst key = \"[REDACTED]\"\n"})
+	if !res.IsError {
+		t.Errorf("the read said write_file will refuse, but the overwrite went through")
+	}
+	got, err := os.ReadFile(path) // #nosec G304 -- a path under the test's own temp root
+	if err != nil || !strings.Contains(string(got), secret) {
+		t.Errorf("the credential was dropped from the file: %q %v", got, err)
+	}
+}
+
 // A read with nothing to redact still unlocks the overwrite.
 func TestUnredactedReadStillCountsAsReadInFull(t *testing.T) {
 	f := newFixture(t)

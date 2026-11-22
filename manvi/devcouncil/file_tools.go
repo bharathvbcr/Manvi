@@ -240,7 +240,13 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 		// then replace the credential with the placeholder. A file the
 		// scrubber changes is therefore not recorded as read in full; the
 		// overwrite guard refuses it and patching is the way to change it.
-		if r.shownRedacted(string(data)) {
+		if r.shownRedacted(ctx, string(data)) {
+			// A mark from an earlier read stays good only while the file does,
+			// and the scrubber's watched set grows mid-session: a file read in
+			// full before its credential was watched must not keep its mark
+			// once the same bytes are shown redacted, or the placeholder
+			// written back would match the old digest and replace the credential.
+			r.inspected.forget(rel)
 			result.Text += "\n\n[This file contained text that was redacted in the view above, so it is not counted as read in full: " +
 				"devcouncil_write_file will refuse to overwrite it. Change it with devcouncil_patch_file.]"
 			return result
