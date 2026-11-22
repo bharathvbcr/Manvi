@@ -709,8 +709,10 @@ class ChildScope:
         self.marker = os.urandom(16).hex()
         self._marker_issued = False
         self._reaped = False
+        self.started = time.time()  # processes older than this are not this scope's
         self.survivors = []       # pids still alive after close() tried to kill them
         self.reap_error = None    # why the scan could not run, when it could not
+        self.unverified = []      # processes that cannot be attributed (see procscan)
 
     def private_dir(self, name):
         path = os.path.join(self.root, name)
@@ -755,6 +757,10 @@ class ChildScope:
         self._reaped = True
         try:
             self.survivors = procscan.reap_marked(self.marker)
+            # What the marker cannot find (a hardened system binary hides its
+            # environment) is listed, not killed: nobody can say whose it is.
+            if containment_backend() == "sandbox-exec":
+                self.unverified = procscan.unverified_since(self.started)
         except OSError as e:
             self.reap_error = f"{type(e).__name__}: {e}"
             print(f"[mh] WARNING: could not scan for processes left by {self.root}: "
@@ -764,6 +770,17 @@ class ChildScope:
             print(f"[mh] WARNING: processes {self.survivors} started under "
                   f"{self.root} survived SIGKILL for {procscan.REAP_DEADLINE_S}s "
                   f"after the episode ended", file=sys.stderr, flush=True)
+        if self.unverified:
+            listing = ", ".join(f"{u['pid']} ({u['path'] or '?'})" for u in self.unverified)
+            print(f"[mh] WARNING: {len(self.unverified)} process(es) started during the episode "
+                  f"under {self.root} could not be attributed to it and were NOT killed: "
+                  f"{listing}; {procscan.UNVERIFIED_REASON}", file=sys.stderr, flush=True)
+
+    @property
+    def clean_close(self):
+        """True only when the reap ran, found nothing left, and nothing is unverified."""
+        return (self._reaped and not self.survivors and self.reap_error is None
+                and not self.unverified)
 
     def close(self):
         try:
@@ -1259,6 +1276,7 @@ class Sandbox:
         self._scope = None           # the shell's ChildScope, made on first use
         self.survivors = []          # set by close(): pids that outlived the episode
         self.reap_error = None       # set by close(): why the process scan could not run
+        self.unverified = []         # set by close(): processes that cannot be attributed
 
     @property
     def scope(self):
@@ -1271,6 +1289,11 @@ class Sandbox:
         """The environment every child of this sandbox's shell starts with."""
         return self.scope.env(self.scope.private_dir("shell"))
 
+    @property
+    def clean_close(self):
+        """False whenever close() left a survivor, could not scan, or found an unattributed process."""
+        return not (self.survivors or self.reap_error or self.unverified)
+
     def close(self):
         """End of the episode: remove its private temp. Idempotent."""
         if self._scope is not None:
@@ -1280,6 +1303,7 @@ class Sandbox:
             finally:
                 self.survivors = list(scope.survivors)
                 self.reap_error = scope.reap_error
+                self.unverified = list(scope.unverified)
 
     def resolve(self, path):
         """Resolve a model-supplied path inside the sandbox, or refuse."""

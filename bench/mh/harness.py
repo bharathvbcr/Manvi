@@ -336,6 +336,9 @@ class Harness:
                 self.res.events.append({"t": "episode_survivors",
                                         "pids": list(self.sb.survivors),
                                         "scan_error": self.sb.reap_error})
+            if self.sb.unverified:
+                self.res.events.append({"t": "episode_unverified",
+                                        "processes": list(self.sb.unverified)})
 
     def _run(self):
         t0 = time.time()

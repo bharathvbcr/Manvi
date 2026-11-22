@@ -879,6 +879,51 @@ def _start_daemon(sb, name):
     return pid
 
 
+def p_procscan_units():
+    """Pure checks of the KERN_PROCARGS2 parse and the scan bounds."""
+    import struct
+    from mh import procscan
+
+    def block(argv, env, path=b"/bin/x"):
+        return struct.pack("=i", len(argv)) + path + b"\0\0\0" + b"".join(a + b"\0" for a in argv) + \
+            b"".join(e + b"\0" for e in env)
+    needle = b"MH_EPISODE=abc"
+    env = procscan._parse_procargs(block([b"x", needle], [b"PATH=/bin", needle]))
+    check("test_adv_b25_procargs_parse_returns_only_the_environment_entries",
+          env == b"\0PATH=/bin\0MH_EPISODE=abc\0", repr(env))
+    env = procscan._parse_procargs(block([b"x", needle], [b"PATH=/bin"]))
+    check("test_adv_b25_a_marker_only_in_argv_is_not_in_the_environment", (b"\0" + needle + b"\0") not in env, repr(env))
+    check("test_adv_b25_a_hardened_binarys_missing_environment_parses_to_empty_not_none",
+          procscan._parse_procargs(block([b"/bin/sleep", b"5"], [])) == b"", "")
+    check("test_adv_b25_a_truncated_procargs_block_is_unreadable",
+          procscan._parse_procargs(b"\x05\0\0\0/bin/x\0\0a\0") is None, "")
+    old = procscan.MAX_PIDS
+    procscan.MAX_PIDS = 4
+    try:
+        try:
+            procscan.marked_pids("abc")
+            capped = False
+        except procscan.ScanIncomplete:
+            capped = True
+    finally:
+        procscan.MAX_PIDS = old
+    check("test_adv_b25_a_capped_process_list_raises_instead_of_reporting_nothing_found", capped or sys.platform != "darwin", "")
+    old = procscan.SCAN_BUDGET_S
+    procscan.SCAN_BUDGET_S = 0.0
+    try:
+        try:
+            procscan.marked_pids("abc")
+            slow = False
+        except procscan.ScanIncomplete:
+            slow = True
+    finally:
+        procscan.SCAN_BUDGET_S = old
+    check("test_adv_b25_a_scan_over_its_time_budget_raises_instead_of_reporting_nothing_found", slow, "")
+
+
+guarded("test_adv_b25_procscan_units", p_procscan_units)
+
+
 def p_reap():
     """Episode end kills what setsid'd away, only that episode's, and says so when it cannot."""
     try:
@@ -901,8 +946,16 @@ def p_reap():
         sb3, _ = sandbox_for(CRYPTIC)
         d3 = _start_daemon(sb3, "d3.pid")
         from mh import procscan
+        real_kill = procscan.os.kill
+        procscan.os.kill = lambda pid, sig: None        # a process that will not die
+        try:
+            left = procscan.reap_marked(sb3.scope.marker, deadline_s=0.0)
+        finally:
+            procscan.os.kill = real_kill
+        check("test_adv_b25_a_process_that_survives_the_kill_pass_is_returned_as_a_survivor", d3 in left, f"d3={d3} left={left}")
         left = procscan.reap_marked(sb3.scope.marker, deadline_s=0.0)
-        check("test_adv_b25_a_scan_that_runs_out_of_time_returns_the_survivors", d3 in left, f"d3={d3} left={left}")
+        time.sleep(0.2)
+        check("test_adv_b25_a_deadline_of_zero_still_gets_one_full_kill_pass", not _alive(d3) and d3 not in left, f"d3={d3} left={left}")
         sb3.close()
         time.sleep(0.3)
         check("test_adv_b25_close_after_a_timed_out_scan_still_kills_it", not _alive(d3), f"pid {d3} alive")
@@ -919,9 +972,13 @@ def p_reap():
                 pp = 0
             sb4.close()
             time.sleep(0.3)
-            info("hardened_binary_escape", f"a setsid'd /usr/bin/perl daemon (pid {pp}) is "
-                 f"{'STILL ALIVE: its exec-time environment is hidden from KERN_PROCARGS2, so the marker cannot find it' if pp and _alive(pp) else 'gone'}"
-                 " (reported, not judged)")
+            # Not killable (unattributable), so it must be REPORTED on the episode, never read as a clean close.
+            listed = {u["pid"]: u for u in sb4.unverified}
+            check("test_adv_b25_a_setsid_hardened_binary_daemon_is_reported_unverified_not_silently_left",
+                  bool(pp) and _alive(pp) and pp in listed and "/perl" in listed[pp]["path"]
+                  and "cannot attribute" in listed[pp]["reason"], f"pid {pp} unverified={sorted(listed)}")
+            check("test_adv_b25_a_close_that_left_an_unattributed_process_is_not_a_clean_close",
+                  not sb4.clean_close, f"survivors={sb4.survivors} unverified={sorted(listed)}")
     finally:
         for p in PIDS:
             try:
