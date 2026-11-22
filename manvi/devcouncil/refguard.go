@@ -920,6 +920,19 @@ func (s *refSnapshot) unreadableNow(after *refSnapshot) []string {
 // recorded oids, at most maxGuardCommits+1 of them. A ref that now points at
 // something that is not a commit (an annotated tag of a blob) adds none.
 func (r *Registry) newCommits(ctx context.Context, oid string, recorded []string) ([]string, error) {
+	// The names go to rev-list line by line on standard input, where an empty
+	// line ends the list (dropping every exclusion after it) and a newline or a
+	// leading dash would add a line or an option. Only a bare hex object name
+	// (full or abbreviated, either case) is safe to pass, so anything else is
+	// refused rather than judged against a shorter list.
+	if err := checkBareObjectName(oid); err != nil {
+		return nil, err
+	}
+	for _, id := range recorded {
+		if err := checkBareObjectName(id); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", oid+"^{commit}"); err != nil {
 		kind, kerr := runGit(ctx, r.deps.Root, "cat-file", "-t", oid)
 		if kerr != nil {
@@ -951,6 +964,18 @@ func (r *Registry) newCommits(ctx context.Context, oid string, recorded []string
 		return nil, err
 	}
 	return strings.Fields(out), nil
+}
+
+// maxObjectNameLen is the longest object name git writes (SHA-256, in hex).
+const maxObjectNameLen = 64
+
+// checkBareObjectName refuses a name that is not hex digits, at most
+// maxObjectNameLen of them.
+func checkBareObjectName(name string) error {
+	if name == "" || len(name) > maxObjectNameLen || !isHexString(name) {
+		return fmt.Errorf("refusing to pass %q to git rev-list: not a bare object name", name)
+	}
+	return nil
 }
 
 // commitLeaks judges one commit by what it adds over each parent, with the
