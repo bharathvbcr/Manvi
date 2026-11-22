@@ -266,8 +266,8 @@ def p_defaults_pasteboard():
         sbs.append(sb2)
         r1 = sb2.run_shell(cmd=f"defaults read {key} marker 2>&1")
         r2 = sb2.run_shell(cmd="pbpaste 2>&1")
-        check("test_open_b25_cfprefsd_is_not_a_cross_episode_channel", "DEFAULTS-SENTINEL" not in r1, r1[:200])
-        check("test_open_b25_pasteboard_is_not_a_cross_episode_channel", "PASTE-SENTINEL" not in r2, r2[:200])
+        check("test_adv_b25_cfprefsd_is_not_a_cross_episode_channel", "DEFAULTS-SENTINEL" not in r1, r1[:200])
+        check("test_adv_b25_pasteboard_is_not_a_cross_episode_channel", "PASTE-SENTINEL" not in r2, r2[:200])
     finally:
         subprocess.run(["/usr/bin/defaults", "delete", key], capture_output=True)
         subprocess.run(["/usr/bin/pbcopy"], input=saved, capture_output=True)

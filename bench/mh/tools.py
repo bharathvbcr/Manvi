@@ -786,6 +786,16 @@ def sbpl_metadata_chain(allowed, protected):
     return lines
 
 
+# Mach services through which a shell could leave data for a LATER episode
+# without touching the filesystem the profile governs: cfprefsd holds
+# `defaults write` values in its own memory and flushes them for any process of
+# the same user, and the pasteboard server keeps the clipboard. `(allow default)`
+# leaves mach-lookup open, so both are denied by name. The names are the ones
+# `launchctl print gui/<uid>` lists on the host.
+DENIED_MACH_SERVICES = ("com.apple.cfprefsd.agent", "com.apple.cfprefsd.daemon",
+                        "com.apple.pasteboard.1")
+
+
 def _seatbelt_profile(allow_write, protected_roots):
     """Deny writes everywhere, deny the benchmark tree outright, then re-allow.
 
@@ -793,7 +803,10 @@ def _seatbelt_profile(allow_write, protected_roots):
     sandbox's own allow must come after both denies, which keeps a workspace
     that lives inside a protected root usable.
     """
-    lines = ["(version 1)", "(allow default)", '(deny file-write* (subpath "/"))']
+    lines = ["(version 1)", "(allow default)",
+             "(deny mach-lookup "
+             + " ".join(f'(global-name "{n}")' for n in DENIED_MACH_SERVICES) + ")",
+             '(deny file-write* (subpath "/"))']
     for p in _writable_system_roots():
         if os.path.exists(p):
             lines.append(f'(allow file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
