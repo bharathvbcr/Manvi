@@ -76,7 +76,7 @@ func WithholdCallSiteSamples(text string) string {
 	if !callSiteNote.MatchString(text) {
 		return text
 	}
-	var segs []noteSegment
+	segs := make([]noteSegment, 0, 4)
 	inSample := false
 	for _, clause := range strings.Split(text, noteClauseSeparator) {
 		m := leadingCount.FindStringSubmatch(clause)
