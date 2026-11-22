@@ -84,13 +84,13 @@ func endLeftoverChildren() string {
 	var live []childRow
 	var unchecked []int
 	for i, r := range rows {
-		if !needsEnding(ctx, ps, r) {
+		if !needsEnding(r) {
 			continue
 		}
 		if ctx.Err() != nil {
 			// The shared bound ran out before this child's turn.
 			for _, rest := range rows[i:] {
-				if !rest.zombie || rest.pgid == rest.pid {
+				if needsEnding(rest) {
 					unchecked = append(unchecked, rest.pid)
 				}
 			}
@@ -136,18 +136,15 @@ func endLeftoverChildren() string {
 // does. A zombie is dead already and only its parent's Wait is missing, so it
 // needs nothing itself; but a zombie that leads a group may have left live
 // members behind it (a leader that exited before the processes it forked), and
-// those are this process's to end like any other leftover. They are found the
-// way gone() finds them: allZombies reads the group from one table read. A
-// table that cannot be read answers "not all zombies", so the zombie leader is
-// signalled rather than skipped; that is safe, because an unreaped leader
-// still holds its pid and with it the group number, so the group is ours and
+// those are this process's to end like any other leftover. Whether it did is
+// answered by the listing childRows already read (liveMembers: some non-zombie
+// row shares the leader's pgid), not by a second ps whose failure would have to
+// be turned into a guess about a process known to be dead. An unreaped leader
+// still holds its pid and with it the group number, so such a group is ours and
 // cannot have been handed to a stranger. A zombie that does not lead a group
 // belongs to a group that is not its own, and is left alone.
-func needsEnding(ctx context.Context, ps string, r childRow) bool {
-	if !r.zombie {
-		return true
-	}
-	return r.pgid == r.pid && !allZombies(ctx, ps, r)
+func needsEnding(r childRow) bool {
+	return !r.zombie || r.liveMembers
 }
 
 // gonePoll is how often a killed child is looked for, which costs a ps each time.
@@ -181,34 +178,61 @@ func gone(ctx context.Context, ps string, r childRow) bool {
 // does not lead one) is a zombie or gone, from one read of the table. A table
 // that cannot be read answers false: not shown to be gone.
 func allZombies(ctx context.Context, ps string, r childRow) bool {
-	out, _, err := runPS(ctx, ps, "-A", "-o", "pid=,pgid=,stat=")
+	rows, _, err := readTable(ctx, ps)
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) < 3 {
-			continue
-		}
-		pid, e1 := strconv.Atoi(f[0])
-		pgid, e2 := strconv.Atoi(f[1])
-		if e1 != nil || e2 != nil {
-			continue
-		}
-		member := pid == r.pid
+	for _, row := range rows {
+		member := row.pid == r.pid
 		if r.pgid == r.pid {
-			member = pgid == r.pid
+			member = row.pgid == r.pid
 		}
-		if member && !strings.HasPrefix(f[2], "Z") {
+		if member && !row.zombie {
 			return false
 		}
 	}
 	return true
 }
 
+// procRow is one row of the process table.
+type procRow struct {
+	pid, ppid, pgid int
+	zombie          bool
+}
+
+// readTable reads the whole process table in one ps call, and returns the pid
+// of that ps, which is a child of this process while it runs and must not be
+// mistaken for one that outlived the run. Every question about a process or a
+// group is answered from a read of this shape, so a failure of it means the
+// same thing wherever it happens.
+func readTable(ctx context.Context, ps string) ([]procRow, int, error) {
+	out, psPid, err := runPS(ctx, ps, "-A", "-o", "pid=,ppid=,pgid=,stat=")
+	if err != nil {
+		return nil, 0, err
+	}
+	var rows []procRow
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(f[0])
+		ppid, e2 := strconv.Atoi(f[1])
+		pgid, e3 := strconv.Atoi(f[2])
+		if e1 != nil || e2 != nil || e3 != nil {
+			continue
+		}
+		rows = append(rows, procRow{pid: pid, ppid: ppid, pgid: pgid, zombie: strings.HasPrefix(f[3], "Z")})
+	}
+	return rows, psPid, nil
+}
+
 type childRow struct {
 	pid, pgid int
 	zombie    bool
+	// liveMembers is set on a child that leads a group (pgid == pid) when some
+	// non-zombie process in the table, the child itself included, is in it.
+	liveMembers bool
 }
 
 // runPS runs the trusted ps with args, bounded like every other exec boundary:
@@ -233,26 +257,29 @@ func runPS(ctx context.Context, ps string, args ...string) (string, int, error) 
 	return out.String(), cmd.Process.Pid, nil
 }
 
-// childRows lists this process's direct children, bar the ps that listed them.
+// childRows lists this process's direct children, bar the ps that listed them,
+// each with whether the group it leads still has a live member.
 func childRows(ctx context.Context, ps string) ([]childRow, error) {
-	out, psPid, err := runPS(ctx, ps, "-A", "-o", "pid=,ppid=,pgid=,stat=")
+	table, psPid, err := readTable(ctx, ps)
 	if err != nil {
 		return nil, err
 	}
+	live := map[int]bool{}
+	for _, row := range table {
+		if !row.zombie && row.pid != psPid {
+			live[row.pgid] = true
+		}
+	}
 	self := os.Getpid()
 	var rows []childRow
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) < 4 {
+	for _, row := range table {
+		if row.ppid != self || row.pid == psPid {
 			continue
 		}
-		pid, e1 := strconv.Atoi(f[0])
-		ppid, e2 := strconv.Atoi(f[1])
-		pgid, e3 := strconv.Atoi(f[2])
-		if e1 != nil || e2 != nil || e3 != nil || ppid != self || pid == psPid {
-			continue
-		}
-		rows = append(rows, childRow{pid: pid, pgid: pgid, zombie: strings.HasPrefix(f[3], "Z")})
+		rows = append(rows, childRow{
+			pid: row.pid, pgid: row.pgid, zombie: row.zombie,
+			liveMembers: row.pgid == row.pid && live[row.pid],
+		})
 	}
 	return rows, nil
 }

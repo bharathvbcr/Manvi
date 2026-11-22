@@ -116,13 +116,20 @@ func runTUI(reg *flags.Registry, args []string) error {
 // own childrenReapBound after it.
 const indexRefreshBound = 2 * time.Second
 
-// endRun ends what the run started and abandoned, in the order that gives the
-// index build a chance to stop by itself: the run's context is cancelled (a
-// plain quit never cancelled it before, so the build's first signal was the
-// sweep's group SIGKILL, mid-write), the refresh goroutine is waited for, for
-// at most bound, and only then is sweep run for whatever is still there. A
-// refresh that does not return within bound is reported with the sweep's own
-// problems and does not delay the sweep.
+// endRun ends what the run started and abandoned: the run's context is
+// cancelled (a plain quit never cancelled it before, so the refresh was only
+// ever ended by the sweep), the refresh goroutine is waited for, for at most
+// bound, and only then is sweep run for whatever is still there. A refresh that
+// does not return within bound is reported with the sweep's own problems and
+// does not delay the sweep.
+//
+// What the cancel does to the devmap child is not softer than the sweep: the
+// pinned DevCouncil client's cancel is itself a group SIGKILL (proc.ConfigureGroup,
+// used by devmap's invoke), and its capability probe runs detached from
+// cancellation (Client.Probe, deliberately: its result is cached for the next
+// caller). Both are DevCouncil's to change (ft-4e2e8926). Until that lands the
+// gain is the ordering: the quit has cancelled the build and waited for the
+// client to return before it sweeps, instead of sweeping first.
 func endRun(cancel context.CancelFunc, refreshDone <-chan struct{}, bound time.Duration, sweep func() string) string {
 	cancel()
 	var problems []string

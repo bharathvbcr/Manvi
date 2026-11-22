@@ -67,9 +67,11 @@ func TestEndRunBoundsAHungRefreshAndStillSweeps(t *testing.T) {
 	}
 }
 
-// The build child gets a catchable signal from the cancellation before the
-// sweep's group SIGKILL arrives: a child that traps SIGTERM and records it gets
-// to, because endRun does not sweep until the refresh has returned.
+// endRun's ordering with a stand-in client whose cancel is a SIGTERM: the child
+// gets that catchable signal before the sweep's group SIGKILL arrives, because
+// endRun does not sweep until the refresh has returned. The pinned DevCouncil
+// client's own cancel is a SIGKILL (ft-4e2e8926), so this pins the ordering,
+// not the real client's signal.
 func TestEndRunLetsTheBuildChildSeeCancellationBeforeTheSweep(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "terminated")
 	ctx, cancel := context.WithCancel(context.Background())
