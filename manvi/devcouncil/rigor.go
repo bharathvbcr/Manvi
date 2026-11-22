@@ -78,10 +78,13 @@ const (
 )
 
 // Lean kernel deadline model. dc-proc's lean_kernel.rs applies the per-step
-// timeout to each child process separately, and a single check runs at least
-// three of them one after the other: the Lean compile, the `#print axioms`
-// driver, and `lean4checker --fresh` (steps 1-3 there), after a libdir probe
-// capped at 10s. The deadline here must cover that sequence, not one step.
+// timeout to each child process separately. For one .lean file a check runs, in
+// order: a libdir probe (capped at min(step, 10s)), one bounded compile for each
+// staged in-tree local import (at most MAX_STAGED_LOCAL_MODULES = 64, the
+// "Stage and compile any unbuilt in-tree .lean dependencies" loop), then the
+// Lean compile, the `#print axioms` driver and `lean4checker --fresh` (steps
+// 1-3 there). dc-verify's rigor.rs repeats that whole sequence once per .lean
+// file in the diff. The deadline here must cover that work, not one step.
 const (
 	defaultRigorTimeout      = 30 * time.Second
 	defaultLeanKernelStep    = 180 * time.Second
@@ -89,9 +92,21 @@ const (
 	maxLeanKernelStep        = 600 * time.Second
 	leanKernelSequentialRuns = 3
 	leanKernelLibdirProbe    = 10 * time.Second
+	leanKernelMaxStaged      = 64
 	leanKernelMargin         = 60 * time.Second
 	minLeanRigorTimeout      = 240 * time.Second
+	// defaultLeanRigorCap bounds the whole Lean deadline whatever the diff
+	// and the step say. The worst case grows with files x staged imports x
+	// step (one file at the 180s default is already 12,070s), and an
+	// unbounded wait on a wedged verifier holds the turn and its lease for
+	// as long as the arithmetic says. A check that reaches the cap is
+	// reported as one that could not run (leanBoundError), never as a pass.
+	defaultLeanRigorCap = 45 * time.Minute
 )
+
+// leanRigorCap is defaultLeanRigorCap as a variable so a test can drive the
+// cap without waiting 45 minutes. Nothing else assigns it.
+var leanRigorCap = defaultLeanRigorCap
 
 // leanKernelStep mirrors dc-proc's configured_lean_kernel_timeout
 // (lean_kernel.rs): DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s, 180s when
@@ -118,26 +133,93 @@ func leanKernelStep() time.Duration {
 	}
 }
 
-// effectiveTimeout is the dcverify deadline. An explicit Timeout wins. With
-// DC_VERIFY_LEAN_KERNEL on (auto or require, the only values dcverify accepts:
-// dc-verify's rigor.rs fails closed on anything else, so 1 and true do not
-// widen the deadline) it covers the sequential Lean steps: three kernel steps
-// of leanKernelStep each, the libdir probe and a 60s margin, and never under
-// 240s. Otherwise it is 30s.
+// leanBound describes the Lean work a deadline was computed from, so a timeout
+// can say what it was a bound on.
+type leanBound struct {
+	files          int
+	importsPerFile int
+}
+
+// leanBoundError is a dcverify timeout under a Lean-derived deadline. It is an
+// error, so it reaches runRigor's did-not-run path: a check that was cut off is
+// not a check that passed, and not an ordinary finding either.
+type leanBoundError struct {
+	bound   time.Duration
+	exceeds leanBound
+}
+
+func (e *leanBoundError) Error() string {
+	return fmt.Sprintf("could not run: the Lean check exceeded its %s bound (%d files, up to %d local imports each)",
+		humanBound(e.bound), e.exceeds.files, e.exceeds.importsPerFile)
+}
+
+func humanBound(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		return fmt.Sprintf("%d-minute", d/time.Minute)
+	}
+	return d.Round(time.Millisecond).String()
+}
+
+// leanFilesInDiff counts the distinct .lean paths a unified diff names, from its
+// "diff --git" and "+++" headers. Deleted and renamed files are counted too: the
+// count is an upper bound on what dc-verify can check, never a lower one.
+func leanFilesInDiff(diff string) int {
+	seen := map[string]struct{}{}
+	add := func(path string) {
+		path = strings.Trim(strings.TrimSpace(path), "\"")
+		if strings.HasSuffix(path, ".lean") {
+			seen[path] = struct{}{}
+		}
+	}
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			if i := strings.LastIndex(line, " b/"); i >= 0 {
+				add(line[i+3:])
+			}
+		case strings.HasPrefix(line, "+++ b/"):
+			add(strings.TrimPrefix(line, "+++ b/"))
+		}
+	}
+	return len(seen)
+}
+
+// deadline is the dcverify deadline for one diff. An explicit Timeout wins.
+// With DC_VERIFY_LEAN_KERNEL on (auto or require, the only values dcverify
+// accepts: dc-verify's rigor.rs fails closed on anything else, so 1 and true do
+// not widen the deadline) it is computed from the work the check will run: per
+// .lean file in the diff, probe + (3 + staged local imports) x step, summed over
+// files, plus a 60s margin, never under 240s and never over leanRigorCap.
+// Otherwise it is 30s.
 //
-// DevCouncil's dcverify.Client.effectiveTimeout is unexported and its Lean
-// headroom is one step plus 60s, so it cannot be called from here; the
-// step clamp is pinned against its table in rigor_hijack_test.go instead.
-func (c rigorClient) effectiveTimeout() time.Duration {
+// The staged-import count is not read from the tree. Counting them from here
+// would be a second copy of dc-proc's staging rule (the header grammar, the
+// search bases around the spec path, the libdir skip, the symlink and size
+// refusals), and a copy that drifts is a deadline that is silently wrong. The
+// bound used is the cap dc-proc itself enforces, 64 per file, which is sound for
+// every tree and pessimistic for most. The cap on the total is what keeps that
+// from meaning an unbounded wait.
+//
+// DevCouncil's dcverify.Client.effectiveTimeout is unexported and budgets one
+// step plus 60s, so it cannot be called from here; the step clamp is pinned
+// against its table in rigor_hijack_test.go instead.
+func (c rigorClient) deadline(diff string) (time.Duration, *leanBound) {
 	if c.Timeout > 0 {
-		return c.Timeout
+		return c.Timeout, nil
 	}
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("DC_VERIFY_LEAN_KERNEL")))
-	if mode == "auto" || mode == "require" {
-		expanded := leanKernelSequentialRuns*leanKernelStep() + leanKernelLibdirProbe + leanKernelMargin
-		return max(expanded, minLeanRigorTimeout)
+	if mode != "auto" && mode != "require" {
+		return defaultRigorTimeout, nil
 	}
-	return defaultRigorTimeout
+	files := leanFilesInDiff(diff)
+	step := leanKernelStep()
+	perFile := min(step, leanKernelLibdirProbe) + (leanKernelSequentialRuns+leanKernelMaxStaged)*step
+	limit := leanRigorCap
+	want := limit
+	if files <= int(limit/perFile) {
+		want = max(time.Duration(files)*perFile+leanKernelMargin, minLeanRigorTimeout)
+	}
+	return min(want, limit), &leanBound{files: files, importsPerFile: leanKernelMaxStaged}
 }
 
 // run feeds a diff to the verifier and returns its findings.
@@ -149,7 +231,7 @@ func (c rigorClient) run(ctx context.Context, diff string, planned []string, cov
 	if c.Binary == "" {
 		return nil, errors.New("no dcverify binary configured")
 	}
-	timeout := c.effectiveTimeout()
+	timeout, lean := c.deadline(diff)
 	// Planned paths are newline-separated so one containing a comma or a space
 	// survives the boundary intact.
 	args := []string{"check", "--planned", strings.Join(planned, "\n")}
@@ -167,6 +249,9 @@ func (c rigorClient) run(ctx context.Context, diff string, planned []string, cov
 		timeout: timeout, stdoutLimit: maxRigorOutput, stderrLimit: maxRigorStderr,
 	})
 	if res.timedOut {
+		if lean != nil && lean.files > 0 {
+			return nil, &leanBoundError{bound: timeout, exceeds: *lean}
+		}
 		return nil, fmt.Errorf("verifier timed out after %s", timeout)
 	}
 	if res.stdoutNote != "" {

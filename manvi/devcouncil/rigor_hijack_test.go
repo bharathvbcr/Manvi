@@ -1,6 +1,10 @@
 package devcouncil
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,16 +52,38 @@ func TestGapsFromMapsLeanTCBAsBlockingSecurityAction(t *testing.T) {
 	}
 }
 
+// leanDiff is a unified diff naming n distinct .lean files.
+func leanDiff(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		name := "specs/S" + strconv.Itoa(i) + ".lean"
+		b.WriteString("diff --git a/" + name + " b/" + name + "\n--- a/" + name + "\n+++ b/" + name + "\n@@ -0,0 +1 @@\n+theorem t : True := trivial\n")
+	}
+	return b.String()
+}
+
+func deadlineOf(diff string) time.Duration {
+	d, _ := (rigorClient{}).deadline(diff)
+	return d
+}
+
+// wantLeanDeadline is the deadline model written out independently of
+// deadline(): files x (probe + (3 + imports) x step) + 60s, floored at 240s and
+// capped.
+func wantLeanDeadline(step time.Duration, files, imports int) time.Duration {
+	per := min(step, 10*time.Second) + time.Duration(3+imports)*step
+	return min(max(time.Duration(files)*per+60*time.Second, 240*time.Second), leanRigorCap)
+}
+
 func TestRigorDefaultTimeoutScalesWhenLeanKernelModeEnabled(t *testing.T) {
 	t.Setenv("DC_VERIFY_LEAN_KERNEL", "")
 	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "")
-	var c rigorClient
-	if got := c.effectiveTimeout(); got < 30*time.Second || got > 60*time.Second {
-		t.Fatalf("default effectiveTimeout() = %v, want 30s", got)
+	if got := deadlineOf(leanDiff(1)); got != 30*time.Second {
+		t.Fatalf("default deadline = %v, want 30s", got)
 	}
 	t.Setenv("DC_VERIFY_LEAN_KERNEL", "auto")
-	if got := c.effectiveTimeout(); got < 210*time.Second {
-		t.Fatalf("effectiveTimeout() under DC_VERIFY_LEAN_KERNEL=auto = %v, want >= 210s for lean4checker --fresh replay", got)
+	if got := deadlineOf(leanDiff(1)); got < 210*time.Second {
+		t.Fatalf("deadline under DC_VERIFY_LEAN_KERNEL=auto = %v, want >= 210s for lean4checker --fresh replay", got)
 	}
 }
 
@@ -68,49 +94,53 @@ func TestRigorLeanDeadlineIgnoresValuesDcverifyRejects(t *testing.T) {
 	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "")
 	for _, v := range []string{"1", "true", "TRUE", "yes", "on", "0", "off", "false", "lexical", ""} {
 		t.Setenv("DC_VERIFY_LEAN_KERNEL", v)
-		if got := (rigorClient{}).effectiveTimeout(); got != 30*time.Second {
-			t.Errorf("DC_VERIFY_LEAN_KERNEL=%q: effectiveTimeout() = %v, want the 30s default", v, got)
+		if got := deadlineOf(leanDiff(1)); got != 30*time.Second {
+			t.Errorf("DC_VERIFY_LEAN_KERNEL=%q: deadline = %v, want the 30s default", v, got)
 		}
 	}
 	for _, v := range []string{"auto", "AUTO", " require "} {
 		t.Setenv("DC_VERIFY_LEAN_KERNEL", v)
-		if got := (rigorClient{}).effectiveTimeout(); got != 610*time.Second {
-			t.Errorf("DC_VERIFY_LEAN_KERNEL=%q: effectiveTimeout() = %v, want 610s (3 x 180s + 10s + 60s)", v, got)
+		if got, want := deadlineOf(leanDiff(1)), wantLeanDeadline(180*time.Second, 1, 64); got != want {
+			t.Errorf("DC_VERIFY_LEAN_KERNEL=%q: deadline = %v, want %v", v, got, want)
 		}
 	}
 }
 
-// The Lean step is DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s, 180s when
-// it is unset or not an unsigned decimal; the deadline is three steps plus 10s
-// plus 60s and never under 240s.
-func TestRigorLeanTimeoutClampsTheKernelStep(t *testing.T) {
+// The deadline follows the work: it is the sum over .lean files of probe +
+// (3 + staged imports) x step, plus 60s, floored at 240s and capped. The
+// staged-import count is dc-proc's own cap, 64.
+func TestRigorLeanTimeoutFollowsStepAndFileCount(t *testing.T) {
 	t.Setenv("DC_VERIFY_LEAN_KERNEL", "require")
 	for _, tc := range []struct {
 		raw  string
-		want time.Duration
+		step time.Duration
 	}{
-		{"", 610 * time.Second},
-		{"0", 240 * time.Second},
-		{"180000", 610 * time.Second},
-		{"180001", 610*time.Second + 3*time.Millisecond},
-		{"300000", 970 * time.Second},
-		{"600000", 1870 * time.Second},
-		{"600001", 1870 * time.Second},
-		{"18446744073709551615", 1870 * time.Second},
-		{"18446744073709551616", 610 * time.Second},
-		{"+300000", 970 * time.Second},
-		{"-300000", 610 * time.Second},
-		{"5m", 610 * time.Second},
-		{" 300000 ", 970 * time.Second},
+		{"", 180 * time.Second},
+		{"0", 50 * time.Millisecond},
+		{"1000", time.Second},
+		{"180001", 180*time.Second + time.Millisecond},
+		{"300000", 300 * time.Second},
+		{"600001", 600 * time.Second},
+		{"18446744073709551615", 600 * time.Second},
+		{"18446744073709551616", 180 * time.Second},
+		{"+300000", 300 * time.Second},
+		{"-300000", 180 * time.Second},
+		{"5m", 180 * time.Second},
+		{" 300000 ", 300 * time.Second},
 	} {
 		t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", tc.raw)
-		if got := (rigorClient{}).effectiveTimeout(); got != tc.want {
-			t.Errorf("DC_LEAN_KERNEL_TIMEOUT_MS=%q: effectiveTimeout() = %v, want %v", tc.raw, got, tc.want)
+		if got := leanKernelStep(); got != tc.step {
+			t.Errorf("DC_LEAN_KERNEL_TIMEOUT_MS=%q: step = %v, want %v", tc.raw, got, tc.step)
+		}
+		for _, files := range []int{0, 1, 2, 5, 1000} {
+			if got, want := deadlineOf(leanDiff(files)), wantLeanDeadline(tc.step, files, 64); got != want {
+				t.Errorf("DC_LEAN_KERNEL_TIMEOUT_MS=%q files=%d: deadline = %v, want %v", tc.raw, files, got, want)
+			}
 		}
 	}
 	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "600000")
-	if got := (rigorClient{Timeout: 5 * time.Second}).effectiveTimeout(); got != 5*time.Second {
-		t.Errorf("an explicit Timeout must win: got %v", got)
+	if got := (rigorClient{Timeout: 5 * time.Second}); func() time.Duration { d, _ := got.deadline(leanDiff(3)); return d }() != 5*time.Second {
+		t.Errorf("an explicit Timeout must win")
 	}
 }
 
@@ -171,9 +201,12 @@ func TestRigorLeanTimeoutCoversTheSequentialStepWorstCase(t *testing.T) {
 		for _, tc := range dcverifyLeanTable {
 			t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", tc.raw)
 			step := leanKernelStep()
-			worst := 3*step + 10*time.Second
-			if got := (rigorClient{}).effectiveTimeout(); got < worst+60*time.Second {
-				t.Errorf("mode=%s DC_LEAN_KERNEL_TIMEOUT_MS=%q: timeout %v leaves under 60s over the worst case %v", mode, tc.raw, got, worst)
+			for _, files := range []int{1, 2} {
+				worst := time.Duration(files) * (min(step, 10*time.Second) + 3*step)
+				got := deadlineOf(leanDiff(files))
+				if got < min(worst+60*time.Second, leanRigorCap) {
+					t.Errorf("mode=%s DC_LEAN_KERNEL_TIMEOUT_MS=%q files=%d: deadline %v is under the no-import worst case %v plus slack", mode, tc.raw, files, got, worst)
+				}
 			}
 		}
 	}
@@ -203,5 +236,80 @@ func TestGapsFromUsesDevCouncilWording(t *testing.T) {
 	}
 	if len(actions) != 2 || actions[0].Action != want[0] || actions[1].Action != want[1] {
 		t.Fatalf("actions = %+v, want DevCouncil's next_actions.go wording %q", actions, want)
+	}
+}
+
+// slowVerifier is a dcverify stand-in that never answers within any bound.
+func slowVerifier(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "dcverify")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 30\n"), 0o700); err != nil { // #nosec G306 -- an executable test double in a temp dir
+		t.Fatal(err)
+	}
+	return bin
+}
+
+func shrinkLeanCap(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := leanRigorCap
+	leanRigorCap = d
+	t.Cleanup(func() { leanRigorCap = old })
+}
+
+// A Lean check cut off by its bound is an error naming the bound and the work,
+// not a result: run returns no findings with it.
+func TestRigorLeanBoundTimeoutIsACouldNotRunError(t *testing.T) {
+	t.Setenv("DC_VERIFY_LEAN_KERNEL", "require")
+	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "50")
+	shrinkLeanCap(t, 300*time.Millisecond)
+	res, err := rigorClient{Binary: slowVerifier(t)}.run(t.Context(), leanDiff(2), nil, "")
+	var bound *leanBoundError
+	if !errors.As(err, &bound) || res != nil {
+		t.Fatalf("run = (%v, %v), want a *leanBoundError and no result", res, err)
+	}
+	const want = "could not run: the Lean check exceeded its 300ms bound (2 files, up to 64 local imports each)"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+// runRigor maps that error onto the did-not-run path: a blocking gap and a
+// degradation, so a timed-out Lean check can be neither a pass nor an ordinary
+// finding.
+func TestRunRigorMapsLeanBoundTimeoutToDidNotRun(t *testing.T) {
+	t.Setenv("DC_VERIFY_LEAN_KERNEL", "auto")
+	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "50")
+	shrinkLeanCap(t, 300*time.Millisecond)
+	r := &Registry{}
+	r.deps.VerifierBinary = slowVerifier(t)
+	gaps, actions, degraded := r.runRigor(t.Context(), leanDiff(3), nil, "TASK-BOUND")
+	const msg = "could not run: the Lean check exceeded its 300ms bound (3 files, up to 64 local imports each)"
+	if len(gaps) != 1 || gaps[0].Type != gapRigorDidNotRun || !gaps[0].Blocking || !strings.Contains(gaps[0].Detail, msg) {
+		t.Fatalf("gaps = %+v, want one blocking %s gap carrying %q", gaps, gapRigorDidNotRun, msg)
+	}
+	if len(actions) != 1 || !actions[0].Blocking {
+		t.Fatalf("actions = %+v, want one blocking action", actions)
+	}
+	if len(degraded) != 1 || !strings.Contains(degraded[0], msg) {
+		t.Fatalf("degraded = %v, want one entry carrying %q", degraded, msg)
+	}
+}
+
+// With no .lean file in the diff, a timeout is the ordinary verifier timeout:
+// the Lean bound says nothing about work that was never asked for.
+func TestRigorTimeoutWithoutLeanFilesIsNotALeanBoundError(t *testing.T) {
+	t.Setenv("DC_VERIFY_LEAN_KERNEL", "auto")
+	shrinkLeanCap(t, 300*time.Millisecond)
+	_, err := rigorClient{Binary: slowVerifier(t), Timeout: 200 * time.Millisecond}.run(t.Context(), leanDiff(0)+"diff --git a/a.go b/a.go\n", nil, "")
+	var bound *leanBoundError
+	if err == nil || errors.As(err, &bound) {
+		t.Fatalf("err = %v, want an ordinary timeout", err)
+	}
+}
+
+func TestLeanFilesInDiffCountsDistinctPaths(t *testing.T) {
+	diff := leanDiff(2) + "diff --git a/specs/S0.lean b/specs/S0.lean\n+++ b/specs/S0.lean\ndiff --git a/x.go b/x.go\n+++ b/x.go\n+++ /dev/null\n"
+	if got := leanFilesInDiff(diff); got != 2 {
+		t.Fatalf("leanFilesInDiff = %d, want 2", got)
 	}
 }

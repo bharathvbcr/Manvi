@@ -47,10 +47,13 @@ func advSequentialBudget(t *testing.T, step time.Duration, localImports int) tim
 	return probe + time.Duration(fixed+localImports)*step
 }
 
-func advDefaultLeanDeadline(t *testing.T) time.Duration {
+// advDefaultLeanDeadline is the deadline for a diff naming files .lean files at
+// the default step.
+func advDefaultLeanDeadline(t *testing.T, files int) time.Duration {
+	t.Helper()
 	t.Setenv("DC_VERIFY_LEAN_KERNEL", "require")
 	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "")
-	return (rigorClient{}).effectiveTimeout()
+	return deadlineOf(leanDiff(files))
 }
 
 // Attack 1a: a spec with ONE in-tree local import. dc-proc compiles each staged
@@ -61,8 +64,8 @@ func TestAdvB29ResidueDeadlineCoversOneLocalImport(t *testing.T) {
 		!strings.Contains(src, "run_bounded(&mut dep_cmd, bounds)") {
 		t.Fatal("pinned dc-proc no longer compiles local imports under run_bounded per dependency")
 	}
-	got := advDefaultLeanDeadline(t)
-	need := advSequentialBudget(t, defaultLeanKernelStep, 1)
+	got := advDefaultLeanDeadline(t, 1)
+	need := min(advSequentialBudget(t, defaultLeanKernelStep, 1), leanRigorCap)
 	if got < need {
 		t.Errorf("deadline %v < worst case for a single .lean file with one local import %v (probe + (3+1) x %v)", got, need, defaultLeanKernelStep)
 	}
@@ -75,8 +78,11 @@ func TestAdvB29ResidueDeadlineCoversMaxLocalImports(t *testing.T) {
 		t.Fatal("MAX_STAGED_LOCAL_MODULES not found at the pin")
 	}
 	n, _ := strconv.Atoi(m[1])
-	got := advDefaultLeanDeadline(t)
-	need := advSequentialBudget(t, defaultLeanKernelStep, n)
+	if n != leanKernelMaxStaged {
+		t.Fatalf("pinned MAX_STAGED_LOCAL_MODULES is %d, the deadline budgets %d", n, leanKernelMaxStaged)
+	}
+	got := advDefaultLeanDeadline(t, 1)
+	need := min(advSequentialBudget(t, defaultLeanKernelStep, n), leanRigorCap)
 	if got < need {
 		t.Errorf("deadline %v < worst case %v for one file with %d local imports (documented cap), i.e. the \"3 x step\" model is not the worst case", got, need, n)
 	}
@@ -95,8 +101,8 @@ func TestAdvB29ResidueDeadlineCoversTwoLeanFiles(t *testing.T) {
 	if !strings.Contains(fn, "for file in files {") || !strings.Contains(fn, "run_lean_kernel_check(") {
 		t.Fatal("pinned rigor.rs no longer runs the kernel check inside the per-file loop")
 	}
-	got := advDefaultLeanDeadline(t)
-	need := 2 * advSequentialBudget(t, defaultLeanKernelStep, 0)
+	got := advDefaultLeanDeadline(t, 2)
+	need := min(2*advSequentialBudget(t, defaultLeanKernelStep, 0), leanRigorCap)
 	if got < need {
 		t.Errorf("deadline %v < worst case for a diff touching two .lean files %v (2 x (probe + 3 x step))", got, need)
 	}
@@ -108,8 +114,8 @@ func TestAdvB29ResidueDeadlineCoversOneFileNoImportsAtEveryStep(t *testing.T) {
 	t.Setenv("DC_VERIFY_LEAN_KERNEL", "auto")
 	for _, raw := range []string{"", "0", "49", "50", "51", "1000", "9999", "10000", "10001", "180000", "599999", "600000", "600001", "18446744073709551615", "-1", "nope"} {
 		t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", raw)
-		got := (rigorClient{}).effectiveTimeout()
-		need := advSequentialBudget(t, leanKernelStep(), 0)
+		got := deadlineOf(leanDiff(1))
+		need := min(advSequentialBudget(t, leanKernelStep(), 0), leanRigorCap)
 		if got < need {
 			t.Errorf("DC_LEAN_KERNEL_TIMEOUT_MS=%q: deadline %v < single-file sequence %v", raw, got, need)
 		}
@@ -119,10 +125,10 @@ func TestAdvB29ResidueDeadlineCoversOneFileNoImportsAtEveryStep(t *testing.T) {
 // Attack 1e: there is an upper bound on the deadline whatever the env says.
 func TestAdvB29ResidueDeadlineHasAnUpperClamp(t *testing.T) {
 	t.Setenv("DC_VERIFY_LEAN_KERNEL", "require")
-	const ceiling = 3*600*time.Second + 10*time.Second + 60*time.Second
+	ceiling := leanRigorCap
 	for _, raw := range []string{"600000", "600001", "99999999999", "18446744073709551615", "18446744073709551616", "-1", "0", "nope", "+5", "1e9", "\u00a0999999999\u0085"} {
 		t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", raw)
-		got := (rigorClient{}).effectiveTimeout()
+		got := deadlineOf(leanDiff(1000))
 		if got > ceiling || got < 240*time.Second {
 			t.Errorf("DC_LEAN_KERNEL_TIMEOUT_MS=%q: deadline %v outside [240s, %v]", raw, got, ceiling)
 		}
@@ -141,11 +147,7 @@ func TestAdvB29ResidueStepParseMatchesRustPlusSign(t *testing.T) {
 	}
 	t.Setenv("DC_LEAN_KERNEL_TIMEOUT_MS", "+300000")
 	if got, want := leanKernelStep(), 300*time.Second; got != want {
-		t.Errorf("leanKernelStep() for DC_LEAN_KERNEL_TIMEOUT_MS=+300000 = %v, but dc-proc runs each step for %v, so a real 3-step run needs %v while the deadline is %v",
-			got, want, 3*want+10*time.Second, func() time.Duration {
-				t.Setenv("DC_VERIFY_LEAN_KERNEL", "require")
-				return (rigorClient{}).effectiveTimeout()
-			}())
+		t.Errorf("leanKernelStep() for DC_LEAN_KERNEL_TIMEOUT_MS=+300000 = %v, but dc-proc runs each step for %v", got, want)
 	}
 }
 
@@ -238,7 +240,7 @@ func TestAdvB29ResidueNoCallerReachesDevCouncilDcverifyClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(hits) != 0 {
-		t.Errorf("these files import DevCouncil's dcverify client and bypass rigorClient.effectiveTimeout: %v", hits)
+		t.Errorf("these files import DevCouncil's dcverify client and bypass rigorClient.deadline: %v", hits)
 	}
 }
 
