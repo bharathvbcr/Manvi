@@ -76,13 +76,6 @@ func TestAdvB25ScriptSingleHugeAllocationThenSteps(t *testing.T) {
 	}
 }
 
-// Same allocation with nothing after it: the script ends before any poll.
-// Informational: a script that allocates once and finishes is not a leak.
-func TestAdvB25ScriptSingleHugeAllocationThenEnd(t *testing.T) {
-	text, _ := advRunShape(t, "x = 'x' * (200 << 20)\nprint(len(x))", 0)
-	t.Logf("result:\n%s", text)
-}
-
 // Allocation inside a tool. (a) The script retains each returned text: the
 // per-call clip (32 KiB) bounds what it can hold, so the heap does not grow and
 // the bound correctly does not fire. (b) The tool itself retains 6 MiB per
@@ -122,18 +115,6 @@ func TestAdvB25ScriptToolAllocationCounts(t *testing.T) {
 			t.Errorf("tool-side retained allocation did not trip the bound:\n%s", text)
 		}
 	})
-}
-
-// Garbage only: large temporary strings, discarded. Reports the trip point.
-func TestAdvB25ScriptGarbageOnlyFalsePositive(t *testing.T) {
-	for _, bound := range []uint64{16 << 20, 32 << 20, 64 << 20} {
-		shortHeapBound(t, bound, 2*time.Millisecond)
-		h := scriptHarness(t, "n = 0\nfor i in range(300):\n    s = 'g' * (8 << 20)\n    n += len(s)\nprint('done', n)", 0)
-		before, _ := heapSample()
-		start := time.Now()
-		_, text := runScriptHarness(t, h)
-		t.Logf("bound=%d MiB: heap-before=%d MiB breached=%v took=%s", bound>>20, before>>20, advIsHeapBreach(text), time.Since(start))
-	}
 }
 
 func TestAdvB25ScriptMetricIsSupported(t *testing.T) {
@@ -203,37 +184,6 @@ func TestAdvB25ScriptHeapBelowBaselineNoUnderflow(t *testing.T) {
 	if advIsHeapBreach(text) || !strings.Contains(text, "after") {
 		t.Errorf("heap below baseline was read as growth:\n%s", text)
 	}
-}
-
-// Two scripts at once: one allocates heavily (and breaches itself); the other
-// is a quiet script held 600 ms. Reports whether the quiet one is breached.
-func TestAdvB25ScriptConcurrentFalsePositive(t *testing.T) {
-	shortHeapBound(t, advHeapBound, 5*time.Millisecond)
-	quiet := scriptHarness(t, "print('before')\nwait()\nprint('after')", 0)
-	registerBatchable(t, quiet, "wait", func(context.Context, tools.Call) tools.Result {
-		time.Sleep(600 * time.Millisecond)
-		return tools.Result{Text: "ok"}
-	})
-	noisy := scriptHarness(t, "keep = []\nfor i in range(12):\n    keep.append('n' * (8 << 20))\n    wait()\nprint('noisy done')", 0)
-	registerBatchable(t, noisy, "wait", func(context.Context, tools.Call) tools.Result {
-		time.Sleep(20 * time.Millisecond)
-		return tools.Result{Text: "ok"}
-	})
-	var wg sync.WaitGroup
-	wg.Add(2)
-	var qErr, nErr error
-	go func() { defer wg.Done(); _, qErr = quiet.loop.Run(context.Background(), userMsg("go")) }()
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		defer wg.Done()
-		_, nErr = noisy.loop.Run(context.Background(), userMsg("go"))
-	}()
-	wg.Wait()
-	if qErr != nil || nErr != nil {
-		t.Fatal(qErr, nErr)
-	}
-	qText, nText := toolResults(t, quiet)["s1"], toolResults(t, noisy)["s1"]
-	t.Logf("quiet breached by neighbour=%v\nquiet:\n%s\nnoisy:\n%s", advIsHeapBreach(qText), qText, nText)
 }
 
 func advGoroutinesSettle(base int) int {
@@ -376,25 +326,6 @@ var _ = fmt.Sprintf
 
 var advSink []byte
 
-// Garbage-only script against a live heap of varying size. The metric counts
-// unswept garbage, so GC pacing lets garbage reach about the live-set size
-// before a cycle: false positive risk grows with the process's live heap.
-func TestAdvB25ScriptGarbageVsLiveHeapFalsePositive(t *testing.T) {
-	for _, ballast := range []int{0, 16 << 20, 48 << 20, 64 << 20, 128 << 20} {
-		advSink = make([]byte, ballast)
-		for i := range advSink {
-			advSink[i] = 1
-		}
-		runtime.GC()
-		shortHeapBound(t, advHeapBound, 2*time.Millisecond)
-		h := scriptHarness(t, "n = 0\nfor i in range(100):\n    s = 'g' * (8 << 20)\n    n += len(s)\nprint('done', n)", 0)
-		_, text := runScriptHarness(t, h)
-		t.Logf("live ballast=%3d MiB bound=64 MiB garbage-only script (800 MiB of dead strings): breached=%v", ballast>>20, advIsHeapBreach(text))
-		advSink = nil
-	}
-	runtime.GC()
-}
-
 // The baseline is read once. If it lands while unswept garbage inflates the
 // heap and a GC then frees it, the script's headroom becomes bound plus that
 // garbage. Expected: the bound still fires near 32 MiB of growth.
@@ -423,24 +354,5 @@ func TestAdvB25ScriptBaselineInflatedByGarbageMasksBound(t *testing.T) {
 	t.Logf("result:\n%s", text)
 	if !advIsHeapBreach(text) || strings.Contains(text, "after") {
 		t.Errorf("the script retained 128 MiB past a 32 MiB bound because the baseline was taken over 100 MiB of since-freed garbage:\n%s", text)
-	}
-}
-
-// Garbage-only sweep: 4 MiB temporary strings, 200 per run, live set small and
-// GC forced before each run. Logs how often each bound trips (false positives).
-func TestAdvB25ScriptGarbageOnlyTripRate(t *testing.T) {
-	for _, bound := range []uint64{32 << 20, 64 << 20, 128 << 20} {
-		trips := 0
-		const reps = 8
-		for r := 0; r < reps; r++ {
-			runtime.GC()
-			shortHeapBound(t, bound, 2*time.Millisecond)
-			h := scriptHarness(t, "n = 0\nfor i in range(200):\n    s = 'g' * (4 << 20)\n    n += len(s)\nprint('done', n)", 0)
-			_, text := runScriptHarness(t, h)
-			if advIsHeapBreach(text) {
-				trips++
-			}
-		}
-		t.Logf("garbage-only (800 MiB total, 4 MiB temporaries, live set ~small): bound=%d MiB tripped %d/%d runs", bound>>20, trips, reps)
 	}
 }
