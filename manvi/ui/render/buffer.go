@@ -242,7 +242,15 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 		// its left there is nothing to attach to, and it is dropped rather
 		// than promoted to a base character it is not.
 		if x-1 >= 0 && x-1 < b.W {
-			b.cells[y*b.W+x-1].addMark(r)
+			left := &b.cells[y*b.W+x-1]
+			base := left.R
+			if base == 0 && x-2 >= 0 {
+				base = b.cells[y*b.W+x-2].R
+			}
+			if unicode.Is(unicode.Cf, r) && !formatMarkAllowed(r, base, left.Comb) {
+				return 0
+			}
+			left.addMark(r)
 		}
 		return 0
 	}
@@ -260,6 +268,50 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 	}
 	b.cells[y*b.W+x] = Cell{R: r, Style: s}
 	return 1
+}
+
+// formatMarkAllowed reports whether a zero-width format rune (category Cf) may
+// attach to a cell whose base rune is base and which already holds comb.
+//
+// Cf is the category of every bidirectional override and isolate (U+202A-202E,
+// U+2066-2069, the LRM/RLM/ALM marks), of the invisible separators (ZWSP,
+// word joiner, BOM) and of the tag block. None is control, so the check in
+// SetRune does not catch them, and all are zero-width, so they would be stored
+// as a combining mark and written to the tty verbatim: a bidi override
+// reorders what a reviewer reads (Trojan Source), and the rest carry text that
+// nothing displays. ui.Sanitize replaces a bidi rune with a visible marker of
+// several columns. A cell cannot grow, and RuneWidth promises callers this rune
+// is zero columns wide, so the closest faithful behaviour here is to drop it,
+// as SetRune already does for control characters; Sanitize remains the layer
+// that shows the reader something was there.
+//
+// Two uses are legitimate and kept. A zero-width joiner after a pictograph
+// builds an emoji sequence. Tag characters after the black flag U+1F3F4 spell a
+// subdivision flag (England, Scotland, Wales). Anywhere else they are dropped:
+// tag characters after ordinary text are invisible smuggled ASCII.
+func formatMarkAllowed(r, base rune, comb string) bool {
+	switch {
+	case r == 0x200D:
+		return isPictographic(base)
+	case r >= 0xE0020 && r <= 0xE007F:
+		if base != 0x1F3F4 {
+			return false
+		}
+		for _, c := range comb {
+			if c != 0xFE0F && (c < 0xE0020 || c > 0xE007F) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// isPictographic reports whether r can anchor a zero-width-joiner emoji
+// sequence: a symbol or emoji outside the scripts, which excludes letters,
+// digits and marks (a ZWJ after those is Indic or Arabic shaping, or hiding).
+func isPictographic(r rune) bool {
+	return r >= 0x2190 && !unicode.IsLetter(r) && !unicode.IsDigit(r) && !unicode.IsMark(r) && !unicode.IsSpace(r)
 }
 
 // SetString writes a string left to right and returns the columns consumed.
