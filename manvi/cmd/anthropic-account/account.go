@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
@@ -186,8 +187,23 @@ func findMarker(dir, home string) (path, name string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	home = filepath.Clean(home)
-	for dir != home {
+	// Each directory is compared with home as a resolved path. Textual
+	// comparison let a working directory spelled through a symlink to home walk
+	// straight past it and read the marker in home, which would pin every
+	// directory on the machine. The marker path reported stays the one the
+	// operator's own spelling led to, so "source" names a place they recognise.
+	resolvedHome, err := filepath.EvalSymlinks(filepath.Clean(home))
+	if err != nil {
+		return "", "", fmt.Errorf("resolving %s: %w", home, err)
+	}
+	for {
+		resolvedDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return "", "", fmt.Errorf("resolving %s: %w", dir, err)
+		}
+		if resolvedDir == resolvedHome {
+			break
+		}
 		candidate := filepath.Join(dir, markerName)
 		data, err := readSmall(candidate, maxMarkerBytes)
 		if err == nil {
@@ -209,13 +225,32 @@ func findMarker(dir, home string) (path, name string, err error) {
 	return "", "", nil
 }
 
+// readSmall reads a marker file and nothing else that happens to sit at its path.
+//
+// The marker chooses which Console organisation is billed, and it lives in a
+// directory a repository controls. So it is opened O_NOFOLLOW (a symlink is a
+// refusal, not a redirect to a file the repository does not own), O_NONBLOCK
+// (opening a named pipe for reading otherwise waits for a writer forever, and
+// the launcher with it), and the opened descriptor is checked to be a regular
+// file before a byte is read. The check is on the descriptor, not the path, so
+// nothing can be swapped in between the check and the read.
 func readSmall(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, fmt.Errorf("%s is a symbolic link; the account marker must be a regular file where it sits", path)
+	}
 	if err != nil {
 		return nil, err
 	}
 	// Read-only: a close failure cannot change bytes already read.
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file (%s)", path, info.Mode().Type())
+	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
@@ -314,6 +349,11 @@ type envNames struct {
 	strip map[string]bool
 }
 
+// baseURLEnv is where the Anthropic SDK sends requests when it is set. It is
+// not a credential, but it decides who receives the one this launcher injects,
+// so an inherited value is cleared unless the operator asks to keep it.
+const baseURLEnv = "ANTHROPIC_BASE_URL"
+
 func anthropicEnvNames() (envNames, error) {
 	names := envNames{strip: map[string]bool{}}
 	for _, req := range credentials.DefaultRequirements() {
@@ -332,11 +372,13 @@ func anthropicEnvNames() (envNames, error) {
 	if names.key == "" {
 		return envNames{}, errors.New("the credential catalogue has no anthropic key variable")
 	}
+	names.strip[baseURLEnv] = true
 	return names, nil
 }
 
-// childEnv is base with every inherited Anthropic credential removed and the
-// chosen ones set. Nothing from the parent survives under these names: an
+// childEnv is base with every inherited Anthropic credential, and the inherited
+// ANTHROPIC_BASE_URL unless the caller removed it from names.strip, removed and
+// the chosen ones set. Nothing from the parent survives under these names: an
 // inherited key would otherwise pair with the chosen workspace, or outlive a
 // --no-fallback, and bill an organisation nobody picked.
 func childEnv(base []string, names envNames, primary account, key string, fallback *account, fallbackKey string) []string {
