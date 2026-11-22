@@ -339,6 +339,12 @@ func (r *Registry) SetScrubber(scrub func(string) string) {
 	r.scrub = scrub
 }
 
+// Scrub applies the installed credential scrubber to text, exactly as Run does
+// to every result. A handler that needs to know whether the model's view of its
+// own answer will differ from the bytes it holds asks this, rather than
+// guessing: the text that leaves Run is the scrubbed text, never the raw one.
+func (r *Registry) Scrub(text string) string { return r.scrubText(text) }
+
 func (r *Registry) scrubText(text string) string {
 	if text == "" {
 		return text

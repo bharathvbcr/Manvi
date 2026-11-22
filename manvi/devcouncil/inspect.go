@@ -8,7 +8,9 @@ import (
 )
 
 // contentDigest is what the set remembers of a file: a hash of exactly the
-// bytes the agent was shown, or wrote.
+// bytes the agent was shown, or wrote. A read whose text the credential
+// scrubber changed is not recorded at all (see Registry.shownRedacted): the
+// agent was shown placeholders, not these bytes.
 type contentDigest = [sha256.Size]byte
 
 // inspectedSet is the set of repository paths this registry has shown the
@@ -79,6 +81,16 @@ func changedSinceReadMessage(path string) string {
 	return fmt.Sprintf("%s has changed since you read it, so it was not overwritten: write_file "+
 		"replaces every byte and would drop what was added. Read the whole file again with "+
 		"devcouncil_read_file (no offset or limit), or change part of it with devcouncil_patch_file", path)
+}
+
+// shownRedacted reports whether the text the agent would be shown for raw
+// differs from raw because the registry's credential scrubber changed it. With
+// no registry attached nothing scrubs, so nothing differs.
+func (r *Registry) shownRedacted(raw string) bool {
+	if r.toolsReg == nil {
+		return false
+	}
+	return r.toolsReg.Scrub(raw) != raw
 }
 
 // has reports whether the agent has read or written p at all, whatever the

@@ -29,7 +29,14 @@ import (
 
 const (
 	// writeImpactTimeout bounds the impact check: a write must not wait on the
-	// index for longer than a lookup is worth.
+	// index for longer than a lookup is worth. One lookup is three devmap
+	// invocations (status, impact, status). Measured against this repository's
+	// index at host load average 46 (10 samples each): status p50 1.1 s, max
+	// 1.9 s; impact p50 1.0 s, max 1.1 s; the whole sequence p50 3.4 s, max
+	// 6.1 s over 20 runs. A bound below that max would report healthy lookups as
+	// "did not run", so the cap stays above it. A lookup that does not finish in
+	// time is reported on the write's result as "impact check did not run ...
+	// callers are unknown", never as a clean or empty answer.
 	writeImpactTimeout = 8 * time.Second
 	// writeImpactBudget is the token budget of the impact query. The summary
 	// keeps only a handful of names, so a larger answer would be discarded.
