@@ -68,24 +68,32 @@ var scriptWallTime = 30 * time.Second
 // scriptMemPoll interval, because Cancel takes effect at the next interpreter
 // step. The measure is process-wide heap growth, not the script's own
 // allocation, so concurrent work elsewhere in the process counts against it;
-// the bound is large enough that this is a rare false positive. Variables only
-// so a test can shorten them.
+// the bound is large enough that this is a rare false positive, but it is a
+// real limit of the measure: concurrent scripts add to one another's growth,
+// and unswept garbage from a large live heap can trip the bound for a script
+// that holds little. The baseline is lowered whenever a sample is smaller, so
+// a baseline taken over since-freed garbage cannot widen the headroom. Variables
+// only so a test can shorten them.
 var (
 	scriptMaxHeapGrowth uint64 = 512 << 20
 	scriptMemPoll              = 10 * time.Millisecond
 )
 
 // heapSample reads the live-plus-unswept heap object bytes from runtime/metrics:
-// cheap and without a stop-the-world, unlike runtime.ReadMemStats. A variable
-// only so a test can fake the reading.
-var heapSample = func() uint64 {
-	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+// cheap and without a stop-the-world, unlike runtime.ReadMemStats. The bool is
+// false when the runtime did not report the metric, so a caller never mistakes
+// a failed read for an empty heap. A variable only so a test can fake the
+// reading.
+var heapSample = func() (uint64, bool) {
+	s := []metrics.Sample{{Name: heapMetric}}
 	metrics.Read(s)
 	if s[0].Value.Kind() != metrics.KindUint64 {
-		return 0
+		return 0, false
 	}
-	return s[0].Value.Uint64()
+	return s[0].Value.Uint64(), true
 }
+
+const heapMetric = "/memory/classes/heap/objects:bytes"
 
 // scriptOptions is the dialect: the Starlark spec's optional features a
 // short chaining script needs (for/if at top level, while, set, rebinding a
@@ -147,6 +155,12 @@ func (l *Loop) runScript(ctx context.Context, out *Outcome, tally *stepTally, ca
 		return tools.Errorf("max_calls must be in 1..%d, got %d", tools.MaxScriptCalls, maxCalls)
 	}
 
+	// Fail closed: a script that cannot be memory-bounded does not start.
+	baseline, measured := heapSample()
+	if !measured {
+		return tools.Errorf("%s cannot run: the Go runtime does not report %s, so the script's memory bound cannot be enforced", tools.ScriptToolName, heapMetric)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, scriptWallTime)
 	defer cancel()
 	run := &scriptRun{l: l, out: out, tally: tally, id: call.ID, maxCalls: maxCalls}
@@ -166,7 +180,6 @@ func (l *Loop) runScript(ctx context.Context, out *Outcome, tally *stepTally, ca
 	done := make(chan struct{})
 	var watcher sync.WaitGroup
 	watcher.Add(1)
-	baseline := heapSample()
 	maxGrowth, poll := scriptMaxHeapGrowth, scriptMemPoll
 	go func() {
 		defer watcher.Done()
@@ -180,7 +193,15 @@ func (l *Loop) runScript(ctx context.Context, out *Outcome, tally *stepTally, ca
 				thread.Cancel(reason)
 				return
 			case <-ticker.C:
-				if now := heapSample(); now > baseline && now-baseline > maxGrowth {
+				now, ok := heapSample()
+				if !ok {
+					reason := "the heap could not be measured, so the script's memory bound could not be enforced"
+					run.setBreach(reason)
+					thread.Cancel(reason)
+					return
+				}
+				baseline = min(baseline, now)
+				if now-baseline > maxGrowth {
 					reason := fmt.Sprintf("the heap grew by more than %d MiB while the script ran (process-wide heap growth, not only the script's own)", maxGrowth>>20)
 					run.setBreach(reason)
 					thread.Cancel(reason)

@@ -97,7 +97,7 @@ func TestScriptMemoryBound(t *testing.T) {
 		var reads atomic.Uint64
 		old := heapSample
 		// The first read is the baseline; every later one is 4 MiB higher.
-		heapSample = func() uint64 { return 1<<30 + reads.Add(1)*(4<<20) }
+		heapSample = func() (uint64, bool) { return 1<<30 + reads.Add(1)*(4<<20), true }
 		t.Cleanup(func() { heapSample = old })
 		h := scriptHarness(t, "print('before')\nwait()\nprint('after')", 0)
 		// wait holds the script until the watchdog has sampled, so the breach
@@ -125,6 +125,66 @@ func TestScriptMemoryBound(t *testing.T) {
 		}
 		if time.Since(start) > scriptWallTime {
 			t.Errorf("took %s", time.Since(start))
+		}
+	})
+	t.Run("a baseline taken over garbage is lowered", func(t *testing.T) {
+		shortHeapBound(t, 32<<20, time.Millisecond)
+		var reads atomic.Uint64
+		old := heapSample
+		// Read 1 (baseline): 100 MiB of since-freed garbage. Read 2: the heap
+		// falls to 10 MiB. Later reads climb 4 MiB each from there, so growth
+		// over the true floor passes 32 MiB at read 11, while growth over the
+		// first baseline (100 MiB) would never reach it.
+		heapSample = func() (uint64, bool) {
+			n := reads.Add(1)
+			if n == 1 {
+				return 100 << 20, true
+			}
+			return 10<<20 + (n-2)*(4<<20), true
+		}
+		t.Cleanup(func() { heapSample = old })
+		h := scriptHarness(t, "print('before')\nwait()\nprint('after')", 0)
+		registerBatchable(t, h, "wait", func(context.Context, tools.Call) tools.Result {
+			// The watchdog stops sampling once it breaches, so wait on a
+			// fixed read count below the breach point, then give it time.
+			for reads.Load() < 2 {
+				time.Sleep(time.Millisecond)
+			}
+			time.Sleep(200 * time.Millisecond)
+			return tools.Result{Text: "ok"}
+		})
+		_, text := runScriptHarness(t, h)
+		if !strings.Contains(text, "heap grew by more than 32 MiB") || strings.Contains(text, "after") {
+			t.Errorf("result:\n%s", text)
+		}
+	})
+	t.Run("an unreadable baseline refuses the script", func(t *testing.T) {
+		old := heapSample
+		heapSample = func() (uint64, bool) { return 0, false }
+		t.Cleanup(func() { heapSample = old })
+		h := scriptHarness(t, "print('ran')", 0)
+		_, text := runScriptHarness(t, h)
+		if !strings.Contains(text, "cannot run") || !strings.Contains(text, heapMetric) || strings.Contains(text, "ran\n") {
+			t.Errorf("result:\n%s", text)
+		}
+	})
+	t.Run("a later failed sample ends the script", func(t *testing.T) {
+		shortHeapBound(t, 1<<30, time.Millisecond)
+		var reads atomic.Uint64
+		old := heapSample
+		heapSample = func() (uint64, bool) { return 1 << 30, reads.Add(1) == 1 }
+		t.Cleanup(func() { heapSample = old })
+		h := scriptHarness(t, "print('before')\nwait()\nprint('after')", 0)
+		registerBatchable(t, h, "wait", func(context.Context, tools.Call) tools.Result {
+			for reads.Load() < 2 {
+				time.Sleep(time.Millisecond)
+			}
+			time.Sleep(20 * time.Millisecond)
+			return tools.Result{Text: "ok"}
+		})
+		_, text := runScriptHarness(t, h)
+		if !strings.Contains(text, "could not be measured") || strings.Contains(text, "after") {
+			t.Errorf("result:\n%s", text)
 		}
 	})
 	t.Run("a small script is untouched", func(t *testing.T) {

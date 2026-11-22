@@ -43,7 +43,7 @@ func TestAdvB25ScriptAllocationShapes(t *testing.T) {
 		{"list extend", "l = []\nchunk = [0] * (1 << 20)\nfor i in range(200):\n    l.extend(chunk)\nprint('after')"},
 		{"list repeat copies", "keep = []\nfor i in range(200):\n    keep.append([0] * (1 << 20))\nprint('after')"},
 		{"dict growth with list values", "d = {}\nfor i in range(100000):\n    d[i] = [0] * 1000\nprint('after')"},
-		{"dict growth with string keys", "d = {}\npad = 'k' * 1500\nfor i in range(900000):\n    d[pad + str(i)] = i\nprint('after')"},
+		{"dict growth with string keys", "d = {}\npad = 'k' * 6000\nfor i in range(900000):\n    d[pad + str(i)] = i\nprint('after')"},
 		{"string join", "keep = []\nparts = ['y' * (1 << 20)] * 8\nfor i in range(200):\n    keep.append(''.join(parts))\nprint('after')"},
 		{"json encode nested", "keep = []\ninner = [1234567] * 100000\nouter = [inner] * 20\nfor i in range(100):\n    keep.append(json.encode(outer))\nprint('after')"},
 		{"bytes", "keep = []\nb = bytes('z' * (8 << 20))\nfor i in range(100):\n    keep.append(b + b[1:])\nprint('after')"},
@@ -129,7 +129,7 @@ func TestAdvB25ScriptGarbageOnlyFalsePositive(t *testing.T) {
 	for _, bound := range []uint64{16 << 20, 32 << 20, 64 << 20} {
 		shortHeapBound(t, bound, 2*time.Millisecond)
 		h := scriptHarness(t, "n = 0\nfor i in range(300):\n    s = 'g' * (8 << 20)\n    n += len(s)\nprint('done', n)", 0)
-		before := heapSample()
+		before, _ := heapSample()
 		start := time.Now()
 		_, text := runScriptHarness(t, h)
 		t.Logf("bound=%d MiB: heap-before=%d MiB breached=%v took=%s", bound>>20, before>>20, advIsHeapBreach(text), time.Since(start))
@@ -143,7 +143,7 @@ func TestAdvB25ScriptMetricIsSupported(t *testing.T) {
 			if d.Kind != metrics.KindUint64 {
 				t.Fatalf("%s has kind %v, want KindUint64", name, d.Kind)
 			}
-			if heapSample() == 0 {
+			if v, ok := heapSample(); !ok || v == 0 {
 				t.Fatalf("heapSample returned 0 for a running process")
 			}
 			return
@@ -158,7 +158,7 @@ func TestAdvB25ScriptMetricIsSupported(t *testing.T) {
 func TestAdvB25ScriptFailsOpenWhenSampleIsZero(t *testing.T) {
 	shortHeapBound(t, 16<<20, time.Millisecond)
 	old := heapSample
-	heapSample = func() uint64 { return 0 }
+	heapSample = func() (uint64, bool) { return 0, false }
 	t.Cleanup(func() { heapSample = old })
 	h := scriptHarness(t, "keep = []\nfor i in range(10):\n    keep.append('x' * (8 << 20))\n    wait()\nprint('after')", 0)
 	registerBatchable(t, h, "wait", func(context.Context, tools.Call) tools.Result {
@@ -178,14 +178,14 @@ func TestAdvB25ScriptHeapBelowBaselineNoUnderflow(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	old := heapSample
-	heapSample = func() uint64 {
+	heapSample = func() (uint64, bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
 		if calls == 1 {
-			return 8 << 30
+			return 8 << 30, true
 		}
-		return 1 << 30
+		return 1 << 30, true
 	}
 	t.Cleanup(func() { heapSample = old })
 	h := scriptHarness(t, "print('before')\nwait()\nprint('after')", 0)
@@ -260,7 +260,7 @@ func TestAdvB25ScriptWatcherLifecycle(t *testing.T) {
 			shortHeapBound(t, 1<<20, time.Millisecond)
 			old := heapSample
 			var n uint64
-			heapSample = func() uint64 { n++; return 1<<30 + n*(4<<20) }
+			heapSample = func() (uint64, bool) { n++; return 1<<30 + n*(4<<20), true }
 			t.Cleanup(func() { heapSample = old })
 			h := scriptHarness(t, "for i in range(900000):\n    pass", 0)
 			runScriptHarness(t, h)
@@ -328,7 +328,7 @@ func TestAdvB25ScriptBreachShapeMatches(t *testing.T) {
 	heapText, heapErr := run(func(t *testing.T) {
 		shortHeapBound(t, 1<<20, time.Millisecond)
 		old := heapSample
-		heapSample = func() uint64 { return 1<<30 + reads.Add(1)*(4<<20) }
+		heapSample = func() (uint64, bool) { return 1<<30 + reads.Add(1)*(4<<20), true }
 		t.Cleanup(func() { heapSample = old })
 	}, "print('before')\nwait()\nprint('after')", func(h *harness) {
 		registerBatchable(t, h, "wait", func(context.Context, tools.Call) tools.Result {
