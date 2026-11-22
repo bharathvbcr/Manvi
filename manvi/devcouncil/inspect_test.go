@@ -528,7 +528,7 @@ func TestWriteFileRefusesAFileChangedSinceItWasRead(t *testing.T) {
 	if res.Blocked || res.Rule != "" {
 		t.Errorf("the gate did not make this refusal, so it must carry no rule: %+v", res)
 	}
-	if got, _ := os.ReadFile(target); string(got) != other {
+	if got, _ := os.ReadFile(target); string(got) != other { // #nosec G304 -- a file under this test's own t.TempDir
 		t.Fatalf("the refused write changed the file: %q", got)
 	}
 

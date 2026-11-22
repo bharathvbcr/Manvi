@@ -41,7 +41,7 @@ func TestOverwriteRefusesAChangeBetweenTheDigestCheckAndTheReplace(t *testing.T)
 	if res.Blocked || res.Rule != "" {
 		t.Errorf("the gate did not make this refusal: %+v", res)
 	}
-	if got, _ := os.ReadFile(target); string(got) != other {
+	if got, _ := os.ReadFile(target); string(got) != other { // #nosec G304 -- a file under this test's own t.TempDir
 		t.Fatalf("the concurrent writer's bytes were clobbered: %q", got)
 	}
 	if extra := leftovers(t, filepath.Dir(target), "calc.go"); len(extra) != 0 {

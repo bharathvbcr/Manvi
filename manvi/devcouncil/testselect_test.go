@@ -79,7 +79,7 @@ func TestVerifyPathsKeepsRunningTheOperatorCommandAndAddsTheSelection(t *testing
 
 	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"}, "echo x >> ran", Baseline{})
 
-	raw, err := os.ReadFile(marker)
+	raw, err := os.ReadFile(marker) // #nosec G304 -- a file under this test's own t.TempDir
 	if err != nil || string(raw) != "x\n" {
 		t.Fatalf("the operator command wrote %q (err %v), want exactly one run", raw, err)
 	}

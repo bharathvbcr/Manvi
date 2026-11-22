@@ -46,7 +46,7 @@ func newStubIndex(t *testing.T, f *fixture, generation int, fresh bool) *stubInd
 		"  *) echo '{}'; exit 1;;\n" +
 		"esac\n"
 	bin := filepath.Join(s.dir, "devmap")
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { // #nosec G306 -- a stand-in devmap the test execs must be executable
 		t.Fatal(err)
 	}
 	s.set(t, "status", statusDoc(generation, fresh))
@@ -58,7 +58,7 @@ func newStubIndex(t *testing.T, f *fixture, generation int, fresh bool) *stubInd
 
 func (s *stubIndex) set(t *testing.T, name, body string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(s.dir, name), []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(s.dir, name), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
