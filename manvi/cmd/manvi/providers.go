@@ -84,8 +84,9 @@ func buildProvider(ctx context.Context, name string, reg *flags.Registry, resolv
 		if err != nil {
 			return nil, err
 		}
-		cfg.BaseURL = resolveLocalEndpoint(ctx, reg, cfg.BaseURL, resolve, notes, preferredModel)
-		return local.New(cfg, resolve), nil
+		var adapterCredential func() (credentials.Secret, error)
+		cfg.BaseURL, adapterCredential = resolveLocalEndpoint(ctx, reg, cfg.BaseURL, resolve, notes, preferredModel)
+		return local.New(cfg, adapterCredential), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q (%s)", name, strings.Join(providerNames(), ", "))
 	}
@@ -257,23 +258,64 @@ func localConfig(reg *flags.Registry) (local.Config, error) {
 // and one that was configured produce the same requests and warrant very
 // different confidence — the same reason a discovered context window reports
 // its provenance.
-func resolveLocalEndpoint(ctx context.Context, reg *flags.Registry, declared string, resolve func() (credentials.Secret, error), notes io.Writer, preferredModel string) string {
+//
+// The second result is the credential the adapter may use for that address, and
+// it is the other half of the rule the scan keeps: a credential goes only to an
+// address the operator named. A named address (set by a flag, the environment
+// or 'manvi use local', which saves it in the user config) gets the resolver
+// unchanged. An address the harness guessed or found never does, so adopting a
+// listener cannot also hand it a key; see unnamedEndpointCredential.
+func resolveLocalEndpoint(ctx context.Context, reg *flags.Registry, declared string, resolve func() (credentials.Secret, error), notes io.Writer, preferredModel string) (string, func() (credentials.Secret, error)) {
 	_, origin, err := reg.String(flags.LLMLocalBaseURL)
 	if err != nil {
 		// Unreadable settings are not this function's failure to report; the
 		// caller already read the same key and would have returned the error.
-		return declared
+		// Nothing was established about the address, so nothing is sent to it.
+		return declared, nil
 	}
+	named := origin != flags.OriginDefault
 	res := local.ResolveEndpoint(ctx, local.ResolveOptions{
 		Declared:           declared,
-		DeclaredByOperator: origin != flags.OriginDefault,
+		DeclaredByOperator: named,
 		Model:              preferredLocalModel(reg, preferredModel),
-		Credential:         resolve,
 	})
 	if note := res.Note(); note != "" && notes != nil {
 		_, _ = fmt.Fprintf(notes, "manvi: %s\n", note)
 	}
-	return res.BaseURL
+	if named {
+		return res.BaseURL, resolve
+	}
+	return res.BaseURL, unnamedEndpointCredential(res, resolve, notes)
+}
+
+// unnamedEndpointCredential is the credential for an address the operator did
+// not name, which is none.
+//
+// It is not a silent nil. When a credential is configured and a server was
+// adopted, the operator is told it was withheld and the one command that
+// confirms the address and saves it. When that server answered 401 or 403 it
+// needs a key, so a nil resolver would only turn this into an unexplained
+// refusal on the first turn; the resolver returned instead fails the request
+// with the same explanation. When nothing was adopted there is no destination
+// to protect and nothing to say.
+func unnamedEndpointCredential(res local.Resolution, resolve func() (credentials.Secret, error), notes io.Writer) func() (credentials.Secret, error) {
+	if res.Found == nil {
+		return nil
+	}
+	secret, err := resolve()
+	if err != nil || !secret.Present() {
+		return nil
+	}
+	refusal := fmt.Sprintf("not sending the credential in %s to %s: you did not name this address, "+
+		"and a key goes only to one you did. To confirm it and send the key, run: manvi use local --base-url %s",
+		secret.Source(), res.Found.BaseURL, res.Found.BaseURL)
+	if res.Found.AuthRequired {
+		return func() (credentials.Secret, error) { return credentials.Secret{}, errors.New("refusing: " + refusal) }
+	}
+	if notes != nil {
+		_, _ = fmt.Fprintf(notes, "manvi: %s\n", refusal)
+	}
+	return nil
 }
 
 // preferredLocalModel prefers an explicit request model (enhancement record)
@@ -945,7 +987,7 @@ func localReadiness(reg *flags.Registry) readiness {
 	// seconds to print a line it already knew.
 	opts := local.ScanOptions{Credential: resolve}
 	if origin != flags.OriginDefault {
-		opts.Endpoints = []local.Endpoint{{BaseURL: declared}}
+		opts.Endpoints = []local.Endpoint{{BaseURL: declared, Named: true}}
 	}
 	servers := local.Scan(ctx, opts)
 	switch {
@@ -953,6 +995,12 @@ func localReadiness(reg *flags.Registry) readiness {
 		return readiness{stateUnavailable, fmt.Sprintf("nothing answered %s (%s)", declared, origin)}
 	case len(servers) == 0:
 		return readiness{stateUnavailable, "no local server answered; run 'manvi local'"}
+	case len(servers) == 1 && servers[0].AuthRequired && origin != flags.OriginDefault:
+		return readiness{stateUnavailable, fmt.Sprintf("%s answered but refused the request (401/403); check the key the local provider reads (%s)",
+			declared, local.DedicatedCredentialEnvVar)}
+	case len(servers) == 1 && servers[0].AuthRequired:
+		return readiness{stateUnavailable, fmt.Sprintf("%s requires a credential; run 'manvi use local --base-url %s' to confirm it",
+			servers[0].BaseURL, servers[0].BaseURL)}
 	case len(servers) == 1:
 		return readiness{stateReady, fmt.Sprintf("%s, %d model(s)", servers[0].Describe(), len(servers[0].Models))}
 	default:

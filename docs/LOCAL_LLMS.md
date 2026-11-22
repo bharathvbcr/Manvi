@@ -96,6 +96,16 @@ manvi probe local
 
 Unused loopback ports refuse connections instantly, completing the entire scan in **~30ms**. The runtime is identified by querying native capability endpoints (`/api/version` on Ollama, `/props` on llama.cpp, `max_model_len` on vLLM model cards), never by guessing based on port numbers.
 
+**Credentials go only where you sent them.** The scan sends no credential to any address: a key exported for another service (`OPENAI_API_KEY`) is never offered to whatever happens to listen on a well-known port. A `401`/`403` from a port still counts as "a server is here", and `manvi local` lists it as requiring a credential. Adopting a listener the scan found is a proposal, not a decision: MANVI says which server it used and, because a key goes only to an address you named, prints the command that names it:
+
+```bash
+manvi use local --base-url http://127.0.0.1:11434/v1   # saves llm.local.base_url in your user config
+```
+
+Naming the address once (that command, `MANVI_LLM_LOCAL_BASE_URL`, or a flag) is the confirmation; nothing else is stored. Until then an adopted server that needs a key fails the turn with that same command in the message, and one that needs none runs with no key sent. A borrowed variable such as `OPENAI_API_KEY` additionally requires a loopback address, as before; `LOCAL_API_KEY` is the variable to set for a server you name that is not on this machine.
+
+Strings a listener chooses (model ids, the version it reports) are neutralised once, where the listing is decoded: terminal control sequences and line breaks in them are shown as visible escapes, never executed.
+
 ### 2. Zero-Config Model Discovery
 If a local server hosts exactly one model capable of driving coding turns, no `MANVI_MODEL` setting is required. Non-coding and embedding models are automatically filtered out (e.g. via Ollama capability lists).
 
