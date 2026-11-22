@@ -935,12 +935,18 @@ func (r *Registry) newCommits(ctx context.Context, oid string, recorded []string
 		}
 		return nil, nil
 	}
-	args := []string{"rev-list", fmt.Sprintf("--max-count=%d", maxGuardCommits+1), oid + "^{commit}"}
+	// The recorded ids grow with the number of refs, so they go on standard
+	// input: as arguments, tens of thousands of them exceed the operating
+	// system's limit and the call fails with "argument list too long".
+	var in strings.Builder
+	in.WriteString(oid + "^{commit}\n")
 	if len(recorded) > 0 {
-		args = append(args, "--not")
-		args = append(args, recorded...)
+		in.WriteString("--not\n")
+		for _, id := range recorded {
+			in.WriteString(id + "\n")
+		}
 	}
-	out, err := runGit(ctx, r.deps.Root, args...)
+	out, err := runGitStdin(ctx, r.deps.Root, in.String(), "rev-list", fmt.Sprintf("--max-count=%d", maxGuardCommits+1), "--stdin")
 	if err != nil {
 		return nil, err
 	}
