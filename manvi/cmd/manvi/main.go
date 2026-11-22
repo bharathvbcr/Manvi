@@ -91,7 +91,8 @@ Exit status:
 Exit status of 'manvi tool NAME [--json ARGS]' (the same two statuses on every
 failure, so read the message on stderr and the tool's own text on stdout):
   0  the tool ran and answered; the answer is on stdout
-  1  anything else: no NAME, an unknown tool, --json that is not valid JSON, a tool
+  1  anything else: no NAME, an unknown tool, an argument other than one --json VALUE
+     (a typo such as --jsno is refused, never run with {}), --json that is not valid JSON, a tool
      that refused or failed (a policy refusal included; its text is on stdout), a
      tool surface that could not be built, or an answer that could not be written
   No status above 1 is returned. 'dev tool call' differs: 0 answered, 1 refused,

@@ -352,6 +352,29 @@ func toolsCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	}
 }
 
+// toolUsage is what `manvi tool` answers to arguments it cannot read.
+const toolUsage = "usage: manvi tool NAME [--json '{...}']"
+
+// toolPayload reads what follows the tool's name: nothing, which means no
+// arguments ({}), or one --json with its value, as "--json VALUE" or
+// "--json=VALUE". Anything else is refused. It used to take the first --json it
+// found and ignore the rest, so a misspelt flag (--jsno) or a --json with no
+// value ran the tool with {} — a write tool then ran on empty arguments because
+// of a typo.
+func toolPayload(rest []string) (string, error) {
+	switch {
+	case len(rest) == 0:
+		return "{}", nil
+	case len(rest) == 2 && rest[0] == "--json":
+		return rest[1], nil
+	case len(rest) == 1:
+		if v, ok := strings.CutPrefix(rest[0], "--json="); ok {
+			return v, nil
+		}
+	}
+	return "", errors.New(toolUsage)
+}
+
 // callTool runs one tool through the caller's pipeline.
 //
 // The pipeline is passed in for the reason the gate is: an attended session's
@@ -363,15 +386,15 @@ func toolsCommand(out io.Writer, reg *flags.Registry, args []string) error {
 // credentials that session resolved.
 func callTool(out io.Writer, notes io.Writer, scrubber *credentials.Scrubber, pipeline *tools.Registry, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: manvi tool NAME [--json '{...}']")
+		return errors.New(toolUsage)
 	}
 	if !pipeline.Has(args[0]) {
 		return fmt.Errorf("no native tool %q (see: manvi tools)", args[0])
 	}
 
-	payload := flagValue(args, "--json")
-	if payload == "" {
-		payload = "{}"
+	payload, err := toolPayload(args[1:])
+	if err != nil {
+		return err
 	}
 	if !json.Valid([]byte(payload)) {
 		return fmt.Errorf("--json is not valid JSON: %s", payload)

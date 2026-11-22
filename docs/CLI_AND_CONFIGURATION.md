@@ -116,7 +116,7 @@ place and not the other fails the suite.
 | Exit Code | Meaning | Interpretation |
 |---|---|---|
 | `0` | **Answered** | The tool ran and its answer is on stdout. A grant that let it through is noted on stderr, not stdout. |
-| `1` | **Anything else** | No `NAME`; an unknown tool; `--json` that is not valid JSON; a tool that refused (a policy block included) or failed, with its text on stdout; a tool surface that could not be built; or an answer that could not be written. |
+| `1` | **Anything else** | No `NAME`; an unknown tool; any argument other than one `--json VALUE` or `--json=VALUE` (a misspelt `--jsno`, a bare `--json` or a stray word is refused with the usage, and the tool does not run); `--json` that is not valid JSON; a tool that refused (a policy block included) or failed, with its text on stdout; a tool surface that could not be built; or an answer that could not be written. |
 
 No status above 1 is returned, and nothing in the status separates a refusal
 from a failure: read stderr and the tool's own text. This differs from

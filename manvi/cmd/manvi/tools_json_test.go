@@ -2,9 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // toolTable reads the name and read/write column of each row of the `manvi
@@ -130,6 +135,73 @@ func TestHelpNamesEachExitStatusOfManviTool(t *testing.T) {
 		var out, notes bytes.Buffer
 		if status := exitStatus(&out, &notes, args); status != 1 {
 			t.Errorf("manvi %v exits %d, the help says 1", args, status)
+		}
+	}
+}
+
+// recordingPipeline holds one tool, "t", that records the arguments each call
+// ran with.
+func recordingPipeline(t *testing.T, ran *[]string) *tools.Registry {
+	t.Helper()
+	reg := tools.NewRegistry(bus.New())
+	err := reg.Register(tools.Tool{
+		Schema: llm.ToolSchema{Name: "t", Description: "records its arguments", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		Handler: func(_ context.Context, c tools.Call) tools.Result {
+			*ran = append(*ran, string(c.Arguments))
+			return tools.Result{Text: "ran"}
+		},
+		ReadOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	return reg
+}
+
+// A tool must never run on arguments the caller did not give it: a misspelt
+// flag, a --json with no value, a second --json and a stray word are all
+// refused, with the usage and the ordinary failure status, before the tool runs.
+func TestManviToolRefusesMalformedArgumentsInsteadOfRunningWithNone(t *testing.T) {
+	for _, args := range [][]string{
+		{"t", "--jsno", "{}"},
+		{"t", "--json"},
+		{"t", "extra"},
+		{"t", "--bogus"},
+		{"t", "--json", "{}", "extra"},
+		{"t", "--json", "{}", "--json", "{}"},
+		{"t", "--json={}", "extra"},
+	} {
+		var ran []string
+		var out, notes bytes.Buffer
+		err := callTool(&out, &notes, nil, recordingPipeline(t, &ran), args)
+		if err == nil || !strings.Contains(err.Error(), "usage: manvi tool NAME") {
+			t.Errorf("manvi tool %q: error = %v, want the usage", args, err)
+		}
+		if len(ran) != 0 {
+			t.Errorf("manvi tool %q ran the tool with %q", args, ran)
+		}
+		if status := statusFor(err, &notes); status != 1 {
+			t.Errorf("manvi tool %q exits %d, want 1", args, status)
+		}
+	}
+}
+
+func TestManviToolStillRunsWithWellFormedArguments(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"t"}, "{}"},
+		{[]string{"t", "--json", `{"a":1}`}, `{"a":1}`},
+		{[]string{"t", `--json={"a":1}`}, `{"a":1}`},
+	} {
+		var ran []string
+		var out, notes bytes.Buffer
+		if err := callTool(&out, &notes, nil, recordingPipeline(t, &ran), tc.args); err != nil {
+			t.Fatalf("manvi tool %q: %v", tc.args, err)
+		}
+		if len(ran) != 1 || ran[0] != tc.want {
+			t.Errorf("manvi tool %q ran with %q, want one run with %s", tc.args, ran, tc.want)
 		}
 	}
 }
