@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"runtime/metrics"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,33 @@ const (
 // scriptWallTime bounds a script's wall time, tool calls included. A variable
 // only so a test can shorten it.
 var scriptWallTime = 30 * time.Second
+
+// scriptMaxHeapGrowth bounds how far the Go heap may grow while a script runs.
+// The interpreter has no allocation accounting; its only memory check is a
+// per-allocation cap of 1 GiB (starlark maxAlloc), so a script could otherwise
+// hold many large copies inside the step bound. 512 MiB is half of one
+// allocation: the overshoot past the bound is at most one allocation plus one
+// scriptMemPoll interval, because Cancel takes effect at the next interpreter
+// step. The measure is process-wide heap growth, not the script's own
+// allocation, so concurrent work elsewhere in the process counts against it;
+// the bound is large enough that this is a rare false positive. Variables only
+// so a test can shorten them.
+var (
+	scriptMaxHeapGrowth uint64 = 512 << 20
+	scriptMemPoll              = 10 * time.Millisecond
+)
+
+// heapSample reads the live-plus-unswept heap object bytes from runtime/metrics:
+// cheap and without a stop-the-world, unlike runtime.ReadMemStats. A variable
+// only so a test can fake the reading.
+var heapSample = func() uint64 {
+	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(s)
+	if s[0].Value.Kind() != metrics.KindUint64 {
+		return 0
+	}
+	return s[0].Value.Uint64()
+}
 
 // scriptOptions is the dialect: the Starlark spec's optional features a
 // short chaining script needs (for/if at top level, while, set, rebinding a
@@ -134,17 +162,33 @@ func (l *Loop) runScript(ctx context.Context, out *Outcome, tally *stepTally, ca
 
 	// Cancel the interpreter when the context ends, so a script spinning in
 	// pure Starlark stops at the wall-time bound or the caller's cancellation.
+	// The same goroutine watches heap growth, sampled every scriptMemPoll.
 	done := make(chan struct{})
 	var watcher sync.WaitGroup
 	watcher.Add(1)
+	baseline := heapSample()
+	maxGrowth, poll := scriptMaxHeapGrowth, scriptMemPoll
 	go func() {
 		defer watcher.Done()
-		select {
-		case <-ctx.Done():
-			reason := ctxReason(ctx)
-			run.setBreach(reason)
-			thread.Cancel(reason)
-		case <-done:
+		ticker := time.NewTicker(poll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				reason := ctxReason(ctx)
+				run.setBreach(reason)
+				thread.Cancel(reason)
+				return
+			case <-ticker.C:
+				if now := heapSample(); now > baseline && now-baseline > maxGrowth {
+					reason := fmt.Sprintf("the heap grew by more than %d MiB while the script ran (process-wide heap growth, not only the script's own)", maxGrowth>>20)
+					run.setBreach(reason)
+					thread.Cancel(reason)
+					return
+				}
+			case <-done:
+				return
+			}
 		}
 	}()
 	_, err := starlark.ExecFileOptions(scriptOptions, thread, "script.star", args.Script, run.predeclared(ctx))

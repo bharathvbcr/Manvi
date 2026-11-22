@@ -84,6 +84,61 @@ func shortWallTime(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { scriptWallTime = old })
 }
 
+func shortHeapBound(t *testing.T, growth uint64, poll time.Duration) {
+	t.Helper()
+	oldGrowth, oldPoll := scriptMaxHeapGrowth, scriptMemPoll
+	scriptMaxHeapGrowth, scriptMemPoll = growth, poll
+	t.Cleanup(func() { scriptMaxHeapGrowth, scriptMemPoll = oldGrowth, oldPoll })
+}
+
+func TestScriptMemoryBound(t *testing.T) {
+	t.Run("deterministic heap growth ends the script", func(t *testing.T) {
+		shortHeapBound(t, 1<<20, time.Millisecond)
+		var reads atomic.Uint64
+		old := heapSample
+		// The first read is the baseline; every later one is 4 MiB higher.
+		heapSample = func() uint64 { return 1<<30 + reads.Add(1)*(4<<20) }
+		t.Cleanup(func() { heapSample = old })
+		h := scriptHarness(t, "print('before')\nwait()\nprint('after')", 0)
+		// wait holds the script until the watchdog has sampled, so the breach
+		// is the first thing that ends it, whatever the scheduling.
+		registerBatchable(t, h, "wait", func(context.Context, tools.Call) tools.Result {
+			for reads.Load() < 2 {
+				time.Sleep(time.Millisecond)
+			}
+			time.Sleep(20 * time.Millisecond)
+			return tools.Result{Text: "ok"}
+		})
+		_, text := runScriptHarness(t, h)
+		if !strings.Contains(text, "heap grew by more than 1 MiB") || !strings.Contains(text, "before") || strings.Contains(text, "after") ||
+			strings.Contains(text, "interpreter steps") || strings.Contains(text, "wall-time") {
+			t.Errorf("result:\n%s", text)
+		}
+	})
+	t.Run("real allocations end the script", func(t *testing.T) {
+		shortHeapBound(t, 64<<20, 5*time.Millisecond)
+		h := scriptHarness(t, "s = 'x' * (8 << 20)\nparts = []\nfor i in range(100000):\n    parts.append(s + str(i))\nprint('after')", 0)
+		start := time.Now()
+		_, text := runScriptHarness(t, h)
+		if !strings.Contains(text, "heap grew by more than 64 MiB") || strings.Contains(text, "after") {
+			t.Errorf("result:\n%s", text)
+		}
+		if time.Since(start) > scriptWallTime {
+			t.Errorf("took %s", time.Since(start))
+		}
+	})
+	t.Run("a small script is untouched", func(t *testing.T) {
+		h := scriptHarness(t, "xs = [str(i) for i in range(1000)]\nprint(len(xs))", 0)
+		out, text := runScriptHarness(t, h)
+		if !strings.Contains(text, "1000") || strings.Contains(text, "ended early") || strings.Contains(text, "script error") {
+			t.Errorf("result:\n%s", text)
+		}
+		if out.Steps == 0 {
+			t.Errorf("the turn did not go on")
+		}
+	})
+}
+
 // The point of a script: the second call's arguments come from the first
 // call's answer, in one step, behind one wire result.
 func TestScriptChainsOneCallsAnswerIntoTheNext(t *testing.T) {
