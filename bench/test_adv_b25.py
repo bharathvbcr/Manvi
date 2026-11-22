@@ -27,7 +27,7 @@ import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mh.tools as toolmod
-from mh.tools import Sandbox, ChildScope, scrubbed_env, env_file_guards, git_guard_roots
+from mh.tools import Sandbox, scrubbed_env, env_file_guards, git_guard_roots
 from mh.bench import load_tasks
 from mh.harness import log_args, ARG_LOG_MAX_CHARS
 from mh.checks import FAIL, PASS, check
