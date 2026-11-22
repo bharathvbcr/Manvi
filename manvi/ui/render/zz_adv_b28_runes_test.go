@@ -269,3 +269,19 @@ func TestAdvB28MarksOnAWideBaseReachTheTTY(t *testing.T) {
 		}
 	}
 }
+
+// A ZWJ run after a narrow pictograph is stored on a painted cell, so unlike the
+// wide-base cases it does reach the tty.
+func TestAdvB28ZWJRunAfterANarrowPictographIsNotPaintedWhole(t *testing.T) {
+	for _, base := range []rune{0x2192, 0x2500, 0x1F3F3} {
+		if RuneWidth(base) != 1 {
+			t.Fatalf("U+%04X is not a one-column base (width %d); the case proves nothing", base, RuneWidth(base))
+		}
+		got := advPaintBuf(t, 80, 1, func(b *Buffer) {
+			b.SetString(0, 0, string(base)+strings.Repeat("\u200d", 100)+"x", Plain)
+		})
+		if n := strings.Count(got, "\u200d"); n > 1 {
+			t.Errorf("U+%04X: %d ZWJ painted to the tty after one pictograph: %q", base, n, got)
+		}
+	}
+}

@@ -272,8 +272,8 @@ func TestAdvB28RunGitStdinCancelledMidWriteReturns(t *testing.T) {
 func TestAdvB28RunGitStdinOutputIsCapped(t *testing.T) {
 	f := shellCommitFixture(t, false)
 	_, err := runGitStdin(t.Context(), f.root, "x\n", "-c", "alias.advbig=!head -c 20000000 /dev/zero", "advbig")
-	if err == nil {
-		t.Fatal("20 MB of output was returned whole past the capture cap")
+	if err == nil || !strings.Contains(err.Error(), "output truncated") {
+		t.Fatalf("20 MB of output was not refused with the capture note: %v", err)
 	}
 }
 
@@ -367,5 +367,35 @@ func TestAdvB28MovedRefsToOneCommitSpawnConstant(t *testing.T) {
 	small, large := spawns(3), spawns(300)
 	if small != large {
 		t.Fatalf("verifyRefs starts %d git processes for 3 moved refs and %d for 300 moved to the same commit", small, large)
+	}
+}
+
+// rev-list --stdin applies --not to the lines after it only, and an empty --not
+// section excludes nothing. Asserted through runGitStdin, the call newCommits makes.
+func TestAdvB28StdinNotAppliesOnlyToLaterLinesAndEmptyExcludesNothing(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	g := advBuildGraph(t, f)
+	list := func(in string) []string {
+		out, err := runGitStdin(t.Context(), f.root, in, "rev-list", "--stdin")
+		if err != nil {
+			t.Fatalf("rev-list --stdin %q: %v", in, err)
+		}
+		return strings.Fields(out)
+	}
+	// c3 positive, s1 negative: c3 and its ancestors not reachable from s1.
+	if got := list(g.c3 + "\n--not\n" + g.s1 + "\n"); !slices.Equal(got, []string{g.c3}) {
+		t.Errorf("c3 --not s1 = %v, want [c3]", got)
+	}
+	// The negation is after, so s1 is positive here and c3 is the excluded one.
+	if got := list(g.s1 + "\n--not\n" + g.c3 + "\n"); !slices.Equal(got, []string{g.s1}) {
+		t.Errorf("s1 --not c3 = %v, want [s1]", got)
+	}
+	// c2 listed before --not stays positive; only the line after is excluded.
+	if got := list(g.c2 + "\n--not\n" + g.c1 + "\n"); !slices.Equal(got, []string{g.c2}) {
+		t.Errorf("c2 --not c1 = %v, want [c2]", got)
+	}
+	with, without := list(g.merge+"\n--not\n"), list(g.merge+"\n")
+	if !slices.Equal(with, without) || len(with) == 0 {
+		t.Errorf("an empty --not section changed the answer: %v vs %v", with, without)
 	}
 }
