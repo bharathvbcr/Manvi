@@ -302,7 +302,6 @@ func TestAdvB25ScriptBreachShapeMatches(t *testing.T) {
 	if !heapErr || !stepErr || !wallErr {
 		t.Errorf("IsError flag: heap=%v step=%v wall=%v (want all true)", heapErr, stepErr, wallErr)
 	}
-	return
 }
 
 func advToolResultIsError(t *testing.T, h *harness) bool {
@@ -337,7 +336,6 @@ func TestAdvB25ScriptBaselineInflatedByGarbageMasksBound(t *testing.T) {
 		garbage[i] = 1
 	}
 	advSink = garbage
-	garbage = nil
 	shortHeapBound(t, 32<<20, 2*time.Millisecond)
 	h := scriptHarness(t, "gc()\nkeep = []\nfor i in range(16):\n    keep.append('k' * (8 << 20))\n    pause()\nprint('after')", 32)
 	registerBatchable(t, h, "gc", func(context.Context, tools.Call) tools.Result {
