@@ -18,7 +18,7 @@ func TestAdvSetsidHelperRepeatsWithoutFlakeOrLeak(t *testing.T) {
 		t.Run("round", func(t *testing.T) {
 			grouped = startHelperTree(t, "parent-samegroup")
 			escaped = startHelperTree(t, "parent-setsid")
-			deadline := time.Now().Add(5 * time.Second)
+			deadline := time.Now().Add(helperBound(t, 5*time.Second))
 			for processAlive(grouped) && time.Now().Before(deadline) {
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -30,7 +30,7 @@ func TestAdvSetsidHelperRepeatsWithoutFlakeOrLeak(t *testing.T) {
 			}
 		})
 		// The subtest's Cleanup has run: SIGKILL was sent to both pids.
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(helperBound(t, 5*time.Second))
 		for (processAlive(escaped) || processAlive(grouped)) && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
