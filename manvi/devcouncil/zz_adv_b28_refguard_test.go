@@ -310,7 +310,6 @@ func TestAdvB28NewCommitsSpawnCountIndependentOfRecordedSize(t *testing.T) {
 // catch that regression; it does not.
 func TestAdvB28SpawnCheckCatchesAPerDistinctOIDProcess(t *testing.T) {
 	f := shellCommitFixture(t, false)
-	head := headOf(t, f.root)
 	perOID := func(snap *refSnapshot) {
 		for _, oid := range snap.oids() {
 			if _, err := runGit(t.Context(), f.root, "cat-file", "-t", oid); err != nil {
@@ -318,12 +317,12 @@ func TestAdvB28SpawnCheckCatchesAPerDistinctOIDProcess(t *testing.T) {
 			}
 		}
 	}
-	addBulkRefs(t, f.root, head, 0, 10)
+	addDistinctRefs(t, f.root, 0, 10)
 	small := guardSpawns(t, f, perOID)
-	addBulkRefs(t, f.root, head, 10, 1000)
+	addDistinctRefs(t, f.root, 10, 1000)
 	large := guardSpawns(t, f, perOID)
 	if msg := spawnScaling(small, large, 10, 1000); msg == "" {
-		t.Errorf("a guard with a process per distinct oid (%d and %d spawns) passed the scaling check: the fixture puts every ref on one commit", small, large)
+		t.Errorf("a guard with a process per distinct oid (%d and %d spawns) passed the scaling check", small, large)
 	}
 }
 

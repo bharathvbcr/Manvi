@@ -282,10 +282,41 @@ func addBulkRefs(t *testing.T, root, head string, from, to int) {
 	}
 }
 
+// addDistinctRefs creates the branches refs/heads/bulk/b<from> to b<to-1>, each
+// on a commit of its own (a root commit with its own timestamp), so the refs
+// hold as many distinct object ids as there are refs.
+func addDistinctRefs(t *testing.T, root string, from, to int) {
+	t.Helper()
+	var in strings.Builder
+	for i := from; i < to; i++ {
+		fmt.Fprintf(&in, "commit refs/heads/bulk/b%04d\ncommitter t <t@example.com> %d +0000\ndata 1\nx\n\n", i, 1700000000+i)
+	}
+	advFastImport(t, root, in.String())
+}
+
+// moveRefsToNewCommits makes k new refs, each on a commit of its own that no
+// recorded ref reaches, so the next verifyRefs lists and scans k new commits.
+func moveRefsToNewCommits(t *testing.T, root string, k int) {
+	t.Helper()
+	var in strings.Builder
+	for i := 0; i < k; i++ {
+		fmt.Fprintf(&in, "commit refs/heads/moved/m%d\ncommitter t <t@example.com> %d +0000\ndata 1\nm\n\n", i, 1800000000+i)
+	}
+	advFastImport(t, root, in.String())
+}
+
 // guardSpawns is the number of git processes one guarded call (the snapshot
 // before and the unchanged-refs check after) starts. extra runs inside the
 // call, after the snapshot, and stands in for a regression in the guard.
 func guardSpawns(t *testing.T, f *fixture, extra func(snap *refSnapshot)) int64 {
+	t.Helper()
+	return guardSpawnsMoving(t, f, nil, extra)
+}
+
+// guardSpawnsMoving is guardSpawns for a call whose command moves refs: move
+// runs between the snapshot and the check, so the check judges the commits
+// that appeared.
+func guardSpawnsMoving(t *testing.T, f *fixture, move func(), extra func(snap *refSnapshot)) int64 {
 	t.Helper()
 	ctx := t.Context()
 	start := procSpawns.Load()
@@ -296,8 +327,11 @@ func guardSpawns(t *testing.T, f *fixture, extra func(snap *refSnapshot)) int64 
 	if extra != nil {
 		extra(snap)
 	}
+	if move != nil {
+		move()
+	}
 	if v, _ := f.reg.verifyRefs(ctx, snap, "true"); v != nil {
-		t.Fatalf("unchanged refs reported: %+v", v)
+		t.Fatalf("clean refs reported: %+v", v)
 	}
 	return procSpawns.Load() - start
 }
@@ -318,10 +352,9 @@ func spawnScaling(small, large int64, smallRefs, largeRefs int) string {
 // time is logged, never asserted.
 func TestShellRefGuardLatencyWith1000Refs(t *testing.T) {
 	f := shellCommitFixture(t, false)
-	head := headOf(t, f.root)
-	addBulkRefs(t, f.root, head, 0, 10)
+	addDistinctRefs(t, f.root, 0, 10)
 	small := guardSpawns(t, f, nil)
-	addBulkRefs(t, f.root, head, 10, 1000)
+	addDistinctRefs(t, f.root, 10, 1000)
 	start := time.Now()
 	large := guardSpawns(t, f, nil)
 	t.Logf("guard with %d refs: %d git processes, %s (snapshot + check, refs unchanged)", len(strings.Split(gitOut(t, f.root, "for-each-ref"), "\n")), large, time.Since(start))
@@ -330,10 +363,32 @@ func TestShellRefGuardLatencyWith1000Refs(t *testing.T) {
 	}
 }
 
-// The check above fails when the guard regresses to one git process per ref.
+// The same count when the command moved refs, so the check lists and scans the
+// new commits: 3 new commits cost the same with 10 refs as with 1000, every ref
+// on a commit of its own.
+func TestShellRefGuardSpawnsWithMovedRefsDoNotGrowWithRefs(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	move := func() { moveRefsToNewCommits(t, f.root, 3) }
+	addDistinctRefs(t, f.root, 0, 10)
+	unmoved := guardSpawns(t, f, nil)
+	small := guardSpawnsMoving(t, f, move, nil)
+	if small <= unmoved {
+		t.Fatalf("moving refs started %d git processes, no more than the %d of an unchanged call: the commit-scanning path did not run", small, unmoved)
+	}
+	for i := 0; i < 3; i++ {
+		run(t, f.root, "update-ref", "-d", fmt.Sprintf("refs/heads/moved/m%d", i))
+	}
+	addDistinctRefs(t, f.root, 10, 1000)
+	large := guardSpawnsMoving(t, f, move, nil)
+	if msg := spawnScaling(small, large, 10, 1000); msg != "" {
+		t.Error(msg)
+	}
+}
+
+// The checks above fail when the guard regresses to one git process per ref,
+// or per distinct object id, with or without moved refs.
 func TestShellRefGuardSpawnCheckCatchesAPerRefProcess(t *testing.T) {
 	f := shellCommitFixture(t, false)
-	head := headOf(t, f.root)
 	perRef := func(snap *refSnapshot) {
 		for ref := range snap.refs {
 			if _, err := runGit(t.Context(), f.root, "rev-parse", "--verify", "--quiet", ref); err != nil {
@@ -341,12 +396,34 @@ func TestShellRefGuardSpawnCheckCatchesAPerRefProcess(t *testing.T) {
 			}
 		}
 	}
-	addBulkRefs(t, f.root, head, 0, 10)
+	addDistinctRefs(t, f.root, 0, 10)
 	small := guardSpawns(t, f, perRef)
-	addBulkRefs(t, f.root, head, 10, 1000)
+	addDistinctRefs(t, f.root, 10, 1000)
 	large := guardSpawns(t, f, perRef)
 	if msg := spawnScaling(small, large, 10, 1000); msg == "" {
 		t.Errorf("a guard with a process per ref (%d and %d spawns) passed the scaling check", small, large)
+	}
+}
+
+func TestShellRefGuardSpawnCheckCatchesAPerOIDProcessWithMovedRefs(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	perOID := func(snap *refSnapshot) {
+		for _, oid := range snap.oids() {
+			if _, err := runGit(t.Context(), f.root, "cat-file", "-t", oid); err != nil {
+				t.Fatalf("cat-file %s: %v", oid, err)
+			}
+		}
+	}
+	move := func() { moveRefsToNewCommits(t, f.root, 3) }
+	addDistinctRefs(t, f.root, 0, 10)
+	small := guardSpawnsMoving(t, f, move, perOID)
+	for i := 0; i < 3; i++ {
+		run(t, f.root, "update-ref", "-d", fmt.Sprintf("refs/heads/moved/m%d", i))
+	}
+	addDistinctRefs(t, f.root, 10, 1000)
+	large := guardSpawnsMoving(t, f, move, perOID)
+	if msg := spawnScaling(small, large, 10, 1000); msg == "" {
+		t.Errorf("a guard with a process per distinct oid (%d and %d spawns) passed the moved-refs scaling check", small, large)
 	}
 }
 
