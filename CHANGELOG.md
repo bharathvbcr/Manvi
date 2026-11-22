@@ -27,8 +27,10 @@ under **Unreleased** in the same commit as the code.
   the credential scrubber changed no longer counts as "read in full" for the
   overwrite guard (the model saw placeholders, not the file's bytes), and it
   drops any earlier read-in-full mark for that path. `devcouncil_write_file`
-  then refuses to overwrite that file until it is changed with
-  `devcouncil_patch_file`; the read result says so. The write-impact lookup
+  then refuses to overwrite that file; change it with
+  `devcouncil_patch_file`. `devcouncil_write_file` also refuses, at write time,
+  while the file shows redacted, whichever tool showed it (range read, grep,
+  batch); the read result says so. The write-impact lookup
   keeps its 8 s cap, now documented with a measurement.
 
 ### Added
