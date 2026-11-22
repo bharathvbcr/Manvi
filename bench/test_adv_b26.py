@@ -12,9 +12,9 @@ killed by its recorded PID, never by name.
 
 Run from bench/ with Python >= 3.11:  python3.14 test_adv_b26.py
 """
-import ctypes
-import json
 import os
+import pwd
+import shlex
 import shutil
 import signal
 import subprocess
@@ -338,7 +338,7 @@ def p_grid_structure():
     keystore._store["Z_API_KEY"] = "z"
     try:
         env, fds, done = keystore.handoff({})
-        a = os.fstat(fds[0])
+        os.fstat(fds[0])
         done()
         done()          # idempotent close
         try:
@@ -693,6 +693,7 @@ def p_channels():
     if not DARWIN or host_probe_skipped("notifyd / distributed notifications / keychain / launchd / defaults / pasteboard"):
         return
     tag = "advb26" + uuid.uuid4().hex[:8]
+    kc = shlex.quote(os.path.join(pwd.getpwuid(os.getuid()).pw_dir, "Library/Keychains/login.keychain-db"))
     sbA, _ = sandbox_for()
     sbB, _ = sandbox_for()
     saved_clip = subprocess.run(["pbpaste"], capture_output=True).stdout
@@ -745,28 +746,37 @@ def p_channels():
               and not os.path.exists(f"/Users/Shared/{tag}.plist"), "defaults value or /Users/Shared plist landed")
         # pasteboard through pbcopy and through AppleScript (cfprefsd/pasteboard deny should hold both ways).
         subprocess.run(["pbcopy"], input=b"CLIP-HOST-ORIGINAL", check=False)
-        rs(sbA, f"printf CLIP-EPISODE-SENTINEL | pbcopy 2>&1; osascript -e 'set the clipboard to \"CLIP-EPISODE-SENTINEL\"' 2>&1")
+        rs(sbA, "printf CLIP-EPISODE-SENTINEL | pbcopy 2>&1; osascript -e 'set the clipboard to \"CLIP-EPISODE-SENTINEL\"' 2>&1")
         check("test_adv_b26_an_episode_cannot_write_the_clipboard", b"CLIP-EPISODE-SENTINEL" not in subprocess.run(
             ["pbpaste"], capture_output=True).stdout, "clipboard holds the episode's text")
         subprocess.run(["pbcopy"], input=b"CLIP-HOST-ORIGINAL", check=False)
         got = rs(sbA, "pbpaste 2>&1; osascript -e 'the clipboard as text' 2>&1")
         check("test_adv_b26_an_episode_cannot_read_the_clipboard", "CLIP-HOST-ORIGINAL" not in got, got[:200])
-        # keychain (default keychain, unique service name), with a control.
-        host(f"security add-generic-password -s {tag}c -a adv -w CTL 2>&1", timeout=40)
-        ctlk = host(f"security find-generic-password -s {tag}c -w 2>&1", timeout=40)
-        host(f"security delete-generic-password -s {tag}c 2>&1", timeout=40)
-        kcout = rs(sbA, f"security add-generic-password -s {tag} -a adv -w KC-SENTINEL 2>&1")
+        # keychain (the login keychain named by path, unique service name), with a control.
+        # Never the default keychain: inside an episode HOME is the episode's private dir, which has
+        # no login keychain, and asking security(1) for the default one there makes macOS put a modal
+        # "A keychain cannot be found" dialog on the operator's screen; the sandboxed call then hangs
+        # until the shell timeout and proves nothing. An adversary names the path anyway.
+        host(f"security add-generic-password -s {tag}c -a adv -w CTL {kc} 2>&1", timeout=40)
+        ctlk = host(f"security find-generic-password -s {tag}c -w {kc} 2>&1", timeout=40)
+        host(f"security delete-generic-password -s {tag}c {kc} 2>&1", timeout=40)
+        kcout = rs(sbA, f"security add-generic-password -s {tag} -a adv -w KC-SENTINEL {kc} 2>&1; echo rc=$?")
         info("keychain_sandboxed_add", kcout[:160].replace("\n", " | "))
-        gotk = host(f"security find-generic-password -s {tag} -w 2>&1", timeout=40)
-        if ctlk.strip() != "CTL":
+        gotk = host(f"security find-generic-password -s {tag} -w {kc} 2>&1", timeout=40)
+        if "KC-SENTINEL" in gotk:
+            check("test_adv_b26_an_episode_cannot_leave_an_item_in_the_login_keychain", False, gotk)
+        elif ctlk.strip() != "CTL":
             info("keychain", f"inconclusive: the unsandboxed control cannot write the keychain either ({ctlk!r})")
+        elif kcout.startswith("TOOLERROR") or "rc=" not in kcout:
+            # A hang or a killed shell is not a refusal: the add never finished, so nothing was shown.
+            info("keychain", f"inconclusive: the sandboxed add did not finish ({kcout[:120]!r})")
         else:
-            check("test_adv_b26_an_episode_cannot_leave_an_item_in_the_login_keychain", "KC-SENTINEL" not in gotk, gotk)
+            check("test_adv_b26_an_episode_cannot_leave_an_item_in_the_login_keychain", True, gotk)
     finally:
         subprocess.run(["pbcopy"], input=saved_clip, check=False)
         host(f"launchctl unsetenv ADV_{tag}; launchctl unsetenv ADV_{tag}_C; defaults delete {tag}.dom 2>&1; "
              f"rm -f /Users/Shared/{tag}.plist /Users/Shared/{tag}; ", timeout=30)
-        host(f"security delete-generic-password -s {tag} 2>&1; security delete-generic-password -s {tag}c 2>&1", timeout=40)
+        host(f"security delete-generic-password -s {tag} {kc} 2>&1; security delete-generic-password -s {tag}c {kc} 2>&1", timeout=40)
         if listener is not None and listener.poll() is None:
             listener.kill()
         sbA.close()
