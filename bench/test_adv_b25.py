@@ -345,6 +345,45 @@ def p_env_guard_shapes():
 
 guarded("test_adv_b25_env_guard_shapes", p_env_guard_shapes)
 
+
+def p_env_guard_cap_refuses():
+    """A .env* scan that hits its directory cap refuses; it never runs with a partial guard set."""
+    repo = os.path.realpath(tempfile.mkdtemp(prefix="repo-cap-", dir=ADV))
+    os.makedirs(os.path.join(repo, ".git"))
+    bench = os.path.join(repo, "bench")
+    os.makedirs(bench)
+    for i in range(8):
+        os.makedirs(os.path.join(repo, f"pkg{i}"))
+    open(os.path.join(repo, "pkg7", ".env"), "w").write("PAST-THE-CAP-SENTINEL")
+    saved_cap, saved_cache = toolmod.ENV_GUARD_MAX_DIRS, dict(toolmod._ENV_GUARD_CACHE)
+    err, guards = None, None
+    try:
+        toolmod.ENV_GUARD_MAX_DIRS = 4
+        toolmod._ENV_GUARD_CACHE.clear()
+        try:
+            guards = env_file_guards(bench)
+        except toolmod.GitGuardError as e:
+            err = e
+        check("test_adv_b25_capped_env_guard_scan_refuses_the_episode",
+              err is not None, f"no refusal; the scan returned {guards!r} with the cap hit")
+        text = str(err)
+        check("test_adv_b25_capped_env_guard_refusal_names_the_cap_and_the_directory_count",
+              err is not None and "cap of 4 directories" in text and "5 directories" in text, text[:300])
+        check("test_adv_b25_capped_scan_is_not_cached_as_a_complete_one",
+              not toolmod._ENV_GUARD_CACHE, str(toolmod._ENV_GUARD_CACHE)[:200])
+        toolmod.ENV_GUARD_MAX_DIRS = 50
+        found = env_file_guards(bench)
+        check("test_adv_b25_scan_under_its_cap_still_finds_every_env_file",
+              found == (os.path.join(repo, "pkg7", ".env"),), repr(found))
+    finally:
+        toolmod.ENV_GUARD_MAX_DIRS = saved_cap
+        toolmod._ENV_GUARD_CACHE.clear()
+        toolmod._ENV_GUARD_CACHE.update(saved_cache)
+        shutil.rmtree(repo, ignore_errors=True)
+
+
+guarded("test_adv_b25_env_guard_cap", p_env_guard_cap_refuses)
+
 # ---------------------------------------------------------------------------
 print("environment leakage")
 

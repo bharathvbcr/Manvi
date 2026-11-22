@@ -414,11 +414,12 @@ def _walk_env_files(top):
 
     Bounded: .git, node_modules, target, virtualenvs and nested checkouts are
     not entered, and at most ENV_GUARD_MAX_DIRS directories are visited. Hitting
-    that cap is recorded in the stats (and in every episode's containment
-    event), never presented as a complete scan. A symlink named .env* is
+    that cap raises GitGuardError: a partial guard set leaves the .env files past
+    the cap readable, and an episode run on it would look the same as one run on
+    a complete scan. A symlink named .env* is
     included without being followed; the profile resolves it to its target.
     """
-    found, dirs, capped = set(), 0, False
+    found, dirs = set(), 0
 
     def onerror(e):
         raise GitGuardError(getattr(e, "filename", top) or top,
@@ -427,8 +428,10 @@ def _walk_env_files(top):
     for dp, dns, fns in os.walk(top, followlinks=False, onerror=onerror):
         dirs += 1
         if dirs > ENV_GUARD_MAX_DIRS:
-            capped = True
-            break
+            raise GitGuardError(
+                top, f"the .env* scan reached its cap of {ENV_GUARD_MAX_DIRS} "
+                     f"directories ({dirs} directories visited, more remain), so "
+                     f"the .env files past it would be unguarded")
         for n in fns:
             if n.startswith(".env"):
                 found.add(os.path.join(dp, n))
@@ -439,8 +442,7 @@ def _walk_env_files(top):
         dns[:] = [n for n in dns if n not in ENV_GUARD_PRUNE
                   and not os.path.islink(os.path.join(dp, n))
                   and not os.path.lexists(os.path.join(dp, n, ".git"))]
-    return tuple(sorted(found)), {"dirs": dirs, "cap": ENV_GUARD_MAX_DIRS,
-                                  "capped": capped}
+    return tuple(sorted(found)), {"dirs": dirs, "cap": ENV_GUARD_MAX_DIRS}
 
 
 def env_file_guards(*starts):
@@ -468,10 +470,13 @@ def env_file_guards(*starts):
 
 
 def env_guard_stats():
-    """How far the .env* scans got: directories visited, the cap, and whether it bit."""
+    """How far the .env* scans got: directories visited, and the cap they ran under.
+
+    A scan that reached the cap raised instead of being cached, so every scan
+    counted here is a complete one.
+    """
     runs = [s for _, s in _ENV_GUARD_CACHE.values()]
-    return {"dirs": sum(s["dirs"] for s in runs), "cap": ENV_GUARD_MAX_DIRS,
-            "capped": any(s["capped"] for s in runs)}
+    return {"dirs": sum(s["dirs"] for s in runs), "cap": ENV_GUARD_MAX_DIRS}
 
 
 def default_protected_roots():
