@@ -63,6 +63,9 @@ func TestAdvB26SubjectResizeAfterScrollToEnd(t *testing.T) {
 		advB26Frame(a, 100, 40)
 	}
 	card := a.Current().Approval()
+	if card == nil {
+		t.Fatal("no card")
+	}
 	if card.SubjectUnread() {
 		t.Fatal("premise: paging to the end should clear unread")
 	}
@@ -85,6 +88,9 @@ func TestAdvB26SubjectShortTerminalNeverArmsWithoutTail(t *testing.T) {
 		a.Dispatch(ActionResize{W: 100, H: h})
 		raiseRequest(a, commandRequest(advB26Long("; rm -rf ZZTAILZZ")))
 		card := a.Current().Approval()
+		if card == nil {
+			t.Fatal("no card")
+		}
 		for i := 0; i < 30; i++ {
 			key(a, "pgdn")
 			frame := strings.Join(advB26Frame(a, 100, h), "\n")
@@ -179,6 +185,9 @@ func TestAdvB26SubjectMegabyteIsBounded(t *testing.T) {
 		t.Fatalf("raising a 1 MB subject took %v", d)
 	}
 	card := a.Current().Approval()
+	if card == nil {
+		t.Fatal("no card")
+	}
 	lines, _, _ := card.content(a.Theme, 100)
 	if len(lines) > 200 {
 		t.Fatalf("the card builds %d rows for a 1 MB subject; unbounded", len(lines))

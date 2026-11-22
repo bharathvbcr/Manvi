@@ -31,7 +31,11 @@ const subjectRowBudget = 8
 // that the line renderer shares, so what an operator is shown does not depend
 // on which face shows it.
 func decisionLines(subject, text string, width int, label, body render.Style) []render.Line {
-	rows := ui.DecisionRows(subject, text, width)
+	return subjectLines(ui.DecisionRows(subject, text, width), label, body)
+}
+
+// subjectLines styles rows already laid out by ui.DecisionRows.
+func subjectLines(rows []ui.SubjectRow, label, body render.Style) []render.Line {
 	out := make([]render.Line, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, render.Line{
@@ -41,6 +45,10 @@ func decisionLines(subject, text string, width int, label, body render.Style) []
 	}
 	return out
 }
+
+// defaultCardInner is the width a card's subject is first laid out at, before
+// any frame has fixed the real one.
+const defaultCardInner = 94
 
 // ApprovalCard is the blocking permission prompt.
 //
@@ -109,15 +117,23 @@ type ApprovalCard struct {
 	done <-chan struct{}
 
 	// The subject's scroll state. subjectTop is the first row shown when the
-	// subject is longer than the row budget. subjectAtEnd and subjectLastLine
-	// describe the layout just built, and subjectSeen latches once Draw has
-	// painted the subject's last row, which is what arms the allow option for an
-	// overflowing subject.
-	subjectTop      int
-	subjectOverflow bool
-	subjectAtEnd    bool
-	subjectLastLine int
-	subjectSeen     bool
+	// subject is longer than the row budget. subjectOverflow, subjectHidden,
+	// subjectAtEnd and subjectLastLine describe the layout last built, and
+	// subjectEndPainted is true only if the frame most recently painted showed
+	// the subject's last row. It is rebuilt with every layout, so a resize or a
+	// scroll that moves the end off screen disarms the allow at once; it is not a
+	// latch.
+	subjectTop        int
+	subjectOverflow   bool
+	subjectHidden     bool
+	subjectAtEnd      bool
+	subjectLastLine   int
+	subjectEndPainted bool
+
+	// guarded marks a card promoted after another was retired. The operator's
+	// keystroke was aimed at the card that went, so this one takes no answer,
+	// Esc included, until it has been painted and the quiet period has passed.
+	guarded bool
 }
 
 // withdrawn reports that the caller this card was raised for has stopped
@@ -140,7 +156,7 @@ const withdrawnText = "withdrawn: cancelled before an answer"
 // SubjectUnread reports that the subject is longer than the card shows and its
 // end has not yet been on screen. The allow option is not armed until it has.
 func (c *ApprovalCard) SubjectUnread() bool {
-	return c.subjectOverflow && !c.subjectSeen
+	return c.subjectOverflow && !c.subjectEndPainted
 }
 
 // ScrollSubject moves the visible window of a long subject by delta rows.
@@ -171,7 +187,15 @@ const (
 func NewApprovalCard(req ui.Request, reply chan ui.Decision) *ApprovalCard {
 	p := NewPrompt()
 	p.Placeholder = "why this is safe — recorded on the grant"
-	return &ApprovalCard{Request: req, Reply: reply, reason: p, arrived: time.Now(), Index: 1, Total: 1}
+	c := &ApprovalCard{Request: req, Reply: reply, reason: p, arrived: time.Now(), Index: 1, Total: 1}
+	if !req.IsQuestion() {
+		// Unread until a frame has shown the end: a card that was never laid out
+		// must not be allowable.
+		rows := ui.DecisionRows(req.Subject, req.Path, defaultCardInner)
+		c.subjectHidden = ui.SubjectTruncated(rows)
+		c.subjectOverflow = len(rows) > subjectRowBudget
+	}
+	return c
 }
 
 // approvalQuiet is how long the card must have been on screen with no input
@@ -371,9 +395,9 @@ func (c *ApprovalCard) Accept() (ui.Decision, bool) {
 		if c.option == 0 {
 			return ui.Decision{Allow: false, Reason: "declined by the operator"}, true
 		}
-		if c.SubjectUnread() {
-			// Not armed: the operator has not yet seen all of what an allow
-			// would cover.
+		if c.subjectHidden || c.SubjectUnread() {
+			// Not armed: the operator has not seen, or cannot see, all of what
+			// an allow would cover.
 			return ui.Decision{}, false
 		}
 		c.stage = stageReason
@@ -502,7 +526,11 @@ func (c *ApprovalCard) content(th Theme, width int) (lines []render.Line, reason
 		// word "path" is a question about a different act than the one being
 		// asked. The subject is shown whole, wrapped, so a command's tail cannot
 		// sit past the card's edge while the grant covers it.
-		rows := decisionLines(c.Request.Subject, c.Request.Path, width, muted, strong)
+		subjectRows := ui.DecisionRows(c.Request.Subject, c.Request.Path, width)
+		hidden := ui.SubjectTruncated(subjectRows)
+		rows := subjectLines(subjectRows, muted, strong)
+		c.subjectHidden = hidden
+		c.subjectEndPainted = false
 		c.subjectOverflow = len(rows) > subjectRowBudget
 		c.subjectAtEnd = true
 		if c.subjectOverflow {
@@ -519,6 +547,10 @@ func (c *ApprovalCard) content(th Theme, width int) (lines []render.Line, reason
 		}
 		for _, l := range rows {
 			add(l)
+		}
+		if hidden {
+			add(render.Styled("too long to show or approve here — deny it and ask for a smaller step",
+				render.Style{Fg: th.Danger, Bg: th.BgOverlay, Attrs: render.Bold}))
 		}
 	}
 	if c.Request.TaskID != "" {
@@ -702,7 +734,7 @@ func (c *ApprovalCard) Draw(b *render.Buffer, r render.Rect, th Theme, tick int,
 		if i == c.subjectLastLine && c.subjectAtEnd && !c.isQuestion() {
 			// The last row of the subject is on screen: nothing an allow would
 			// cover is still hidden.
-			c.subjectSeen = true
+			c.subjectEndPainted = true
 		}
 	}
 	return caret
