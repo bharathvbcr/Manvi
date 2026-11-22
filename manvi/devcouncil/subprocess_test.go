@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -288,6 +289,10 @@ func (g helperGuard) until(cond func() bool) bool {
 	return true
 }
 
+// confirmedGone holds pids a test has seen exit. Their cleanup must not signal
+// them: a pid that is gone may by then belong to an unrelated process.
+var confirmedGone sync.Map
+
 // startHelperTree runs the helper under runProc and returns the pid of the
 // descendant it left behind.
 func startHelperTree(t *testing.T, g helperGuard, mode string) int {
@@ -313,7 +318,11 @@ func startHelperTree(t *testing.T, g helperGuard, mode string) int {
 				pid = n
 				// Killed by pid, and only this pid: it is the one process
 				// this test started that runProc may have left running.
-				t.Cleanup(func() { _ = syscall.Kill(n, syscall.SIGKILL) })
+				t.Cleanup(func() {
+					if _, gone := confirmedGone.Load(n); !gone {
+						_ = syscall.Kill(n, syscall.SIGKILL)
+					}
+				})
 			}
 		}
 	}
@@ -380,4 +389,5 @@ func TestSetsidSleeperExitsWhenItsOwnerIsGone(t *testing.T) {
 	if !g.until(func() bool { return !processAlive(pid) }) {
 		t.Fatalf("sleeper %d outlived its owner by %s", pid, g.bound)
 	}
+	confirmedGone.Store(pid, true)
 }
