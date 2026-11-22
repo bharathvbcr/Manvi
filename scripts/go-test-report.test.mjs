@@ -118,3 +118,30 @@ test("the command line reads a file and exits 0, and refuses a bad invocation", 
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /usage:/);
 });
+
+test("a package killed at -timeout is reported as a timeout, not as a failed test", () => {
+  const s = summarize([
+    ev({ Action: "start", Package: P }),
+    ev({ Action: "run", Package: P, Test: "TestSlow" }),
+    ev({ Action: "output", Package: P, Output: "panic: test timed out after 20m0s\n" }),
+    ev({ Action: "output", Package: P, Output: "\trunning tests:\n" }),
+    ev({ Action: "fail", Package: P, Elapsed: 1200 }),
+  ]);
+  assert.deepEqual(s.timedOutPackages, [{ pkg: P, after: "20m0s" }]);
+  assert.equal(s.failedTests, 0, "no test failed an assertion");
+  const md = renderReport(s);
+  assert.match(md, /Timed out, not an assertion failure/);
+  assert.match(md, /package `manvi\/codingagent` after 20m0s/);
+});
+
+test("an ordinary assertion failure is not called a timeout", () => {
+  const s = summarize([
+    ev({ Action: "run", Package: P, Test: "TestA" }),
+    ev({ Action: "output", Package: P, Test: "TestA", Output: "    a_test.go:9: attempts = 1, want 2\n" }),
+    ev({ Action: "fail", Package: P, Test: "TestA", Elapsed: 0.1 }),
+    ev({ Action: "fail", Package: P, Elapsed: 0.2 }),
+  ]);
+  assert.deepEqual(s.timedOutPackages, []);
+  assert.equal(s.failedTests, 1);
+  assert.doesNotMatch(renderReport(s), /Timed out/);
+});

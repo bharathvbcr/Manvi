@@ -19,6 +19,7 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
 const TERMINAL = new Set(["pass", "fail", "skip"]);
+const TIMED_OUT = /panic: test timed out after (\S+)/;
 
 /** One `go test -json` line as an event, or null for anything else (build output, blank). */
 export function parseLine(line) {
@@ -50,6 +51,7 @@ export function renderText(line) {
 export function summarize(lines, top = 15) {
   const packages = new Map();
   const tests = new Map();
+  const timedOut = new Map();
   let events = 0;
   let unparsed = 0;
 
@@ -67,6 +69,12 @@ export function summarize(lines, top = 15) {
     }
     events++;
     if (!e.Package) continue;
+    // go test kills a package binary that outlives -timeout and prints this
+    // line first. It is a finding of its own, not an assertion failure.
+    if (e.Action === "output" && typeof e.Output === "string") {
+      const m = TIMED_OUT.exec(e.Output);
+      if (m) timedOut.set(e.Package, m[1]);
+    }
     const isPackageEvent = e.Test === undefined || e.Test === "";
     const target = isPackageEvent
       ? record(packages, e.Package, { pkg: e.Package })
@@ -86,6 +94,7 @@ export function summarize(lines, top = 15) {
     packages: packages.size,
     tests: tests.size,
     failedTests: all(tests).filter((t) => t.status === "fail").length,
+    timedOutPackages: [...timedOut].map(([pkg, after]) => ({ pkg, after })),
     unfinishedPackages: all(packages).filter((p) => !p.done),
     unfinishedTests: all(tests).filter((t) => !t.done),
     slowestPackages: slowest(all(packages)),
@@ -105,6 +114,12 @@ export function renderReport(s, title = "go test") {
     return `${out.join("\n")}\n`;
   }
   out.push(`${s.packages} packages, ${s.tests} tests, ${s.failedTests} failed (${s.events} events, ${s.unparsed} non-event lines).`, "");
+
+  if (s.timedOutPackages.length > 0) {
+    out.push("**Timed out, not an assertion failure** — go test killed the package binary at its -timeout (a hang, or a host too loaded to finish):", "");
+    for (const p of s.timedOutPackages) out.push(`- package \`${short(p.pkg)}\` after ${p.after}`);
+    out.push("");
+  }
 
   if (s.unfinishedPackages.length === 0 && s.unfinishedTests.length === 0) {
     out.push("Every package and every test that started also finished.", "");
