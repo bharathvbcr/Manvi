@@ -234,6 +234,23 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	// shown the answer whole. See tools.Result.OnShown.
 	if args.Offset == 0 && args.Limit == 0 {
 		result := annotate(tools.Result{Text: string(data)}, decision)
+		// What the model sees is the scrubbed text (tools.Registry.Run scrubs
+		// every result), so a digest of the raw bytes would claim a read of
+		// bytes the model never saw: a rewrite from the placeholder text would
+		// then replace the credential with the placeholder. A file the
+		// scrubber changes is therefore not recorded as read in full; the
+		// overwrite guard refuses it and patching is the way to change it.
+		if r.shownRedacted(ctx, string(data)) {
+			// A mark from an earlier read stays good only while the file does,
+			// and the scrubber's watched set grows mid-session: a file read in
+			// full before its credential was watched must not keep its mark
+			// once the same bytes are shown redacted, or the placeholder
+			// written back would match the old digest and replace the credential.
+			r.inspected.forget(rel)
+			result.Text += "\n\n[This file contained text that was redacted in the view above, so it is not counted as read in full: " +
+				"devcouncil_write_file will refuse to overwrite it. Change it with devcouncil_patch_file.]"
+			return result
+		}
 		sum := sha256.Sum256(data)
 		if _, inView := tools.ViewFrom(ctx); inView {
 			result.OnShown = func() { r.inspected.mark(rel, sum) }
