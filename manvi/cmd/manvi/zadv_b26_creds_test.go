@@ -51,9 +51,9 @@ func newAdvB26Recorder(t *testing.T, status int, l net.Listener) *advB26Recorder
 	})
 	if l != nil {
 		rec.Server = httptest.NewUnstartedServer(h)
-		_ = rec.Server.Listener.Close()
-		rec.Server.Listener = l
-		rec.Server.Start()
+		_ = rec.Listener.Close()
+		rec.Listener = l
+		rec.Start()
 	} else {
 		rec.Server = httptest.NewServer(h)
 	}
@@ -228,7 +228,7 @@ func advB26Local(r *credentials.Resolver) func() (credentials.Secret, error) {
 // port is busy.
 func advB26DefaultPort(t *testing.T, status int) (rec *advB26Recorder, reg *flags.Registry) {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:8000")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:8000")
 	if err != nil {
 		t.Skipf("port 8000 busy: %v", err)
 	}

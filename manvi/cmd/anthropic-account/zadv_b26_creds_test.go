@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func TestAdvB26CredsMarkerThatIsASocketIsRefused(t *testing.T) {
 	if err := os.Mkdir(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	l, err := net.Listen("unix", filepath.Join(repo, markerName))
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", filepath.Join(repo, markerName))
 	if err != nil {
 		t.Skipf("cannot bind a unix socket here: %v", err)
 	}
@@ -109,6 +110,7 @@ func TestAdvB26CredsMarkerThroughASymlinkedParentIsRefused(t *testing.T) {
 func TestAdvB26CredsOversizedMarkerIsBoundedAndRefused(t *testing.T) {
 	home, repo := advB26Repo(t)
 	marker := filepath.Join(repo, markerName)
+	// #nosec G304 -- marker is under this test's t.TempDir().
 	f, err := os.Create(marker)
 	if err != nil {
 		t.Fatal(err)

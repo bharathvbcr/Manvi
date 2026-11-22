@@ -66,6 +66,7 @@ func TestAdvB26CredsNamedEndpointRedirectDoesNotCarryTheKey(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%d", source, code), func(t *testing.T) {
 				sink := newAdvB26Sink(t)
 				origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// #nosec G710 -- a redirect to a local test sink is the thing under test.
 					http.Redirect(w, r, sink.URL+r.URL.Path, code)
 				}))
 				defer origin.Close()
@@ -93,6 +94,7 @@ func TestAdvB26CredsRedirectOnEveryProbePath(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":[{"id":"m"}]}`))
 			return
 		}
+		// #nosec G710 -- a redirect to a local test sink is the thing under test.
 		http.Redirect(w, r, sink.URL+r.URL.Path, http.StatusTemporaryRedirect)
 	}))
 	defer origin.Close()
