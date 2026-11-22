@@ -49,8 +49,9 @@ const samplesFurtherWithheld = "[further text after the call-site sample withhel
 // partialAnswerPrefix is what DevCouncil's devmap client puts in front of a
 // walk_incomplete value (dc/devmap runQuery), so the tools that read devmap
 // through that client see the note with it. Client.Advanced returns devmap's
-// data raw, so devcouncil_code's answer carries the bare note. The prefix is the client's own text, never the receiver's, and it
-// stands before the note's first clause, so it is set aside and put back.
+// data raw, so devcouncil_code's answer carries the bare note. The prefix is
+// the client's own text, never the receiver's, and it stands before the note's
+// first clause, so it is set aside and put back.
 const partialAnswerPrefix = "devmap says the answer is partial: "
 
 // engineClause is a clause devmap writes after its call-site clause and the
@@ -80,8 +81,8 @@ var (
 	// fixedClauses are clauses with no number and no free text in them, kept as
 	// they are: the markers above and devmap's own two number-free sentences.
 	fixedClauses = map[string]bool{
-		"they are listed in `unresolved_namesakes` as candidates to verify, not as callers": true,
-		"callers the resolver could not bind are not listed — ask again":                    true,
+		"they are listed in `unresolved_namesakes` as candidates to verify, not as callers":  true,
+		"callers the resolver could not bind are not listed — ask again":                     true,
 		"whether calls the resolver could not bind touch this answer is unknown — ask again": true,
 		WithheldCallSiteSample: true, samplesFurtherWithheld: true,
 		markerKeysCapped: true, markerNamesCapped: true, markerNamesNotRead: true,
@@ -122,7 +123,12 @@ type noteSegment struct {
 // it keeps and markers it keeps.
 //
 // Not covered: a clause before the first call-site clause is devmap's and is
-// kept verbatim, including any file paths it lists.
+// kept verbatim, including any file paths it lists and the budget note's sample
+// of up to 10 callee names (devmap-resolve model.rs ResolutionBudgetGap).
+// A callee name containing "; N call site(s)" inside that sample could become
+// the anchor: that costs count integrity only, since no receiver text is in it.
+// The fix belongs in devmap (quote the sample names), tracked on a DevCouncil
+// card.
 func WithholdCallSiteSamples(text string) string {
 	if !callSiteNote.MatchString(text) {
 		return text
