@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -340,6 +341,26 @@ func TestSSEOverAnHTTPResponse(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("read %d events, want 2", count)
+	}
+}
+
+// TestAnUnparseableURLIsNotLoopback: a URL that will not parse has no host to
+// vouch for, so it must not be reported as this machine. The old substring
+// fallback answered true for any string mentioning a loopback literal, which
+// let a remote host carry "localhost" in its query and be sent a borrowed key.
+func TestAnUnparseableURLIsNotLoopback(t *testing.T) {
+	for _, raw := range []string{
+		"http://198.51.100.7:8000/v1/%zz?upstream=localhost",
+		"http://198.51.100.7:8000/v1/%zz#127.0.0.1",
+		"http://user@198.51.100.7/%zz/::1",
+		"127.0.0.1:8000/v1", // no scheme: net/url refuses it, so it was never a usable base URL
+	} {
+		if _, err := url.Parse(raw); err == nil {
+			t.Fatalf("fixture %q parses; the test needs an unparseable URL", raw)
+		}
+		if isLoopbackURL(raw) || IsLoopbackURL(raw) {
+			t.Errorf("IsLoopbackURL(%q) = true, want false for an unparseable URL", raw)
+		}
 	}
 }
 
