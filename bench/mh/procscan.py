@@ -42,6 +42,7 @@ MAX_PIDS = 1 << 18
 MAX_KILLS_PER_PASS = 4096
 SCAN_BUDGET_S = 3.0
 REAP_DEADLINE_S = 2.0
+SETTLE_S = 0.25     # after the final kill pass, how long a SIGKILLed pid may take to go
 _POLL_S = 0.05
 
 _KERN_PROCARGS2 = (1, 49)       # CTL_KERN, KERN_PROCARGS2 (sys/sysctl.h)
@@ -191,8 +192,14 @@ def reap_marked(marker, deadline_s=REAP_DEADLINE_S):
                 except (ProcessLookupError, PermissionError):
                     pass
         if time.monotonic() >= end:
-            # Deadline passed after a full kill pass: what is still there is reported.
-            return [p for p in found if _carries(p, needle)] or marked_pids(marker)
+            # Deadline passed after a full kill pass. A SIGKILLed process needs a
+            # moment to go; wait briefly for it, then report what is still there.
+            settle = time.monotonic() + SETTLE_S
+            while True:
+                left = [p for p in found if _carries(p, needle)]
+                if not left or time.monotonic() >= settle:
+                    return left or marked_pids(marker)
+                time.sleep(_POLL_S / 5)
         time.sleep(_POLL_S)
 
 
