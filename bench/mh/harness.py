@@ -329,6 +329,13 @@ class Harness:
             return self._run()
         finally:
             self.sb.close()
+            # What outlived the episode is recorded on the episode itself: a
+            # process that survived is a channel into a later episode, and an
+            # unrun scan must not read the same as a clean one.
+            if self.sb.survivors or self.sb.reap_error:
+                self.res.events.append({"t": "episode_survivors",
+                                        "pids": list(self.sb.survivors),
+                                        "scan_error": self.sb.reap_error})
 
     def _run(self):
         t0 = time.time()

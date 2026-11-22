@@ -33,6 +33,8 @@ import tempfile
 import time
 import weakref
 
+from . import procscan
+
 MAX_OUTPUT_BYTES = 30_000       # Terminus-KIRA's cap, inherited by the paper's harness
 SHELL_TIMEOUT_S = 120
 DIR_LIST_LIMIT = 200            # entries shown for a directory listing
@@ -702,6 +704,13 @@ class ChildScope:
         self.root = os.path.realpath(tempfile.mkdtemp(
             prefix=prefix, dir=parent or runner_parent()))
         self._final = weakref.finalize(self, remove_tree, self.root)
+        # Unique per scope and carried in every child's environment, so close()
+        # can find what the children left behind (see mh.procscan).
+        self.marker = os.urandom(16).hex()
+        self._marker_issued = False
+        self._reaped = False
+        self.survivors = []       # pids still alive after close() tried to kill them
+        self.reap_error = None    # why the scan could not run, when it could not
 
     def private_dir(self, name):
         path = os.path.join(self.root, name)
@@ -711,6 +720,8 @@ class ChildScope:
     def env(self, private_dir):
         """The scrubbed environment for a child whose HOME/TMPDIR is `private_dir`."""
         env = scrubbed_env(private_dir)
+        env[procscan.MARKER_VAR] = self.marker
+        self._marker_issued = True
         if sys.platform == "darwin":
             # macOS mktemp ignores TMPDIR for a bare `mktemp -d` and for -t, and
             # writes under the per-user temp directory, which a child may not
@@ -731,8 +742,34 @@ class ChildScope:
                 f.write(f'PATH={shlex.quote(bindir)}:"$PATH"\nexport PATH\n')
         return env
 
+    def reap(self):
+        """Kill every process the scope's children started, whatever they did.
+
+        The process-group kill after each command cannot reach a child that
+        setsid()ed away, so those are found by the environment marker and killed
+        here, before the temp they may be using is removed. Survivors, and a scan
+        that could not run, are recorded and printed, never swallowed.
+        """
+        if self._reaped or not self._marker_issued:
+            return
+        self._reaped = True
+        try:
+            self.survivors = procscan.reap_marked(self.marker)
+        except OSError as e:
+            self.reap_error = f"{type(e).__name__}: {e}"
+            print(f"[mh] WARNING: could not scan for processes left by {self.root}: "
+                  f"{self.reap_error}", file=sys.stderr, flush=True)
+            return
+        if self.survivors:
+            print(f"[mh] WARNING: processes {self.survivors} started under "
+                  f"{self.root} survived SIGKILL for {procscan.REAP_DEADLINE_S}s "
+                  f"after the episode ended", file=sys.stderr, flush=True)
+
     def close(self):
-        self._final()
+        try:
+            self.reap()
+        finally:
+            self._final()
 
     def stamp(self):
         """The provenance record of what this scope enforces."""
@@ -1110,7 +1147,8 @@ def run_bounded_capture(argv, cwd=None, env=None, input_text=None, timeout=None,
       A `nohup sleep 300 &` used to outlive the command and the episode on
       macOS, because the group was killed only on a timeout. (bwrap's
       --unshare-pid already took descendants down with the namespace.) A
-      process that setsid()s itself out of the group is not reached on macOS.
+      process that setsid()s itself out of the group is not reached here; it is
+      found by ChildScope.reap() through its environment marker at episode end.
     * A timeout kills the group and raises subprocess.TimeoutExpired, like
       subprocess.run.
     * Output is held as a StreamCapture of `limit` (<= 0: keep everything).
@@ -1219,6 +1257,8 @@ class Sandbox:
         self._containment_checked = False
         self.last_shell_stats = None  # byte counts of the latest run_shell
         self._scope = None           # the shell's ChildScope, made on first use
+        self.survivors = []          # set by close(): pids that outlived the episode
+        self.reap_error = None       # set by close(): why the process scan could not run
 
     @property
     def scope(self):
@@ -1234,8 +1274,12 @@ class Sandbox:
     def close(self):
         """End of the episode: remove its private temp. Idempotent."""
         if self._scope is not None:
-            self._scope.close()
-            self._scope = None
+            scope, self._scope = self._scope, None
+            try:
+                scope.close()
+            finally:
+                self.survivors = list(scope.survivors)
+                self.reap_error = scope.reap_error
 
     def resolve(self, path):
         """Resolve a model-supplied path inside the sandbox, or refuse."""

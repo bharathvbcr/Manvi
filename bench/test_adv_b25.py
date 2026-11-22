@@ -706,7 +706,7 @@ def _survivor():
             alive = True
         except OSError:
             alive = False
-    check("test_open_b25_no_process_survives_its_episode", not alive, f"daemon pid {alive_pid} alive={alive}; run_shell said {r[:120]!r}")
+    check("test_adv_b25_no_process_survives_its_episode", not alive, f"daemon pid {alive_pid} alive={alive}; run_shell said {r[:120]!r}")
     # End to end: the survivor copies the next verification's scope and episode two reads it back.
     sbV, sV = sandbox_for(CRYPTIC)
     put_payload(sV, 'import os, tempfile, time\nopen(os.path.join(tempfile.gettempdir(), "args.txt"), "w").write("SURVIVOR-HIDDEN-ARGS")\ntime.sleep(1)\n')
@@ -719,12 +719,97 @@ def _survivor():
                 got = c.recv(1 << 20).decode()
         except OSError as e:
             got = f"connect failed: {e}"
-    check("test_open_b25_survivor_cannot_carry_verifier_scope_contents_to_a_later_episode",
+    check("test_adv_b25_survivor_cannot_carry_verifier_scope_contents_to_a_later_episode",
           "SURVIVOR-HIDDEN-ARGS" not in got, got[:200])
     sbV.close()
 
 
 guarded("test_adv_b25_survivor", p_survivor)
+
+
+DAEMON = textwrap.dedent('''
+    import os, sys, time
+    if os.fork(): os._exit(0)
+    os.setsid()
+    if os.fork(): os._exit(0)
+    open(sys.argv[1], "w").write(str(os.getpid()))
+    time.sleep(120)
+''')
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _start_daemon(sb, name):
+    """Run a double-forked, setsid'd python daemon in sb's shell; return its pid (or 0)."""
+    sb.run_shell(cmd="cat > $TMPDIR/d.py <<'EOF'\n" + DAEMON + "\nEOF\n")
+    pidfile = os.path.join(sb.root, name)
+    sb.run_shell(cmd=f"python3 $TMPDIR/d.py '{pidfile}' </dev/null >/dev/null 2>&1; sleep 0.5")
+    try:
+        pid = int(open(pidfile).read())
+    except (OSError, ValueError):
+        return 0
+    PIDS.append(pid)
+    return pid
+
+
+def p_reap():
+    """Episode end kills what setsid'd away, only that episode's, and says so when it cannot."""
+    try:
+        sb1, _ = sandbox_for(CRYPTIC)
+        sb2, _ = sandbox_for(CRYPTIC)
+        d1, d2 = _start_daemon(sb1, "d1.pid"), _start_daemon(sb2, "d2.pid")
+        check("test_adv_b25_reap_probe_started_two_setsid_daemons", bool(d1 and d2 and _alive(d1) and _alive(d2)),
+              f"d1={d1} d2={d2}")
+        sb1.close()
+        time.sleep(0.3)
+        check("test_adv_b25_closing_an_episode_kills_its_setsid_daemon", not _alive(d1), f"pid {d1} alive")
+        check("test_adv_b25_closing_an_episode_leaves_a_concurrent_episodes_daemon_alone", _alive(d2),
+              f"pid {d2} was killed by the other episode's close")
+        check("test_adv_b25_clean_close_reports_no_survivors", sb1.survivors == [] and sb1.reap_error is None,
+              f"{sb1.survivors} {sb1.reap_error}")
+        sb2.close()
+        time.sleep(0.3)
+        check("test_adv_b25_the_second_episodes_close_kills_its_daemon_too", not _alive(d2), f"pid {d2} alive")
+        # A process that cannot be killed within the deadline is REPORTED, never read as a clean close.
+        sb3, _ = sandbox_for(CRYPTIC)
+        d3 = _start_daemon(sb3, "d3.pid")
+        from mh import procscan
+        left = procscan.reap_marked(sb3.scope.marker, deadline_s=0.0)
+        check("test_adv_b25_a_scan_that_runs_out_of_time_returns_the_survivors", d3 in left, f"d3={d3} left={left}")
+        sb3.close()
+        time.sleep(0.3)
+        check("test_adv_b25_close_after_a_timed_out_scan_still_kills_it", not _alive(d3), f"pid {d3} alive")
+        # What the marker cannot see: a hardened system binary hides its environment from the sysctl.
+        if sys.platform == "darwin" and os.path.exists("/usr/bin/perl"):
+            sb4, _ = sandbox_for(CRYPTIC)
+            pf = os.path.join(sb4.root, "perl.pid")
+            sb4.run_shell(cmd="/usr/bin/perl -e 'use POSIX; exit 0 if fork; POSIX::setsid(); exit 0 if fork; "
+                              f"open F, \">{pf}\"; print F $$; close F; sleep 120' </dev/null >/dev/null 2>&1; sleep 0.5")
+            try:
+                pp = int(open(pf).read())
+                PIDS.append(pp)
+            except (OSError, ValueError):
+                pp = 0
+            sb4.close()
+            time.sleep(0.3)
+            info("hardened_binary_escape", f"a setsid'd /usr/bin/perl daemon (pid {pp}) is "
+                 f"{'STILL ALIVE: its exec-time environment is hidden from KERN_PROCARGS2, so the marker cannot find it' if pp and _alive(pp) else 'gone'}"
+                 " (reported, not judged)")
+    finally:
+        for p in PIDS:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+guarded("test_adv_b25_reap", p_reap)
 
 # ---------------------------------------------------------------------------
 print("logging")
