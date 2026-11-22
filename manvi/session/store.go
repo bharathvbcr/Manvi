@@ -488,9 +488,13 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		if !ok {
 			ok = json.Unmarshal(existing, &doc) == nil
 		}
-		if ok && !doc.CreatedAt.IsZero() {
-			createdAt = doc.CreatedAt
+		if ok {
+			// The earlier count is what the report is measured against; a header
+			// without a creation date still states it, so it is read either way.
 			trimmedBefore = doc.TrimmedTurns
+			if !doc.CreatedAt.IsZero() {
+				createdAt = doc.CreatedAt
+			}
 		}
 	}
 
