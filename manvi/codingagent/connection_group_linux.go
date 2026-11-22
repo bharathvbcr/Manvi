@@ -24,10 +24,19 @@ import (
 // and groupLive answers from the bare kill(-pgid, 0) probe alone. That is
 // fail-closed and costs at most one reapBudget, but it loses the distinction
 // the listing exists for: a stranger that took the group number after the
-// members died reads as the agent's live group. Under hidepid=2 other users'
-// pids are absent from the directory listing altogether, so no read fails; a
-// member that changed uid is simply not listed, and the bare probe is the
-// backstop for it too.
+// members died reads as the agent's live group.
+//
+// Under hidepid=2 other users' pids are absent from the directory listing
+// altogether, so no read fails and the listing SUCCEEDS without them. A member
+// that is hidden this way (one that changed uid after the agent started) is
+// simply not in the snapshot, and membersKnown is true. groupLive then answers
+// from the snapshotted members only (anyMemberInGroup), so the bare probe is
+// NOT a backstop for it: once the visible members are gone the group reads
+// free while the hidden one lives, which is the fail-open the card describes.
+// This is a known gap and a design question, left open here on purpose.
+//
+// Every hidepid statement above is inferred from the code and was not run on
+// Linux.
 //
 // What that error does: sweepGroup records membersKnown = false when either of
 // its two listings fails, groupLive then answers from the bare probe alone (the
