@@ -29,6 +29,10 @@ type AgentView struct {
 	// own reply channel anyway.
 	approval *ApprovalCard
 	pending  []*ApprovalCard
+	// retiredSincePaint is set when a card was retired after the last frame was
+	// drawn. A key that arrives then was aimed at the card that went, and is
+	// consumed with a notice rather than applied to whatever is now showing.
+	retiredSincePaint bool
 
 	// queued holds follow-up prompts typed while a turn was running.
 	queued []string
@@ -206,12 +210,27 @@ func (v *AgentView) Approval() *ApprovalCard {
 	return v.approval
 }
 
+// activeCard is the card blocking this session as it stands, a withdrawn one
+// included, and changes nothing. Deciding where a key goes reads this, so that
+// asking never retires a card: the key is then handled against the card the
+// operator was looking at, not the one behind it.
+func (v *AgentView) activeCard() *ApprovalCard {
+	if v == nil {
+		return nil
+	}
+	return v.approval
+}
+
 // retireWithdrawn removes every card whose caller was cancelled or timed out,
 // active or queued, and leaves a transcript entry saying so.
 func (v *AgentView) retireWithdrawn() {
 	for v.approval != nil && v.approval.withdrawn() {
 		v.noteWithdrawn(v.approval)
 		v.PopApproval()
+		v.retiredSincePaint = true
+		if v.approval != nil {
+			v.approval.guarded = true
+		}
 	}
 	if len(v.pending) == 0 {
 		return
@@ -398,8 +417,10 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		v.drawQueue(b, queue, th)
 	}
 
-	// A card whose caller has gone is retired before it can be drawn.
+	// A card whose caller has gone is retired before it can be drawn, and what
+	// the operator sees from here on is the layout that follows.
 	v.retireWithdrawn()
+	v.retiredSincePaint = false
 
 	// The working row, between the transcript and whatever is typed under it.
 	// An approval card takes its place: the turn is then waiting on the
