@@ -111,9 +111,7 @@ func (r *Registry) codeQuery(ctx context.Context, call tools.Call) tools.Result 
 		body["index_generation"] = res.Index.GenerationID
 		stale = !res.Index.IsFresh
 	}
-	if withheld > 0 {
-		notes = append(notes, fmt.Sprintf("%d source excerpt(s) withheld by the read gate", withheld))
-	}
+	notes = append(notes, withheld.notes()...)
 	if shared != nil {
 		body["shared_envelope"] = shared
 	}
@@ -289,12 +287,12 @@ var resolutionSources = map[string]bool{"Resolver": true, "Stored": true, "Recon
 // be a way round the read gate. An excerpt whose object names no file is
 // withheld too — the check cannot run, and a check that cannot run must not
 // pass.
-func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, error) {
+func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, graphWithheld, error) {
 	var root any
 	if err := json.Unmarshal(raw, &root); err != nil {
-		return nil, 0, fmt.Errorf("unparseable graph answer: %w", err)
+		return nil, graphWithheld{}, fmt.Errorf("unparseable graph answer: %w", err)
 	}
-	withheld := 0
+	var withheld graphWithheld
 	var walk func(v any, parent string)
 	walk = func(v any, parent string) {
 		switch node := v.(type) {
@@ -317,7 +315,7 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 				if rule != "" {
 					delete(node, key)
 					node["withheld"] = rule
-					withheld++
+					withheld.excerpts++
 				}
 			}
 			// Only devmap's prose fields are rewritten. Identity keys (id,
@@ -327,11 +325,9 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 			// already judges its content.
 			for key, child := range node {
 				if proseKeys[key] {
-					var changed bool
-					node[key], changed = withholdProse(child)
-					if changed {
-						withheld++
-					}
+					var replaced int
+					node[key], replaced = withholdProse(child)
+					withheld.samples += replaced
 				}
 			}
 			for name, child := range node {
@@ -346,9 +342,31 @@ func withholdGraphSources(raw []byte, refuse func(string) string) ([]byte, int, 
 	walk(root, "")
 	out, err := json.Marshal(root, json.Deterministic(true))
 	if err != nil {
-		return nil, 0, err
+		return nil, graphWithheld{}, err
 	}
 	return out, withheld, nil
+}
+
+// graphWithheld counts what withholdGraphSources removed, by kind: source
+// excerpts the read gate refused, and prose strings in which a call-site
+// sample was replaced. They are different things to a reader, so they are never
+// one number.
+type graphWithheld struct {
+	excerpts, samples int
+}
+
+func (w graphWithheld) total() int { return w.excerpts + w.samples }
+
+// notes are the sentences that tell the model what was left out.
+func (w graphWithheld) notes() []string {
+	var notes []string
+	if w.excerpts > 0 {
+		notes = append(notes, fmt.Sprintf("%d source excerpt(s) withheld by the read gate", w.excerpts))
+	}
+	if w.samples > 0 {
+		notes = append(notes, fmt.Sprintf("%d call-site sample(s) withheld from devmap's notes", w.samples))
+	}
+	return notes
 }
 
 // proseKeys are the envelope fields in which devmap writes sentences about its
@@ -367,32 +385,35 @@ var proseKeys = map[string]bool{
 	"signature_note":           true,
 }
 
-// withholdProse sanitizes every string under a prose field and reports whether
-// any was changed. Non-string leaves (a boolean walk_incomplete) pass as they
-// are.
-func withholdProse(v any) (any, bool) {
+// withholdProse sanitizes every string under a prose field and counts the
+// strings in which a call-site sample was replaced. Non-string leaves (a
+// boolean walk_incomplete) pass as they are.
+func withholdProse(v any) (any, int) {
 	switch node := v.(type) {
 	case string:
 		clean := WithholdCallSiteSamples(node)
-		return clean, clean != node
+		if clean == node {
+			return clean, 0
+		}
+		return clean, 1
 	case []any:
-		changed := false
+		replaced := 0
 		for i := range node {
-			var c bool
-			node[i], c = withholdProse(node[i])
-			changed = changed || c
+			var n int
+			node[i], n = withholdProse(node[i])
+			replaced += n
 		}
-		return node, changed
+		return node, replaced
 	case map[string]any:
-		changed := false
+		replaced := 0
 		for k := range node {
-			var c bool
-			node[k], c = withholdProse(node[k])
-			changed = changed || c
+			var n int
+			node[k], n = withholdProse(node[k])
+			replaced += n
 		}
-		return node, changed
+		return node, replaced
 	}
-	return v, false
+	return v, 0
 }
 
 // pathKeys are the keys under which an envelope object names its file:

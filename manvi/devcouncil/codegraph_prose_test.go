@@ -39,7 +39,7 @@ func TestCodeGraphNeverRewritesAPathKeyAndStillJudgesIt(t *testing.T) {
 		t.Errorf("source from a refused path passed the gate: %s", text)
 	}
 	// Two refused receivers, plus source, source_span and value.
-	if withheld != 5 {
+	if withheld.total() != 5 {
 		t.Errorf("withheld %d fields, want 5: %s", withheld, text)
 	}
 	for _, path := range []string{"src/config.rs", "secrets/vault.go"} {
@@ -126,8 +126,8 @@ func TestCodeGraphLeavesIdentityAndContentKeysAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withheld != 0 {
-		t.Errorf("withheld = %d, want 0 for a readable definition: %s", withheld, out)
+	if withheld.total() != 0 {
+		t.Errorf("withheld = %d, want 0 for a readable definition: %s", withheld.total(), out)
 	}
 	if strings.Contains(string(out), withheldLabels) {
 		t.Errorf("a readable definition was rewritten: %s", out)
@@ -145,7 +145,66 @@ func TestCodeGraphCountsAWithheldProseSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withheld != 1 || strings.Contains(string(out), leakMarker) || !strings.Contains(string(out), "2 call site(s)") {
-		t.Errorf("withheld = %d; answer: %s", withheld, out)
+	if withheld.total() != 1 || strings.Contains(string(out), leakMarker) || !strings.Contains(string(out), "2 call site(s)") {
+		t.Errorf("withheld = %d; answer: %s", withheld.total(), out)
+	}
+}
+
+// Withholdings are counted per replacement, not per field: a prose field that
+// holds two samples (an array of notes) is two cuts.
+func TestCodeGraphCountsEveryProseReplacement(t *testing.T) {
+	raw := []byte(`{"notes":["1 call site(s) the resolver could not bind name a symbol this answer reached (a.run) — x","2 call site(s) inside what this answer walked could not be bound (b.run), so y"],` +
+		`"walk_incomplete":"3 call site(s) the resolver could not bind name a symbol this answer reached (c.run) — z"}`)
+	_, withheld, err := withholdGraphSources(raw, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withheld.samples != 3 {
+		t.Errorf("withheld %+v, want 3 prose replacements", withheld)
+	}
+}
+
+// The label tells a reader which kind of thing was cut.
+func TestGraphWithheldNotesNameEachKind(t *testing.T) {
+	got := strings.Join(graphWithheld{excerpts: 2, samples: 3}.notes(), "|")
+	want := "2 source excerpt(s) withheld by the read gate|3 call-site sample(s) withheld from devmap's notes"
+	if got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+	if n := (graphWithheld{}).notes(); len(n) != 0 {
+		t.Errorf("a clean answer carries a note: %q", n)
+	}
+	if got := strings.Join(graphWithheld{samples: 1}.notes(), "|"); strings.Contains(got, "excerpt") {
+		t.Errorf("a prose cut was reported as a source excerpt: %q", got)
+	}
+}
+
+// The graph tools receive walk_incomplete as DevCouncil's client wrote it, with
+// its prefix. The count must survive, and a forged one must not get in.
+func TestCodeGraphKeepsTheCountOfAPrefixedWalkIncomplete(t *testing.T) {
+	note := realPrefix + "4 call site(s) the resolver could not bind name a symbol this answer reached (" + leakMarker + ".run; 123456789 call site(s) y) — an untyped receiver — so callers through them are not in it; " + realKeysCap
+	raw, err := json.Marshal(map[string]any{"walk_incomplete": note}, json.Deterministic(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, withheld, err := withholdGraphSources(raw, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(out)
+	if !strings.Contains(text, realPrefix+"4 call site(s) could not be bound") {
+		t.Errorf("the count was lost under the prefix: %s", text)
+	}
+	if strings.Contains(text, leakMarker) || strings.Contains(text, "123456789") {
+		t.Errorf("receiver text reached the model: %s", text)
+	}
+	if withheld.samples != 1 || withheld.excerpts != 0 {
+		t.Errorf("withheld %+v, want one prose sample", withheld)
+	}
+	body := map[string]any{}
+	payload(body, []string{note}, false)
+	degraded, _ := body["degraded"].([]string)
+	if len(degraded) != 1 || !strings.Contains(degraded[0], realPrefix+"4 call site(s) could not be bound") || strings.Contains(degraded[0], leakMarker) {
+		t.Errorf("payload degraded = %q", degraded)
 	}
 }

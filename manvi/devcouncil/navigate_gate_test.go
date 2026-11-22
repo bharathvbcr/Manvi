@@ -33,7 +33,7 @@ func TestGraphContextAppliesTheReadGateToItsInputs(t *testing.T) {
 // Every navigation answer states its qualifications through payload, and a
 // qualification may be devmap's walk_incomplete, which quotes receiver text.
 func TestPayloadWithholdsCallSiteSamplesInDegraded(t *testing.T) {
-	note := "1 call site(s) the resolver could not bind name a symbol this answer reached (" +
+	note := realPrefix + "1 call site(s) the resolver could not bind name a symbol this answer reached (" +
 		leakMarker + ".run) — an untyped receiver — so callers through them are not in it; " +
 		"only 5 of 600 reached key(s) were checked against the unresolved ledger"
 	res := payload(map[string]any{}, []string{note, "an unrelated qualification"}, false)
@@ -42,7 +42,7 @@ func TestPayloadWithholdsCallSiteSamplesInDegraded(t *testing.T) {
 			t.Fatalf("a call-site sample reached the model through degraded: %s", shown)
 		}
 	}
-	if !strings.Contains(res.Text, "only 5 of 600 reached key(s)") || !strings.Contains(res.Text, "an unrelated qualification") {
+	if !strings.Contains(res.Text, realPrefix+"1 call site(s) could not be bound") || !strings.Contains(res.Text, markerKeysCapped) || !strings.Contains(res.Text, "an unrelated qualification") {
 		t.Errorf("a completeness clause or another qualification was lost: %s", res.Text)
 	}
 }

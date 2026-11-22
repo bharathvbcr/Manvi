@@ -154,8 +154,8 @@ func TestGraphAnswersWithholdSourceTheReadGateRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(out)
-	if withheld != 2 {
-		t.Errorf("withheld %d excerpts, want 2: %s", withheld, text)
+	if withheld.total() != 2 {
+		t.Errorf("withheld %d excerpts, want 2: %s", withheld.total(), text)
 	}
 	for _, leaked := range []string{"TOKEN=x", "orphan text"} {
 		if strings.Contains(text, leaked) {
@@ -415,7 +415,7 @@ func TestCodeGraphKeepsEvidenceProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(out)
-	if withheld != 2 {
+	if withheld.total() != 2 {
 		t.Errorf("withheld %d, want 2 (the non-enum evidence and the unattributed definition): %s", withheld, text)
 	}
 	for _, kept := range []string{`"source":"Stored"`, `"source":"Reconstructed"`} {
@@ -457,15 +457,15 @@ func TestCodeGraphGatesAskEvidenceUnits(t *testing.T) {
 	if strings.Count(string(kept), `"source_span":`) != spans {
 		t.Errorf("readable units lost excerpts: %d of %d kept", strings.Count(string(kept), `"source_span":`), spans)
 	}
-	if withheld != proseSamples || !strings.Contains(string(kept), "[call-site sample withheld]") {
+	if withheld.total() != proseSamples || !strings.Contains(string(kept), "[call-site sample withheld]") {
 		t.Errorf("withheld %d, want only the %d call-site prose sample(s), marked", withheld, proseSamples)
 	}
 	_, withheld, err = withholdGraphSources(raw, func(string) string { return "path.secret_read" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withheld != spans+proseSamples {
-		t.Errorf("refused units: withheld %d, want all %d spans plus %d prose sample(s)", withheld, spans, proseSamples)
+	if withheld.total() != spans+proseSamples {
+		t.Errorf("refused units: withheld %d, want all %d spans plus %d prose sample(s)", withheld.total(), spans, proseSamples)
 	}
 }
 
@@ -645,8 +645,8 @@ func TestCodeGraphGatesEveryPublishedContentKey(t *testing.T) {
 			t.Errorf("%q passed the read gate: %s", leaked, out)
 		}
 	}
-	if withheld != 4 {
-		t.Errorf("withheld %d content fields, want 4: %s", withheld, out)
+	if withheld.total() != 4 {
+		t.Errorf("withheld %d content fields, want 4: %s", withheld.total(), out)
 	}
 }
 
@@ -680,7 +680,7 @@ func TestCodeGraphGatesReceiverTextFromSecretPaths(t *testing.T) {
 			t.Errorf("%s: receiver text from a secret path passed the read gate: %s", name, out)
 		}
 		if !strings.Contains(string(out), withheldLabels) {
-			t.Errorf("%s: the cut is not marked in the answer (withheld excerpts %d): %s", name, withheld, out)
+			t.Errorf("%s: the cut is not marked in the answer (withheld excerpts %d): %s", name, withheld.total(), out)
 		}
 	}
 }
