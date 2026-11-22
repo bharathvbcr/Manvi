@@ -267,38 +267,86 @@ func TestShellCommitAndPushIsReportedWithItsRemote(t *testing.T) {
 	}
 }
 
-// The guard's cost per exec_command in a repository with 1000 refs: the
-// snapshot before and the unchanged-refs check after, against the same command
-// without them. Logged, with a loose ceiling so a regression to something
-// seconds-long fails.
-func TestShellRefGuardLatencyWith1000Refs(t *testing.T) {
-	f := shellCommitFixture(t, false)
-	head := headOf(t, f.root)
+// addBulkRefs creates the branches refs/heads/bulk/b<from> to b<to-1> at head,
+// in one git process.
+func addBulkRefs(t *testing.T, root, head string, from, to int) {
+	t.Helper()
 	var in strings.Builder
-	for i := 0; i < 1000; i++ {
+	for i := from; i < to; i++ {
 		fmt.Fprintf(&in, "create refs/heads/bulk/b%04d %s\n", i, head)
 	}
-	cmd := exec.CommandContext(t.Context(), "git", "-C", f.root, "update-ref", "--stdin") // #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
+	cmd := exec.CommandContext(t.Context(), "git", "-C", root, "update-ref", "--stdin") // #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
 	cmd.Stdin = strings.NewReader(in.String())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("creating refs: %v\n%s", err, out)
 	}
-	const n = 20
+}
+
+// guardSpawns is the number of git processes one guarded call (the snapshot
+// before and the unchanged-refs check after) starts. extra runs inside the
+// call, after the snapshot, and stands in for a regression in the guard.
+func guardSpawns(t *testing.T, f *fixture, extra func(snap *refSnapshot)) int64 {
+	t.Helper()
 	ctx := t.Context()
+	start := procSpawns.Load()
+	snap, err := f.reg.snapshotRefs(ctx)
+	if err != nil || snap == nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if extra != nil {
+		extra(snap)
+	}
+	if v, _ := f.reg.verifyRefs(ctx, snap, "true"); v != nil {
+		t.Fatalf("unchanged refs reported: %+v", v)
+	}
+	return procSpawns.Load() - start
+}
+
+// spawnScaling says whether the spawn count grew with the number of refs. A
+// guard that starts one process per ref costs seconds with a thousand refs;
+// the count is the deterministic measure of that, where a wall-clock ceiling
+// reads machine load as a regression.
+func spawnScaling(small, large int64, smallRefs, largeRefs int) string {
+	if small != large {
+		return fmt.Sprintf("the guard starts %d git processes with %d refs and %d with %d: the count depends on the number of refs", small, smallRefs, large, largeRefs)
+	}
+	return ""
+}
+
+// The guard's cost per exec_command is a constant number of git processes,
+// whatever the number of refs: 10 refs and 1000 refs start the same count. The
+// time is logged, never asserted.
+func TestShellRefGuardLatencyWith1000Refs(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	head := headOf(t, f.root)
+	addBulkRefs(t, f.root, head, 0, 10)
+	small := guardSpawns(t, f, nil)
+	addBulkRefs(t, f.root, head, 10, 1000)
 	start := time.Now()
-	for i := 0; i < n; i++ {
-		snap, err := f.reg.snapshotRefs(ctx)
-		if err != nil || snap == nil {
-			t.Fatalf("snapshot: %v", err)
-		}
-		if v, _ := f.reg.verifyRefs(ctx, snap, "true"); v != nil {
-			t.Fatalf("unchanged refs reported: %+v", v)
+	large := guardSpawns(t, f, nil)
+	t.Logf("guard with %d refs: %d git processes, %s (snapshot + check, refs unchanged)", len(strings.Split(gitOut(t, f.root, "for-each-ref"), "\n")), large, time.Since(start))
+	if msg := spawnScaling(small, large, 10, 1000); msg != "" {
+		t.Error(msg)
+	}
+}
+
+// The check above fails when the guard regresses to one git process per ref.
+func TestShellRefGuardSpawnCheckCatchesAPerRefProcess(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	head := headOf(t, f.root)
+	perRef := func(snap *refSnapshot) {
+		for ref := range snap.refs {
+			if _, err := runGit(t.Context(), f.root, "rev-parse", "--verify", "--quiet", ref); err != nil {
+				t.Fatalf("rev-parse %s: %v", ref, err)
+			}
 		}
 	}
-	perCall := time.Since(start) / n
-	t.Logf("guard overhead with %d refs: %s per exec_command (snapshot + check, refs unchanged)", len(strings.Split(gitOut(t, f.root, "for-each-ref"), "\n")), perCall)
-	if perCall > 500*time.Millisecond {
-		t.Errorf("the guard costs %s per command", perCall)
+	addBulkRefs(t, f.root, head, 0, 10)
+	small := guardSpawns(t, f, perRef)
+	addBulkRefs(t, f.root, head, 10, 1000)
+	large := guardSpawns(t, f, perRef)
+	if msg := spawnScaling(small, large, 10, 1000); msg == "" {
+		t.Errorf("a guard with a process per ref (%d and %d spawns) passed the scaling check", small, large)
 	}
 }
 
