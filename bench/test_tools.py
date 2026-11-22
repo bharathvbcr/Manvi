@@ -668,7 +668,6 @@ shutil.rmtree(nbase, ignore_errors=True)
 # ---------------------------------------------------------------------------
 print("children get a private temp, a scrubbed env and no shared write root (B25)")
 import hashlib
-from mh import bench as benchmod, rpc as rpcmod
 from mh.bench import load_tasks
 from mh.harness import Config, Harness, log_args
 from mh.model import Reply
