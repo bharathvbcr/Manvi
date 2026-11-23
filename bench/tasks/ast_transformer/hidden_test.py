@@ -16,7 +16,16 @@ import sys
 
 import _mh
 
-from rewrite import rewrite  # noqa: E402  -- imported into the worker
+# The ban on re/regex is audited statically over every source in the sandbox, like
+# globmatch/nfa_match/concurrency_race: a helper module the candidate wrote, or a
+# spelled-out dynamic import, is refused before anything runs. The runtime half (the
+# audit hook) is not armed here because this task runs the rewritten source through
+# asyncio in the worker, and asyncio imports re (via tokenize/traceback) itself; the
+# verification record names that as unenforced.
+FORBIDDEN = ("re", "regex")
+_mh.enforce_bans(FORBIDDEN, runtime=False)
+
+from rewrite import rewrite  # noqa: E402  -- imported into the worker, under the ban
 
 bad = 0
 

@@ -246,14 +246,17 @@ func TestZadv_w24vb_CriticCannotReadOutsideItsWorktree(t *testing.T) {
 				b, _ := json.Marshal(map[string]string{"path": p})
 				return [2]string{"devcouncil_read_file", string(b)}
 			}
-			provider := &scriptProvider{calls: [][2]string{read(rel), read(secret), read("escape.txt"), read("escape_dir/secret.txt"), read("shared.txt")}}
+			// The control read is sent twice: the loop refuses a lone lookup that
+			// would be the fifth in a row, once, and says to send it again (main's
+			// enforced batching, 42cf98f6), so the first send may be that refusal.
+			provider := &scriptProvider{calls: [][2]string{read(rel), read(secret), read("escape.txt"), read("escape_dir/secret.txt"), read("shared.txt"), read("shared.txt")}}
 			critic, _ := zadvCritic(t, posture, provider, "zadv-model")
 			if _, err := critic.Judge(context.Background(), alias, "judge", 1); err != nil {
 				t.Fatal(err)
 			}
 			provider.mu.Lock()
 			defer provider.mu.Unlock()
-			if len(provider.results) != 5 || !strings.Contains(provider.results[4], "parent baseline content") {
+			if len(provider.results) != 6 || !strings.Contains(provider.results[5], "parent baseline content") {
 				t.Fatalf("the control read of an in-tree file did not come back, so the escapes above prove nothing: %v", provider.results)
 			}
 			leaked := 0

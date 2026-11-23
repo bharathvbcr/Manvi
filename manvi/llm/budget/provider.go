@@ -24,6 +24,14 @@ type MaxTokensReporter interface {
 	AppliedMaxTokens(req llm.Request) int
 }
 
+// SearchBounder is implemented by a provider that attaches a provider-hosted
+// web search tool to a request, and says how many searches that request can be
+// billed for. They are charged on top of tokens, so a reservation that left them
+// out could be exceeded by the answer it was reserved for.
+type SearchBounder interface {
+	MaxSearches(req llm.Request) int
+}
+
 // Provider meters an inner provider against a Ledger.
 type Provider struct {
 	Inner  llm.Provider
@@ -94,14 +102,15 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, err
 		}
 		return nil, err
 	}
-	return &budgetStream{ctx: ctx, inner: stream, prices: limits.prices, outputBound: limits.output, ledger: p.Ledger, id: lastID()}, nil
+	return &budgetStream{ctx: ctx, inner: stream, prices: limits.prices, outputBound: limits.output, searches: limits.searches, ledger: p.Ledger, id: lastID()}, nil
 }
 
 // requestLimits is what a request to one model is priced at and bounded by.
 type requestLimits struct {
-	prices Prices
-	window int
-	output int
+	prices   Prices
+	window   int
+	output   int
+	searches int
 }
 
 // limits resolves the price and bounds of req, refusing a request that could
@@ -129,12 +138,27 @@ func (p *Provider) limits(req llm.Request) (requestLimits, error) {
 	} else if req.MaxTokens > 0 {
 		outputBound = req.MaxTokens
 	}
-	return requestLimits{prices: prices, window: capability.ContextWindow, output: outputBound}, nil
+	searches := 0
+	if bounder, ok := p.Inner.(SearchBounder); ok {
+		searches = bounder.MaxSearches(req)
+	}
+	if searches > 0 && prices.SearchRequest <= 0 {
+		return requestLimits{}, fmt.Errorf("budget: %s model %q is sent a web search tool but has no search price; it cannot be metered", p.Inner.Name(), req.Model)
+	}
+	return requestLimits{prices: prices, window: capability.ContextWindow, output: outputBound, searches: searches}, nil
 }
 
 // reserve is what one attempt whose body is requestBytes long reserves.
 func (r requestLimits) reserve(requestBytes int) (int64, error) {
-	return r.prices.Reserve(min(requestBytes+PromptOverheadTokens, r.window), r.output)
+	amount, err := r.prices.Reserve(min(requestBytes+PromptOverheadTokens, r.window), r.output)
+	if err != nil {
+		return 0, err
+	}
+	extra, err := r.prices.SearchSurcharge(r.searches)
+	if err != nil {
+		return 0, err
+	}
+	return amount + extra, nil
 }
 
 // Estimate is what the first attempt of req would reserve, computed as the
@@ -177,6 +201,7 @@ type budgetStream struct {
 	inner       llm.Stream
 	prices      Prices
 	outputBound int
+	searches    int
 	ledger      *Ledger
 	id          uint64
 
@@ -230,7 +255,12 @@ func (s *budgetStream) partialBound() int64 {
 	if err != nil {
 		return -1
 	}
-	return bound
+	// Searches billed before the stream ended are not in the usage seen so far.
+	extra, err := s.prices.SearchSurcharge(s.searches)
+	if err != nil {
+		return -1
+	}
+	return bound + extra
 }
 
 func (s *budgetStream) Response() (llm.Response, error) {

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
@@ -630,5 +631,43 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	u, seen := reporter.UsageSoFar()
 	if !seen || u.InputTokens != 42 || u.CacheReadTokens != 30 {
 		t.Fatalf("usage so far = %+v (seen %v), want the whole 42-token prompt", u, seen)
+	}
+}
+
+// TestARejectedKeyIsReportedAsARejectedCredential drives the real adapter
+// against a server answering the Messages API's 401 and checks the failure is
+// the one CredentialRejected names, while a 403 and a 500 are not.
+func TestARejectedKeyIsReportedAsARejectedCredential(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		kind   string
+		want   bool
+	}{
+		{http.StatusUnauthorized, "authentication_error", true},
+		{http.StatusForbidden, "permission_error", false},
+		{http.StatusInternalServerError, "api_error", false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(tc.status)
+			_, _ = fmt.Fprintf(w, `{"type":"error","error":{"type":%q,"message":"refused"}}`, tc.kind)
+		}))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		adapter := New(srv.URL, adaptertest.Secret("sk-test-key-value"))
+		stream, err := adapter.Stream(ctx, request())
+		if err == nil {
+			for err == nil {
+				_, err = stream.Next()
+			}
+			_ = stream.Close()
+		}
+		cancel()
+		srv.Close()
+		if errors.Is(err, io.EOF) {
+			t.Fatalf("status %d: the stream ended cleanly instead of failing", tc.status)
+		}
+		if got := CredentialRejected(err); got != tc.want {
+			t.Fatalf("status %d: CredentialRejected(%v) = %v; want %v", tc.status, err, got, tc.want)
+		}
 	}
 }

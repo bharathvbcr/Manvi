@@ -998,6 +998,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		systemPrompt:    systemPrompt,
 		coreToolsOnly:   coreOnly,
 		assertInvariant: assertInvariant(h.reg),
+		serialLookups:   serialLookupMode(h.reg),
 		log:             s.log, tools: s.pipeline,
 	})
 	if err != nil {
@@ -1051,6 +1052,7 @@ func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID 
 	promptOpts := PromptOptions{
 		Provider:           at.provider.Name(),
 		TaskToolsOffered:   taskToolsOffered(s.pipeline, coreOnly),
+		BatchOffered:       batchToolOffered(s.pipeline, coreOnly),
 		DynamicTools:       dynamic,
 		ActiveGroups:       s.pipeline.ActiveGroups(),
 		CodeMapAvailable:   codeMapAvailable(caps, s.pipeline, dynamic, coreOnly),
@@ -1093,6 +1095,7 @@ func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID 
 			meter:           s.subMeter,
 			coreToolsOnly:   coreOnly,
 			assertInvariant: assertInvariant(h.reg),
+			serialLookups:   serialLookupMode(h.reg),
 			systemPrompt:    systemPrompt,
 			// The same sink this session's own events go to, so a child's gate
 			// refusals appear in the transcript that is meant to account for

@@ -8,9 +8,11 @@ gate around `put` so the global put order is recoverable, because a queue that
 returns items in some *other* well-defined order satisfies every other check in
 this file.
 
-The `queue` ban is enforced two ways: a static scan of every sandbox source in
-the checker (which reads the sandbox but runs nothing in it), and a runtime ban
-in the WORKER (`_mh.forbid_imports`), where the candidate runs. Verifier-split
+The `queue` ban (and `_queue`, its C half) is enforced by `_mh.enforce_bans`: a
+static audit of every sandbox source in the checker (which reads the sandbox but
+runs nothing in it), and an audit hook in the WORKER, where the candidate runs,
+that candidate code cannot remove and the worker harness does not give it a
+loaded `queue` to reach (see mh/rpc.py). Verifier-split
 note: `BoundedQueue`/`QueueClosed` are imported by name into the worker, whose
 interpreter is source-only and freshly started, so exec'ing the candidate from
 the scanned source is now structural rather than hand-rolled; the threads below
@@ -18,7 +20,6 @@ run in the checker and drive the one real queue in the worker over the pipe, so
 a candidate that exits, hangs, or forges only kills the worker and fails the
 verification.
 """
-import ast
 import os
 import sys
 import threading
@@ -26,9 +27,7 @@ import time
 
 import _mh
 
-FORBIDDEN = ("queue", "importlib", "imp", "runpy")
-MAX_FILES = 200
-MAX_BYTES = 1 << 20
+FORBIDDEN = ("queue", "_queue", "importlib", "imp", "runpy")
 
 
 def die(msg):
@@ -46,50 +45,8 @@ for _name in ("sitecustomize.py", "usercustomize.py"):
         die(f"{_name} in the sandbox: the fix belongs in bqueue.py, "
             f"not in interpreter startup")
 
-# --- static scan of every Python source in the sandbox --------------------
-sources = []
-for root, dirs, files in os.walk(SANDBOX):
-    dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
-    for f in sorted(files):
-        if f.endswith(".py"):
-            sources.append(os.path.join(root, f))
-sources.sort()
-if len(sources) > MAX_FILES:
-    die(f"{len(sources)} Python files in the sandbox exceeds the {MAX_FILES} "
-        f"the constraint check will read; refusing to report a partial scan")
-
-offenders = []
-for path in sources:
-    rel = os.path.relpath(path, SANDBOX)
-    if os.path.getsize(path) > MAX_BYTES:
-        die(f"{rel} is larger than {MAX_BYTES} bytes; refusing to report a "
-            f"partial scan")
-    try:
-        tree = ast.parse(open(path, encoding="utf-8", errors="replace").read(),
-                         filename=rel)
-    except SyntaxError as e:
-        die(f"{rel} is not parseable Python ({e}); the constraint check "
-            f"cannot run over it")
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                if a.name.split(".")[0] in FORBIDDEN:
-                    offenders.append(f"{rel}: import {a.name}")
-        elif isinstance(node, ast.ImportFrom):
-            top = (node.module or "").split(".")[0]
-            if top in FORBIDDEN:
-                offenders.append(f"{rel}: from {node.module} import ...")
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
-                and node.func.id == "__import__":
-            offenders.append(f"{rel}: __import__(...)")
-        elif isinstance(node, ast.Attribute) and node.attr in (
-                "import_module", "find_spec", "load_module"):
-            offenders.append(f"{rel}: {node.attr}(...)")
-if offenders:
-    die("TASK.md forbids the stdlib queue module: " + "; ".join(sorted(set(offenders))))
-
 # --- arm the runtime ban in the worker, then import the candidate ----------
-_mh.forbid_imports(FORBIDDEN)
+_mh.enforce_bans(FORBIDDEN)
 from bqueue import BoundedQueue, QueueClosed  # noqa: E402  -- into the worker, under the ban
 
 bad = 0
@@ -259,22 +216,41 @@ overflow = []
 stop = threading.Event()
 
 
+churn_errors = []
+samples = [0]
+
+
 def watcher():
-    while not stop.is_set():
-        n = q.qsize()
-        if n < 0 or n > 3:
-            overflow.append(n)
-        time.sleep(0)
+    # A watcher that dies proves nothing about overflow, so its death is a failure
+    # of its own (an int subclass whose comparison raises used to end it silently).
+    try:
+        while not stop.is_set():
+            n = q.qsize()
+            if type(n) is not int:
+                churn_errors.append(("watcher", "qsize returned " + type(n).__name__))
+                return
+            samples[0] += 1
+            if n < 0 or n > 3:
+                overflow.append(n)
+            time.sleep(0)
+    except BaseException as e:
+        churn_errors.append(("watcher", type(e).__name__, str(e)))
 
 
 def churn_put():
-    for i in range(80):
-        q.put(i)
+    try:
+        for i in range(80):
+            q.put(i)
+    except BaseException as e:
+        churn_errors.append(("churn_put", type(e).__name__, str(e)))
 
 
 def churn_get():
-    for _ in range(80):
-        q.get()
+    try:
+        for _ in range(80):
+            q.get()
+    except BaseException as e:
+        churn_errors.append(("churn_get", type(e).__name__, str(e)))
 
 
 wt = threading.Thread(target=watcher, daemon=True)
@@ -288,6 +264,8 @@ stop.set()
 wt.join(timeout=1)
 if not ok:
     bad += 1
+eq("churn and watcher threads ran without error", churn_errors, [])
+eq("the watcher sampled qsize", samples[0] > 0, True)
 eq("no overflow samples", overflow, [])
 eq("empty after churn", q.qsize(), 0)
 

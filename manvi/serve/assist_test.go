@@ -15,6 +15,8 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 var assistConfig = EnhancementConfiguration{OK: true, Provider: "anthropic", Model: "claude-test", ModelSource: "settings", Providers: []string{"anthropic"}}
@@ -535,6 +537,41 @@ func TestAssistIsAHostOperationOnItsOwnLane(t *testing.T) {
 	bare := roundTrip(t, Options{Modules: []Module{WorkbenchModule{Client: env.runner.client, Runner: env.runner}}}, Request{ID: "h", Op: OpHello})[0]
 	if bytes.Contains(bare.Result, []byte(OpWorkAssistComplete)) {
 		t.Fatalf("assist advertised without a configuration: %s", bare.Result)
+	}
+}
+
+// A key the provider refuses is a code the host can branch on, so a revoked
+// key never reads as a configured one. Only Anthropic's own 401 is that code:
+// a valid key without permission (403), a provider fault (500) and another
+// server's 401 stay ordinary dependency failures.
+func TestAssistAnswersARejectedAnthropicKeyWithProviderAuthOnTheWire(t *testing.T) {
+	cases := []struct {
+		name     string
+		failure  *transport.Error
+		wantAuth bool
+	}{
+		{"anthropic 401", &transport.Error{Provider: anthropic.Name, Status: 401, Body: `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key private-token"}}`}, true},
+		{"anthropic 403", &transport.Error{Provider: anthropic.Name, Status: 403, Body: `{"type":"error","error":{"type":"permission_error"}}`}, false},
+		{"anthropic 500", &transport.Error{Provider: anthropic.Name, Status: 500, Body: `{"type":"error","error":{"type":"api_error"}}`}, false},
+		{"another server's 401", &transport.Error{Provider: "local", Status: 401, Body: "unauthorized"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newAssistEnv(t, func(context.Context, llm.Request) (llm.Stream, error) {
+				return nil, tc.failure
+			})
+			response := roundTrip(t, Options{Modules: []Module{assistModule(env)}},
+				Request{ID: "a", Op: OpWorkAssistComplete, Params: json.RawMessage(`{"system":"s","user":"u","max_output_tokens":100}`)})[0]
+			if response.OK || response.Error == nil {
+				t.Fatalf("response = %+v", response)
+			}
+			if got := response.Error.Code == ErrProviderAuth; got != tc.wantAuth {
+				t.Fatalf("code = %s; want %s: %v", response.Error.Code, ErrProviderAuth, tc.wantAuth)
+			}
+			if tc.wantAuth && (response.Error.Retryable || strings.Contains(response.Error.Message, "private-token") || !strings.Contains(response.Error.Message, "[redacted]")) {
+				t.Fatalf("a rejected key must be final and redacted: %+v", response.Error)
+			}
+		})
 	}
 }
 

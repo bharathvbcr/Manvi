@@ -25,7 +25,7 @@ func TestManagedMcpServersResolvesConfiguredExecutables(t *testing.T) {
 	t.Setenv("MANVI_GITPULSE_MCP_BINARY", gp)
 	t.Setenv("MANVI_MAP_BINARY", dm)
 
-	got := managedMcpServers()
+	got := managedMcpServers("edit")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 MCP servers, got %+v", got)
 	}
@@ -39,7 +39,7 @@ func TestManagedMcpServersResolvesConfiguredExecutables(t *testing.T) {
 	// Missing or non-executable overrides are omitted rather than failing startup.
 	t.Setenv("MANVI_GITPULSE_MCP_BINARY", filepath.Join(dir, "missing-gitpulse-mcp"))
 	t.Setenv("MANVI_MAP_BINARY", nonExec)
-	if none := managedMcpServers(); len(none) != 0 {
+	if none := managedMcpServers("edit"); len(none) != 0 {
 		t.Fatalf("expected missing/non-exec binaries to be skipped, got %+v", none)
 	}
 }
@@ -66,7 +66,7 @@ func TestManagedMcpDevmapOptOutLeavesTheNavigationBinaryAlone(t *testing.T) {
 	t.Setenv("MANVI_MAP_BINARY", dm)
 
 	t.Setenv("MANVI_DEVMAP_MCP_BINARY", off)
-	got := managedMcpServers()
+	got := managedMcpServers("edit")
 	if len(got) != 1 || got[0].Name != "gitpulse" {
 		t.Fatalf("a non-executable MANVI_DEVMAP_MCP_BINARY must drop only the devmap server, got %+v", got)
 	}
@@ -75,14 +75,38 @@ func TestManagedMcpDevmapOptOutLeavesTheNavigationBinaryAlone(t *testing.T) {
 	}
 
 	t.Setenv("MANVI_DEVMAP_MCP_BINARY", other)
-	got = managedMcpServers()
+	got = managedMcpServers("edit")
 	if len(got) != 2 || got[1].Name != "devmap" || got[1].Command != other {
 		t.Fatalf("MANVI_DEVMAP_MCP_BINARY must pick the devmap server's binary, got %+v", got)
 	}
 
 	t.Setenv("MANVI_DEVMAP_MCP_BINARY", "")
-	got = managedMcpServers()
+	got = managedMcpServers("edit")
 	if len(got) != 2 || got[1].Command != dm {
 		t.Fatalf("an empty MANVI_DEVMAP_MCP_BINARY is unset and falls back to MANVI_MAP_BINARY, got %+v", got)
+	}
+}
+
+// An inspect session is attached only the read-only devmap server; every other
+// mode keeps both.
+func TestManagedMcpInspectSessionsGetOnlyDevmap(t *testing.T) {
+	dir := t.TempDir()
+	gp := filepath.Join(dir, "gitpulse-mcp")
+	dm := filepath.Join(dir, "devmap")
+	for _, p := range []string{gp, dm} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // executable stand-in in t.TempDir
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("MANVI_GITPULSE_MCP_BINARY", gp)
+	t.Setenv("MANVI_MAP_BINARY", dm)
+	if got := managedMcpServers("inspect"); len(got) != 1 || got[0].Name != "devmap" {
+		t.Fatalf("inspect must get only devmap, got %+v", got)
+	}
+	for _, mode := range []string{"ask", "edit", "auto_review", "preapproved", "bypass"} {
+		if got := managedMcpServers(mode); len(got) != 2 {
+			t.Fatalf("%s: want gitpulse and devmap, got %+v", mode, got)
+		}
 	}
 }

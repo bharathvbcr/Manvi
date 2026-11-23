@@ -15,14 +15,69 @@ bad = 0
 
 
 def eq(label, got, want):
+    # Exact types first: what crosses from the worker is data, and an object
+    # that is not the wanted builtin is not the wanted value however it compares.
     global bad
-    if got != want:
+    if type(got) is not type(want) or not (got == want):
         print("FAIL", label, "got", repr(got), "want", repr(want))
         bad += 1
 
 
+def _o_apply(doc, op):
+    """The spec's apply, held in the checker: the documents below are computed
+    here from the ops the candidate's transform returned, so convergence is
+    never one candidate answer compared with another."""
+    kind = op[0]
+    if kind == "nop":
+        return doc
+    if kind == "ins":
+        _, pos, ch, _site = op
+        if pos < 0 or pos > len(doc):
+            raise ValueError("pos")
+        return doc[:pos] + ch + doc[pos:]
+    if kind == "del":
+        _, pos, _site = op
+        if pos < 0 or pos >= len(doc):
+            raise ValueError("pos")
+        return doc[:pos] + doc[pos + 1:]
+    raise ValueError("op")
+
+
+def _o_transform(a, b):
+    """SPEC.md's transform, held in the checker. The spec fixes every rewrite
+    (positions, the lower-site-id tie-break, the equal-site rule, nops), so the
+    candidate's answer is compared with it op for op, not only for convergence: a
+    transform that converges by throwing both edits away is not the spec's."""
+    if a[0] == "nop":
+        return ("nop",), b
+    if b[0] == "nop":
+        return a, ("nop",)
+    if a[0] == "ins" and b[0] == "ins":
+        pa, pb = a[1], b[1]
+        if pa < pb or (pa == pb and a[3] <= b[3]):
+            return a, ("ins", pb + 1, b[2], b[3])
+        return ("ins", pa + 1, a[2], a[3]), b
+    if a[0] == "ins":
+        if a[1] <= b[1]:
+            return a, ("del", b[1] + 1, b[2])
+        return ("ins", a[1] - 1, a[2], a[3]), b
+    if b[0] == "ins":
+        if b[1] <= a[1]:
+            return ("del", a[1] + 1, a[2]), b
+        return a, ("ins", b[1] - 1, b[2], b[3])
+    if a[1] < b[1]:
+        return a, ("del", b[1] - 1, b[2])
+    if a[1] > b[1]:
+        return ("del", a[1] - 1, a[2]), b
+    return ("nop",), ("nop",)
+
+
 def settle(doc, a, b):
-    """Converged document reached by applying a then b2. None on divergence."""
+    """Converged document reached by applying a then b2. None on divergence.
+
+    The ops come from the candidate's transform and are applied here by the
+    checker's own apply; the candidate's apply must agree with it on every one.
+    """
     global bad
     before = (repr(a), repr(b))
     try:
@@ -35,6 +90,16 @@ def settle(doc, a, b):
         print("FAIL transform mutated its inputs", before, "->", (repr(a), repr(b)))
         bad += 1
         return None
+    if type(a2) is not tuple or type(b2) is not tuple:
+        print("FAIL transform did not return ops by value", doc, a, b)
+        bad += 1
+        return None
+    want_a2, want_b2 = _o_transform(a, b)
+    if repr(a2) != repr(want_a2) or repr(b2) != repr(want_b2):
+        print("FAIL transform differs from the spec", "doc", repr(doc), "a", a, "b", b,
+              "got", repr((a2, b2)), "want", repr((want_a2, want_b2)))
+        bad += 1
+        return None
     try:
         left = apply(apply(doc, a), b2)
         right = apply(apply(doc, b), a2)
@@ -42,12 +107,25 @@ def settle(doc, a, b):
         print("FAIL conv exc", doc, a, b, type(e).__name__, e)
         bad += 1
         return None
-    if left != right:
-        print("FAIL conv", "doc", repr(doc), "a", a, "b", b,
-              "a2", a2, "b2", b2, "L", repr(left), "R", repr(right))
+    try:
+        want_left = _o_apply(_o_apply(doc, a), b2)
+        want_right = _o_apply(_o_apply(doc, b), a2)
+    except Exception as e:
+        print("FAIL transformed op does not apply", doc, a, b, "a2", a2, "b2", b2,
+              type(e).__name__, e)
         bad += 1
         return None
-    return left
+    if type(left) is not str or left != want_left or type(right) is not str or right != want_right:
+        print("FAIL apply disagrees with the spec", "doc", repr(doc), "a", a, "b", b,
+              "got", repr(left), repr(right), "want", repr(want_left), repr(want_right))
+        bad += 1
+        return None
+    if want_left != want_right:
+        print("FAIL conv", "doc", repr(doc), "a", a, "b", b,
+              "a2", a2, "b2", b2, "L", repr(want_left), "R", repr(want_right))
+        bad += 1
+        return None
+    return want_left
 
 
 def conv(doc, a, b):

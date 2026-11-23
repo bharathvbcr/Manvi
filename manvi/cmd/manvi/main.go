@@ -241,6 +241,17 @@ func statusFor(err error, notes io.Writer) int {
 		// that as the work having been done. The message was already written
 		// where it belongs.
 		return 4
+	case errors.Is(err, errVerifyFailed):
+		// The turn's own verification found something and the turn ended with
+		// it standing. Exited 0 until now, the status of a verified turn. The
+		// findings are in the verify.report event and the notice on stderr.
+		return 10
+	case errors.Is(err, errVerifyNotRun):
+		// The verification was owed and could not complete: no verifier, a
+		// turn that changed files through a command with none configured, a
+		// turn that ended before the check ran. Not 10, because the code was
+		// not found wrong; it was not examined.
+		return 11
 	case errors.Is(err, errCheckBlocked):
 		// `manvi check` refused a write, and said why on stdout. It exited 0,
 		// which is what an allowed write exits, so `manvi check "$f" && commit`

@@ -63,6 +63,8 @@ func CleanEvent(e Event, clean func(string) string) Event {
 	e.Source = clean(e.Source)
 	e.Paths = cleanStrings(e.Paths, clean)
 	e.Findings = cleanStrings(e.Findings, clean)
+	e.TestSelection = clean(e.TestSelection)
+	e.SelectedTests = cleanStrings(e.SelectedTests, clean)
 	e.Type = clean(e.Type)
 	e.Data = CleanJSON(e.Data, clean)
 	return e

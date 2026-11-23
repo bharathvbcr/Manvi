@@ -44,10 +44,13 @@ func sensorConstants(t *testing.T) []string {
 	return names
 }
 
-// Exit statuses are decided by the turn's own endings, not by the end-of-turn
-// verdict, and adding "interrupted" must not move any of them. Each shape below
-// has a status and an escalation reason with no verdict; every verdict must
-// leave both exactly where they were.
+// A turn's own ending decides its exit status first; the end-of-turn verdict
+// speaks only for a turn that otherwise ended cleanly (verifyend_test.go pins
+// that table: failed is 10, degraded and anything unrecognised is 11, and
+// "interrupted" must read as 11 too, because a check that never ran is not a
+// pass). Each shape below has a status and an escalation reason with no verdict;
+// a verdict must leave both where they were, except that a clean ending takes
+// the status of the verdict.
 func TestZadv_w24va_EverySensorValueLeavesTheExitStatusAndEscalationUnchanged(t *testing.T) {
 	verdicts := map[string]agent.SensorVerdict{
 		"SensorNone": agent.SensorNone, "SensorSkipped": agent.SensorSkipped, "SensorPassed": agent.SensorPassed,
@@ -83,6 +86,15 @@ func TestZadv_w24va_EverySensorValueLeavesTheExitStatusAndEscalationUnchanged(t 
 			o := base
 			o.Sensor = v
 			got := outcomeStatus(o)
+			wantStatus := wantStatus
+			if wantStatus == nil {
+				switch v {
+				case agent.SensorFailed:
+					wantStatus = errVerifyFailed
+				case agent.SensorDegraded, agent.SensorInterrupted:
+					wantStatus = errVerifyNotRun
+				}
+			}
 			if (got == nil) != (wantStatus == nil) || (got != nil && !errors.Is(got, wantStatus)) {
 				t.Errorf("%s/%s: exit status %v, was %v without a verdict", shape, name, got, wantStatus)
 			}

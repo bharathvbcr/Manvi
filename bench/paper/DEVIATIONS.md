@@ -512,6 +512,8 @@ each documented in the file:
 
 - `globmatch`, `nfa_match`, `concurrency_race`: the import ban's static scan
   runs in the checker and its runtime half in the worker. Same two layers.
+  *(Superseded 2026-11-19: see O8. The worker's half is now an audit hook that
+  candidate code cannot remove, and the three scans are one `_mh.enforce_bans`.)*
 - `concurrency_race`: the multi-consumer block checks no loss and no
   duplication per producer, not strict per-producer order. **This check is
   weaker.** The per-`get` order across eight consumers was never atomic, and the
@@ -717,3 +719,79 @@ episodes (5 passed) and 7 shell-write candidate episodes; `orep` has 2 reads
   --num-predict 4096 --temperature 0.6 --think`, sole tenant, `concurrency 1`,
   one runner revision (`82e453a`) throughout. Stamped on every episode.
 - **Tasks** — the same eight hard tasks, unrevised.
+
+## O8 — The verifier took the worker's word for its bans and for argument mutation
+
+*Recorded 19 November 2026, from a post-hoc review of the merge that closed O6.*
+
+**What the instrument did.** After the checker/worker split, the import ban was a
+`sys.meta_path` finder installed inside the worker, and "did the candidate
+mutate its list/dict/set arguments" was a report the worker computed with a
+method candidate code could replace. A candidate that removed the finder and
+imported `fnmatch` through `builtins.__dict__["__imp"+"ort__"]` passed
+`globmatch`; one that replaced `_make_wb` through `gc.get_objects()` passed
+`intervals` while appending to its arguments; `concurrency_race` could reach
+`queue` as `sys.modules["__main__"]._g["queue"]` and `_queue` was not on the
+ban list. None of this was measured on a grid episode.
+
+**What changed.** The ban is an audit hook (`sys.addaudithook`) the worker
+installs before it reads the candidate, built so that it consults nothing a
+candidate can reach (a code constant, no closure, no module global), refusing the
+`import` event of every banned name that an import statement, `__import__` or
+`importlib` spells, and the reading of a banned module's source. (An earlier
+version of this paragraph said "however it is spelled"; that was false for
+loader calls, see below.) The worker harness loads none of the banned modules, so
+nothing is left to reach by attribute. The static audit that three hidden tests
+each carried a copy of is one function in the checker, and also names the
+dynamic spellings. `!=` against a worker object whose data the checker cannot
+read raises, bytes subclasses are read through the type, and an `OrderedDict`
+keeps its order. `cache_invalidation_dist` fuzzes against a model of the spec held in the checker,
+not one candidate answer against another (`ot_transform` did not: its `apply` was
+checked against a checker-side apply but its `transform` only for convergence, and
+a transform that threw both inserts away passed; it now compares `transform` with the
+spec's, op for op);
+`cache_invalidation_dist` counts its trials, so a `heal()` raising
+`StopIteration` can no longer end the loop with nothing failed.
+
+**What is still not enforced.** Argument writeback. The mutation happens to a
+copy that lives only in the worker, so every report of it is the worker's word.
+The checker keeps the encoding it sent, fails a run whose report is withheld or
+malformed, and counts the mutations itself; a worker that reports a pristine
+copy of arguments it mutated is not detected. Every verification record that
+relied on a report lists `writeback` under `unenforced`, and so does one whose
+ban covered a module the harness had loaded.
+
+**The loader-level hole (found 19 November 2026, closed as far as CPython
+allows).** `_imp.create_builtin` raises no `import` audit event, so the ban as
+first described did not hold: a candidate that built `_imp`, `_sre` and
+`create_builtin` from `chr` codes (the static audit sees only constants) took
+`_sre`, the C half of `re`, and passed `globmatch` verification with an empty
+`unenforced` list. `BuiltinImporter.create_module`, `_frozen_importlib._imp`, a
+pristine `_imp` returned by `create_builtin("_imp")`, `_imp.exec_builtin` on
+such a module, `_imp.get_frozen_object("runpy")` and
+`_imp.find_frozen("runpy", withdata=True)` were the same hole (`_gcd_import`,
+`init_frozen` and a `FrozenImporter` load of `runpy` were already refused, the
+last two only because they import `importlib.machinery`). The worker now
+replaces the four `_imp` loader functions with stubs that ask the audit hook
+to perform the load, and the hook refuses banned names and the interpreter's
+own import machinery; `sys._current_frames` is refused. **Still open:** while
+a load runs the real function is held in the hook's frame, and a `__del__`
+finalizer that the garbage collector starts inside the load can read it
+(`sys._getframe`); the probe obtained `_sre` and passed verification. CPython
+offers no way to hide a live frame from the thread running in it, so every
+record of a task with an import ban names this under `unenforced`
+(`import-ban: loader: ...`). Also named on every ban record: a banned source read
+through a symlink that another thread re-points between the hook's stat and the
+open (`import-ban: source read`), and on every worker record the temp files the
+worker leaves behind (`worker-temp`). The hook now also refuses starting another
+process (`os.exec`, `os.fork`, `os.posix_spawn`, `os.system`, `subprocess.Popen`...),
+because an `os.execv` replaced the worker with an interpreter that had no hook, and
+identifies a banned module's files by (device, inode), not by the spelling of the
+path. `ast_transformer`'s `re` ban is static only (the worker's asyncio needs `re`)
+and its record says so. Writeback of keyword arguments, of containers nested in a
+tuple/frozenset argument and of a call that raised is counted and named. The `importlib`/`imp`/`runpy` bans are advisory
+(the hook refuses the modules they would load, not the machinery). A candidate that
+writes a banned module's logic from memory is not detectable by any of this.
+
+**Effect on the reported numbers.** None was measured; no grid ran on the
+instrument these paragraphs describe.

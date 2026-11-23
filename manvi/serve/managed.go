@@ -1266,7 +1266,7 @@ func managedTurn(provider, mode, brief string) string {
 	if mode == "inspect" {
 		parts = append(parts, "Inspect and propose a plan; do not modify files or change the task's status.")
 	} else {
-		parts = append(parts, "Carry out the saved task within the selected permission mode. When every acceptance criterion is met and your verification passed, mark the task done with the gitpulse_complete_task tool, using the id on the brief's Task: line and a short summary of what changed and how you verified it; if anything is unfinished or needs a person's judgement, use status review instead and say what remains.")
+		parts = append(parts, "Carry out the saved task within the selected permission mode. When every acceptance criterion is met and your verification passed, mark the task done with the gitpulse_complete_task tool, using the id on the brief's Task: line and a short summary of what changed and how you verified it; if anything is unfinished or needs a person's judgement, use status review instead and say what remains. If this session has no gitpulse_complete_task tool (Manvi attaches it only when gitpulse-mcp resolves, and your own MCP servers are not loaded here), end your turn by stating the task id, the status you would have set and that summary.")
 	}
 	parts = append(parts, "Do not publish changes (push, merge, release) on the user's behalf.")
 	// Say the brief carries guidance only when this brief does. Manvi and the

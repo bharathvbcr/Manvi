@@ -212,6 +212,14 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 	return report, nil
 }
 
+// gapRigorDidNotRun is the gap type runRigor raises when the content gates
+// could not run at all. It is blocking for the leased verifier, which has no
+// other answer for a change nothing scanned. The path check reads it as a
+// degradation instead: a missing or timed-out verifier is the environment's
+// fault, not a defect in the change, and sending the model back to fix it
+// would spend model calls on something it cannot repair.
+const gapRigorDidNotRun = "rigor_did_not_run"
+
 // coverageUnmeasuredNote is what runRigor records when no coverage file was
 // supplied. An unmeasured diff is reported and does not block: the task-report
 // verifier already says so, and VerifyPaths must agree. The match is this
@@ -263,7 +271,7 @@ func (r *Registry) runRigor(ctx context.Context, diff string, planned []string, 
 		// gates running, and any future one lands on the same branch.
 		gap := Gap{
 			ID:       fmt.Sprintf("GAP-%s-RIGOR-UNAVAILABLE", taskID),
-			Type:     "rigor_did_not_run",
+			Type:     gapRigorDidNotRun,
 			Severity: "high",
 			Blocking: true,
 			Detail: fmt.Sprintf("%s: did not run (%v); a change nothing scanned cannot be reported as verified",

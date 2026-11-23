@@ -219,7 +219,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			case "claude":
 				options.Program = managedAgentBinary("MANVI_CLAUDE_BINARY", "claude")
 				if len(options.McpServers) == 0 {
-					options.McpServers = managedMcpServers()
+					options.McpServers = managedMcpServers(options.Mode)
 				}
 				// Started without this process's provider keys, budget or no
 				// budget: it runs on the CLI's own login. See childenv.
@@ -231,7 +231,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			case "agy":
 				options.Program = managedAgentBinary("MANVI_AGY_BINARY", "agy")
 				if len(options.McpServers) == 0 {
-					options.McpServers = managedMcpServers()
+					options.McpServers = managedMcpServers(options.Mode)
 				}
 				session, err := codingagent.StartAgy(ctx, options)
 				if err != nil {
@@ -476,7 +476,12 @@ func (g closingGaps) Close() error { g.Client.Close(); return nil }
 // unset). The devmap server follows MANVI_DEVMAP_MCP_BINARY first, so it can be
 // turned off without touching MANVI_MAP_BINARY, which is also the devmap Manvi
 // itself navigates with.
-func managedMcpServers() []codingagent.McpServer {
+//
+// An inspect session gets only devmap, whose tools are all read-only: gitpulse
+// can merge and prune worktrees, open terminals and edit the task board, which a
+// session started not to change anything has no business holding, whatever the
+// operator would approve (owner decision, 2026-11-19).
+func managedMcpServers(mode string) []codingagent.McpServer {
 	devmap := toolBinary("MANVI_MAP_BINARY", "devmap")
 	if os.Getenv("MANVI_DEVMAP_MCP_BINARY") != "" {
 		devmap = toolBinary("MANVI_DEVMAP_MCP_BINARY", "devmap")
@@ -491,6 +496,9 @@ func managedMcpServers() []codingagent.McpServer {
 		{name: "gitpulse", resolved: toolBinary("MANVI_GITPULSE_MCP_BINARY", "gitpulse-mcp"), bin: "gitpulse-mcp", args: []string{}},
 		{name: "devmap", resolved: devmap, bin: "devmap", args: []string{"mcp"}},
 	} {
+		if mode == "inspect" && spec.name != "devmap" {
+			continue
+		}
 		if filepath.IsAbs(spec.resolved) && spec.resolved != unresolvedTool(spec.bin) && isExecutableFile(spec.resolved) {
 			servers = append(servers, codingagent.McpServer{
 				Name:    spec.name,
