@@ -66,10 +66,11 @@ type Prompt struct {
 // PasteChip describes an active collapsed paste chip currently present in the
 // composer buffer.
 type PasteChip struct {
-	Label string
-	Text  string
-	Lines int
-	Chars int
+	Label     string
+	Text      string
+	Lines     int
+	Chars     int
+	Truncated bool
 }
 
 // Rotating placeholder tips for feature discovery.
@@ -193,10 +194,11 @@ func (p *Prompt) InspectPastes() []PasteChip {
 			if chip := matchChip(s[i:], chips); chip != "" {
 				text := p.pastes[chip]
 				out = append(out, PasteChip{
-					Label: chip,
-					Text:  text,
-					Lines: strings.Count(text, "\n") + 1,
-					Chars: len(text),
+					Label:     chip,
+					Text:      text,
+					Lines:     strings.Count(text, "\n") + 1,
+					Chars:     len(text),
+					Truncated: strings.Contains(chip, "· truncated to 1 MiB"),
 				})
 				i += len(chip)
 				continue
@@ -236,14 +238,17 @@ func (p *Prompt) expandConsecutivePaste(s string) bool {
 }
 
 // sanitizePasteText normalizes CRLF/CR line endings to LF, strips C0/DEL/C1
-// control characters (preserving \n and \t), and caps the payload to maxPasteBytes.
-func sanitizePasteText(s string) string {
+// control characters (preserving \n and \t), and caps the payload to
+// maxPasteBytes, reporting whether truncation occurred.
+func sanitizePasteText(s string) (string, bool) {
+	truncated := false
 	if len(s) > maxPasteBytes {
 		cut := maxPasteBytes
 		for cut > 0 && !utf8.RuneStart(s[cut]) {
 			cut--
 		}
 		s = s[:cut]
+		truncated = true
 	}
 	var b strings.Builder
 	b.Grow(len(s))
@@ -264,14 +269,14 @@ func sanitizePasteText(s string) string {
 			b.WriteRune(r)
 		}
 	}
-	return b.String()
+	return b.String(), truncated
 }
 
 // InsertPaste inserts text, collapsing large pastes (>200 chars) into a compact
 // chip. Pasting the exact same large payload consecutively while its chip sits
 // immediately before the cursor expands that chip inline for quick editing.
 func (p *Prompt) InsertPaste(s string) string {
-	s = sanitizePasteText(s)
+	s, truncated := sanitizePasteText(s)
 	if len(s) <= 200 {
 		p.InsertString(s)
 		return ""
@@ -287,11 +292,15 @@ func (p *Prompt) InsertPaste(s string) string {
 	// free now may be one an earlier paste of this prompt held and Undo can
 	// bring back.
 	p.pasteSeq++
+	truncSuffix := ""
+	if truncated {
+		truncSuffix = " · truncated to 1 MiB"
+	}
 	var chip string
 	if lines := strings.Count(s, "\n") + 1; lines > 1 {
-		chip = fmt.Sprintf("[pasted %d lines · %d chars #%d]", lines, len(s), p.pasteSeq)
+		chip = fmt.Sprintf("[pasted %d lines · %d chars%s #%d]", lines, len(s), truncSuffix, p.pasteSeq)
 	} else {
-		chip = fmt.Sprintf("[pasted %d chars #%d]", len(s), p.pasteSeq)
+		chip = fmt.Sprintf("[pasted %d chars%s #%d]", len(s), truncSuffix, p.pasteSeq)
 	}
 	// Inserted before it is registered: the insert's own edit forgets chips the
 	// buffer does not show yet, and this one is not in it until the insert.

@@ -408,6 +408,13 @@ func TestInsertPasteSanitizesControlsAndCapsSize(t *testing.T) {
 	if chip == "" {
 		t.Fatal("expected large sanitized paste to create a chip")
 	}
+	if !strings.Contains(chip, "truncated to 1 MiB") {
+		t.Fatalf("chip label %q did not signal truncation", chip)
+	}
+	chips := p.InspectPastes()
+	if len(chips) != 1 || !chips[0].Truncated {
+		t.Fatalf("InspectPastes() = %#v, want Truncated=true", chips)
+	}
 	got := p.Value()
 	if len(got) > maxPasteBytes {
 		t.Fatalf("sanitized paste len = %d, want <= %d", len(got), maxPasteBytes)
@@ -418,5 +425,15 @@ func TestInsertPasteSanitizesControlsAndCapsSize(t *testing.T) {
 	}
 	if strings.ContainsAny(got, "\r\x00\x1b\x7f\u0080\u009b") {
 		t.Fatal("control characters survived InsertPaste sanitization")
+	}
+
+	// Within limit: chip must not claim truncation.
+	p2 := NewPrompt()
+	c2 := p2.InsertPaste(padTo(300, 'q'))
+	if strings.Contains(c2, "truncated") {
+		t.Fatalf("normal chip %q unexpectedly claims truncation", c2)
+	}
+	if chips2 := p2.InspectPastes(); len(chips2) != 1 || chips2[0].Truncated {
+		t.Fatalf("normal InspectPastes() = %#v, want Truncated=false", chips2)
 	}
 }

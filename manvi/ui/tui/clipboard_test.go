@@ -413,6 +413,24 @@ func TestClipboardNativeReadSanitizesAndCapsSize(t *testing.T) {
 	if strings.ContainsAny(got, "\r\x00\x1b\x7f") {
 		t.Fatal("control characters survived native clipboard sanitization")
 	}
+	if !strings.HasSuffix(got, clipboardTruncatedNotice) {
+		t.Fatalf("oversized native clipboard read did not signal truncation: tail=%q", got[max(0, len(got)-40):])
+	}
+
+	// Verify runClipboardRead directly reports truncated=true when limitedBuffer caps output
+	// and truncated=false when within limit.
+	binPath := filepath.Join(safeBin, readTool)
+	_, truncOver, err := runClipboardRead(context.Background(), binPath)
+	if err != nil || !truncOver {
+		t.Fatalf("runClipboardRead over limit = (_, %v, %v), want (_, true, nil)", truncOver, err)
+	}
+	if err := os.WriteFile(fixture, []byte("small\r\nclip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	smallGot, truncSmall, err := runClipboardRead(context.Background(), binPath)
+	if err != nil || truncSmall || smallGot != "small\nclip" {
+		t.Fatalf("runClipboardRead small = (%q, %v, %v), want (%q, false, nil)", smallGot, truncSmall, err, "small\nclip")
+	}
 }
 
 func bytesRepeat(b byte, n int) []byte {

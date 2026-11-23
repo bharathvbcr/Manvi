@@ -36,7 +36,8 @@ const (
 	clipboardTimeout = 2 * time.Second
 	// screenDCSChunkSize keeps each GNU screen DCS passthrough frame well below
 	// screen's ~768-byte DCS buffer cap.
-	screenDCSChunkSize = 76
+	screenDCSChunkSize       = 76
+	clipboardTruncatedNotice = "[truncated to 1 MiB]"
 )
 
 var (
@@ -285,13 +286,13 @@ func runClipboardWrite(ctx context.Context, path, text string, args ...string) e
 	return cmd.Run()
 }
 
-func runClipboardRead(ctx context.Context, path string, args ...string) (string, error) {
+func runClipboardRead(ctx context.Context, path string, args ...string) (string, bool, error) {
 	out := &limitedBuffer{limit: maxPasteBytes}
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = childenv.Inherit()
 	cmd.Stdout = out
 	if err := cmd.Run(); err != nil {
-		return "", err
+		return "", false, err
 	}
 	raw := out.buf.String()
 	if out.truncated {
@@ -302,7 +303,27 @@ func runClipboardRead(ctx context.Context, path string, args ...string) (string,
 			raw = raw[:len(raw)-1]
 		}
 	}
-	return sanitizePasteText(raw), nil
+	clean, sanTruncated := sanitizePasteText(raw)
+	return clean, out.truncated || sanTruncated, nil
+}
+
+func appendClipboardTruncatedNotice(text string) string {
+	if text == "" {
+		return clipboardTruncatedNotice
+	}
+	if strings.HasSuffix(text, "\n") && len(text)+len(clipboardTruncatedNotice) <= maxPasteBytes {
+		return text + clipboardTruncatedNotice
+	}
+	suffix := "\n" + clipboardTruncatedNotice
+	limit := maxPasteBytes - len(suffix)
+	if len(text) > limit {
+		cut := limit
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		text = text[:cut]
+	}
+	return text + suffix
 }
 
 // writeNativeClipboard copies text via the local OS clipboard tool when running
@@ -352,7 +373,10 @@ func readNativeClipboard(ctx context.Context, getenv func(string) string) (strin
 		if err != nil {
 			continue
 		}
-		if text, err := runClipboardRead(tctx, binPath, b.args...); err == nil {
+		if text, truncated, err := runClipboardRead(tctx, binPath, b.args...); err == nil {
+			if truncated {
+				text = appendClipboardTruncatedNotice(text)
+			}
 			return text, nil
 		}
 	}
