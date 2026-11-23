@@ -332,7 +332,9 @@ func stored(name string, art *artifacts.Artifact, err error) (string, int, error
 	if art == nil {
 		return "", 0, errors.Join(fmt.Errorf("lessons: %s was reported as published but the store returned no artifact", name), err)
 	}
-	return art.Name, art.Revision, err
+	// Slash form on every platform: the name is the entry's identity and what
+	// callers print, and the store may hand back the OS spelling.
+	return filepath.ToSlash(art.Name), art.Revision, err
 }
 
 // Save stores an accepted result, and only an accepted result with an entry in
