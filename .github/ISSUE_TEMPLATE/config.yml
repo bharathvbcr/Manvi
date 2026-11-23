@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/bharathvbcr/Manvi/security/advisories/new
+    about: Do not open a public issue. Report it privately; the policy is in SECURITY.md.
+  - name: Question or help using MANVI
+    url: https://github.com/bharathvbcr/Manvi/discussions
+    about: Ask in Discussions. Answers can be marked accepted, so the next person finds one.
+  - name: Contributing guide
+    url: https://github.com/bharathvbcr/Manvi/blob/main/CONTRIBUTING.md
+    about: What `./verify.sh` needs, what it refuses, and which repository a change belongs in.

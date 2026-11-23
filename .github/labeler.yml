@@ -1,0 +1,42 @@
+# Path-to-label map for .github/workflows/labeler.yml (actions/labeler v5+ syntax).
+# The labels are created in the repository settings; a label that does not
+# exist there is created by the action with no colour or description.
+
+'area: go':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'manvi/**'
+
+'area: rust':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/**'
+          - 'crates/**'
+
+'area: docs':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/**'
+          - '*.md'
+          - '.github/ISSUE_TEMPLATE/**'
+          - '.github/PULL_REQUEST_TEMPLATE.md'
+
+'area: ci':
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/**'
+          - '.github/dependabot.yml'
+          - '.github/labeler.yml'
+          - '.github/CODEOWNERS'
+          - 'verify.sh'
+          - 'scripts/**'
+
+'area: deps':
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/go.mod'
+          - '**/go.sum'
+          - '**/Cargo.lock'
+          - 'bun.lock'
+          - 'package.json'
+          - 'scripts/module-pins.txt'
