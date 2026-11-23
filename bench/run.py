@@ -208,6 +208,9 @@ def main():
                          f"{args.max_steps}")
     # Before the cell directory, the tenancy lease and any eviction: a host
     # that cannot contain the shell must not get as far as touching the GPU.
+    # A runner killed with SIGKILL leaves its private temp parent behind; the
+    # pid in its name says whether anything still owns it.
+    toolmod.reap_stale_scopes()
     require_containment()
 
     spec = model_spec(args.model)
@@ -245,6 +248,13 @@ def main():
                               think=bool(args.think), model=args.model,
                               top_p=top_p, reasoning_effort=effort,
                               concurrency=args.concurrency)
+    # The shell and verifier children run with an allow-listed environment and
+    # a private per-episode temp (mh.tools.ChildScope). A run made before that
+    # existed did not, so it is a different instrument and the stamp says so;
+    # each episode's own temp root is in its containment event, not here,
+    # because it differs per episode and is not part of what makes two the same
+    # experiment.
+    protocol["shell_env"] = "scrubbed"
     run_meta = {"tag": tag, "seed_base": args.seed, "repeat": args.repeat,
                 "rep_offset": args.rep_offset,
                 "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
