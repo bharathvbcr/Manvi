@@ -4,7 +4,6 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -12,12 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
-	"github.com/bharathvbcr/Manvi/manvi/core/bus"
-	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
-	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The README states how Manvi relates to DevCouncil and how many native tools
@@ -30,7 +23,10 @@ import (
 // The wording is the owner's design: the Go packages are linked natively and
 // pinned, the Rust components are child processes over JSON on stdio, and
 // gusset is the one in-process exception. The guard below reads the import
-// graph, so a package that gets linked but not named fails here.
+// graph, so a package that gets linked but not named fails here. The tool
+// counts are guarded where the registry lives, in
+// devcouncil/toolcount_docs_test.go, because only that package may build the
+// registry with a work binding.
 
 const devcouncilGoModule = "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator"
 
@@ -118,94 +114,6 @@ func TestReadmeDoesNotClaimLinkingNoDevCouncil(t *testing.T) {
 		for _, para := range paras {
 			if !span.MatchString(para) {
 				t.Errorf("README.md linking paragraph does not name %q (imported as %s/%s by a non-test file): %.80q...", elem, devcouncilGoModule, pkg, para)
-			}
-		}
-	}
-}
-
-// observedToolCounts builds the registry the way harness.go does (devcouncil.New
-// then Register into a fresh tool pipeline) for a repository with no skills and
-// again for one with a skill, and counts what each pipeline exposes. The
-// catalogue is the registry's own list, which must agree with the skill case.
-func observedToolCounts(t *testing.T) (catalogue, noSkills int) {
-	t.Helper()
-	open := func(root string) int {
-		r, err := devcouncil.New(devcouncil.Deps{
-			Store: &store.Client{},
-			Gate:  &gate.Gate{},
-			Root:  root,
-			Work:  &devcouncil.WorkBinding{},
-		})
-		if err != nil {
-			t.Fatalf("build native registry: %v", err)
-		}
-		pipe := tools.NewRegistry(bus.New())
-		if err := r.Register(pipe); err != nil {
-			t.Fatalf("register: %v", err)
-		}
-		catalogue = len(r.Tools())
-		return len(pipe.Schemas())
-	}
-	bare := t.TempDir()
-	withSkill := t.TempDir()
-	skillDir := filepath.Join(withSkill, ".agents", "skills", "go-review")
-	if err := os.MkdirAll(skillDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	body := "---\nname: go-review\ndescription: d\n---\nbody\n"
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	noSkills = open(bare)
-	withSkills := open(withSkill)
-	if withSkills != noSkills+1 {
-		t.Fatalf("a repository with a skill exposes %d tools, one with none %d; want exactly one more (devcouncil_load_skill)", withSkills, noSkills)
-	}
-	if withSkills != catalogue {
-		t.Fatalf("the skills-present pipeline exposes %d tools but the registry catalogue lists %d", withSkills, catalogue)
-	}
-	return withSkills, noSkills
-}
-
-// TestReadmeNativeToolCountsMatchRegistry checks every native-tool count the
-// README and the other documents that restate it give, wherever they give it,
-// against the registry observed at test time. Each pattern's capture groups
-// are the catalogue count, then the no-skills count where it states one.
-func TestReadmeNativeToolCountsMatchRegistry(t *testing.T) {
-	catalogue, noSkills := observedToolCounts(t)
-
-	sites := []struct {
-		file    string
-		name    string
-		pattern string
-		want    []int
-	}{
-		{"README.md", "badge", `badge/tools-(\d+)_native`, []int{catalogue}},
-		{"README.md", "native tools count", `(?i)\b(\d+) native tools`, []int{catalogue}},
-		{"README.md", "diagram node", `Tools\["(\d+) Native Tools"\]`, []int{catalogue}},
-		{"README.md", "no-skills count", `(\d+) in a repository with no skills`, []int{noSkills}},
-		{"docs/WORKBENCH.md", "native tools", `(\d+) native tools, (\d+) with no skills`, []int{catalogue, noSkills}},
-		{"docs/04-visual-architecture-guide.html", "tools node", `the (\d+) native tools \((\d+) without repo skills\)`, []int{catalogue, noSkills}},
-		{".github/METADATA.md", "description", `(\d+) native tools \((\d+) with no skills\)`, []int{catalogue, noSkills}},
-		{"docs/README.md", "topic slug", `\x60(\d+)-tools\x60`, []int{catalogue}},
-		{"docs/README.md", "tools reference", `all (\d+) native tools \((\d+) in a repository with no skills\)`, []int{catalogue, noSkills}},
-	}
-	for _, s := range sites {
-		doc := readDoc(t, filepath.Join(docRoot, s.file))
-		ms := regexp.MustCompile(s.pattern).FindAllStringSubmatch(doc, -1)
-		if len(ms) == 0 {
-			t.Errorf("%s: no %s matched %q; the sentence was reworded, re-point this guard", s.file, s.name, s.pattern)
-			continue
-		}
-		for _, m := range ms {
-			for i, want := range s.want {
-				got, err := strconv.Atoi(m[i+1])
-				if err != nil {
-					t.Fatalf("%s: %q is not a number: %v", s.file, m[i+1], err)
-				}
-				if got != want {
-					t.Errorf("%s %s states %d, the registry has %d (pattern %q)", s.file, s.name, got, want, s.pattern)
-				}
 			}
 		}
 	}
