@@ -137,6 +137,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- DevCouncil pin moved from `d938f7f8` to `6c2a71fa` (origin/main; 236
+  commits, 89 files changed under linked paths). Schema constants are unchanged
+  (devmap-store 29, dc-store 11, workbench 17), so no cross-app schema carry is
+  needed, and the docs schema re-read gate is re-read at the new pin. No
+  vendored contract or linked crate manifest changed. The pin carries the
+  dc-redact scaling check that judges cost per byte instead of a 5x wall-clock
+  bound, which failed intermittently on macos-latest. gusset stays at
+  `19383ad`.
+
 - DevCouncil pin moved from `230bbf04` to `d938f7f8` (origin/main; 37 commits,
   16 touching linked paths). Schema constants are unchanged (devmap-store 29,
   dc-store 11, workbench 17), so no cross-app schema carry is needed. The
