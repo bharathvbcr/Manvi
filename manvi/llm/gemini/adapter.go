@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
@@ -318,7 +319,7 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 			}
 			out = append(out, wireInput{
 				Type: TypeFunctionCall, Name: b.Name, Arguments: args,
-				ID: string(b.ID), Signature: signature,
+				ID: wireCallID(b.ID), Signature: signature,
 			})
 		case llm.ToolResultBlock:
 			var content []wireContent
@@ -359,7 +360,7 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 						"cannot be named; this wire requires the name on every result", b.ToolCallID)
 			}
 			out = append(out, wireInput{
-				Type: TypeFunctionResult, CallID: string(b.ToolCallID), Name: name, Result: encoded,
+				Type: TypeFunctionResult, CallID: wireCallID(b.ToolCallID), Name: name, Result: encoded,
 			})
 		case llm.ImageBlock:
 			c, err := inputContent(b)
@@ -548,10 +549,10 @@ type (
 		TotalOutputTokens int `json:"total_output_tokens"`
 		ThoughtTokens     int `json:"total_thought_tokens"`
 		// TotalCachedTokens is the Interactions API field (aistudio.google.com/api-reference/interactions-api,
-		// read 2026-11-09). CachedContentTokenCount is the generateContent usageMetadata
-		// name this adapter read before; it stays as a fallback until a live response settles it.
-		TotalCachedTokens       int `json:"total_cached_tokens,omitempty"`
-		CachedContentTokenCount int `json:"cached_content_token_count,omitempty"`
+		// read 2026-11-09). generateContent's cached_content_token_count is not read: no
+		// recorded fixture or response in this repository carries it, and this API does not
+		// document it.
+		TotalCachedTokens int `json:"total_cached_tokens,omitempty"`
 	}
 	wireEventInteraction = struct {
 		Status string          `json:"status"`
@@ -874,9 +875,6 @@ func (s *stream) apply(kind string, ev wireEvent) (llm.Chunk, bool, error) {
 				s.usage.OutputTokens = u.TotalOutputTokens
 				s.usage.ReasoningTokens = u.ThoughtTokens
 				s.usage.CacheReadTokens = u.TotalCachedTokens
-				if s.usage.CacheReadTokens == 0 {
-					s.usage.CacheReadTokens = u.CachedContentTokenCount
-				}
 			}
 			s.stopReason = mapStatus(ev.Interaction.Status)
 		}
@@ -1197,6 +1195,30 @@ func (s *stream) seal(id, name string) {
 	}
 }
 
+// anonCallPrefix marks an id this adapter minted for a call the server did not
+// identify. See wireCallID.
+const anonCallPrefix = "gemini_anon_"
+
+var anonCallSeq atomic.Uint64
+
+// dupCallMarker separates a server id from the suffix that makes a reused one
+// distinct in the neutral journal.
+const dupCallMarker = "~gemini_dup_"
+
+// wireCallID is the id to put on the wire for a neutral call id: a minted id is
+// not the server's, so it is sent as what the server sent, which is nothing for
+// an anonymous call and the original id for a reused one.
+func wireCallID(id llm.CallID) string {
+	s := string(id)
+	if strings.HasPrefix(s, anonCallPrefix) {
+		return ""
+	}
+	if i := strings.Index(s, dupCallMarker); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 func (s *stream) Response() (llm.Response, error) {
 	if err := s.ctx.Err(); err != nil {
 		return llm.Response{}, err
@@ -1221,67 +1243,61 @@ func (s *stream) Response() (llm.Response, error) {
 		malformed []llm.MalformedCall
 		cut       []*callAccumulator
 	)
-	for _, acc := range s.order {
-		// A call is complete only when the stream framed it with step.stop, or
-		// when what arrived is a whole JSON object. One that was never closed and
-		// carries no argument bytes is a call whose arguments did not arrive, and
-		// turning it into `{}` runs the tool on arguments nobody sent.
-		unclosedAndEmpty := !acc.sealed && acc.args.Len() == 0
-		args := json.RawMessage(acc.args.String())
-		if len(args) == 0 {
-			args = json.RawMessage("{}")
-		}
-		// Checked as an object, not merely as valid JSON. A tool's arguments are
-		// an object by definition — every schema this harness sends declares
-		// "type":"object" — and the looser check let a bare JSON string through
-		// as if it were one. What reached the tool was a quoted string, and the
-		// tool reported a decode failure against its own schema, which reads as
-		// the model having sent nonsense rather than as the adapter having
-		// failed to unwrap the wire form.
-		if (unclosedAndEmpty || !isJSONObject(args)) && stop == llm.StopMaxTokens {
+	// Each call is settled by the one rule. A reused id is not refused on this
+	// wire; it is made distinct where the calls are built, below.
+	ids := make([]llm.CallID, len(s.order))
+	settlements := make([]llm.CallSettlement, len(s.order))
+	for i, acc := range s.order {
+		ids[i] = llm.CallID(acc.id)
+		// What a complete call is, is decided once for every adapter; see
+		// llm.SettleCall. This wire closes a call with step.stop but accepts a
+		// whole JSON object without it, so an unclosed call with no argument
+		// bytes is the one case the framing decides. It answers a call by
+		// function name when the call carries no id, so the id is optional.
+		settlements[i] = llm.SettleCall(llm.CallEvidence{
+			ID: ids[i], Name: acc.name, Arguments: acc.args.String(),
+			Closed: acc.sealed, Framing: llm.FramingOptional, IDOptional: true, Stop: stop,
+		})
+	}
+	dispatchedID := make(map[string]int, len(s.order))
+	for i, acc := range s.order {
+		settled := settlements[i]
+		switch {
+		case settled.Reportable():
 			// The model ran out of output budget in the middle of the call. The
 			// turn survives: the call is reported as malformed, the loop tells the
 			// model it was cut off, and it can ask for less. Returning an error
 			// here discarded the prose and every completed step of the turn with
-			// it. The anthropic adapter settles the same case the same way.
-			//
-			// A call with no name still cannot be routed or told back to the
-			// model, so that stays an error, as it does there.
-			if acc.name == "" {
-				return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
-			}
+			// it.
 			malformed = append(malformed, llm.MalformedCall{
-				ID:   llm.CallID(acc.id),
-				Name: acc.name,
-				Reason: fmt.Sprintf(
-					"the arguments were cut off by the output limit after %d bytes and are not a complete JSON object",
-					acc.args.Len()),
+				ID: llm.CallID(acc.id), Name: acc.name, Reason: settled.Reason,
 			})
 			cut = append(cut, acc)
 			continue
+		case settled.Verdict == llm.CallUnusable:
+			return llm.Response{}, fmt.Errorf("gemini: tool call %q (id %q) %s",
+				llm.TruncateForMessage(acc.name), llm.TruncateForMessage(acc.id), settled.Reason)
 		}
-		if unclosedAndEmpty {
-			return llm.Response{}, fmt.Errorf(
-				"gemini: tool call %q was never closed by step.stop and carried no arguments; "+
-					"it was not dispatched", acc.name)
+		// A call the server left without an id still has to be told apart from
+		// its siblings: the loop pairs a result with its call by id. The id minted
+		// here lives only in the neutral journal; wireCallID removes it again
+		// before anything is sent.
+		//
+		// The same is done for a call that reuses an id an earlier call of this
+		// response already dispatched under. This wire does not promise ids are
+		// unique across a stream (a sealed call's id may be reused), so refusing
+		// the pair would reject well-formed responses the live wire sends;
+		// instead the later call's neutral id is made distinct and wireCallID
+		// maps it back to what the server sent.
+		id := llm.CallID(acc.id)
+		switch {
+		case acc.id == "":
+			id = llm.CallID(fmt.Sprintf("%s%d", anonCallPrefix, anonCallSeq.Add(1)))
+		case dispatchedID[acc.id] > 0:
+			id = llm.CallID(fmt.Sprintf("%s%s%d", acc.id, dupCallMarker, dispatchedID[acc.id]))
 		}
-		if !isJSONObject(args) {
-			// Named as unusable rather than as incomplete. Truncation is the
-			// common cause and it is not the only one — arguments that are two
-			// concatenated objects are complete and still unusable — and
-			// telling a reader the stream was cut off when it was not sends
-			// them to investigate the wrong half of the system.
-			return llm.Response{}, fmt.Errorf(
-				"gemini: tool call %q arrived with arguments that are not a JSON object, so it was not "+
-					"dispatched — the stream was cut off mid-call, or the server framed two calls as "+
-					"one: %q", acc.name, args)
-		}
-		if acc.name == "" {
-			return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
-		}
-		calls = append(calls, llm.ToolCallBlock{
-			ID: llm.CallID(acc.id), Name: acc.name, Arguments: args,
-		})
+		dispatchedID[acc.id]++
+		calls = append(calls, llm.ToolCallBlock{ID: id, Name: acc.name, Arguments: settled.Arguments})
 	}
 
 	msg := llm.Message{

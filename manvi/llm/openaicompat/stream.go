@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
-	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
@@ -517,7 +516,7 @@ func (s *stream) resolveAccumulator(delta wireToolCall) *callAccumulator {
 	}
 
 	if delta.ID != "" {
-		if acc, ok := s.callsByID[delta.ID]; ok {
+		if acc, ok := s.callsByID[delta.ID]; ok && !s.duplicateStart(acc, delta) {
 			s.openAtIndex[delta.Index] = acc
 			return acc
 		}
@@ -556,6 +555,27 @@ func (s *stream) resolveAccumulator(delta wireToolCall) *callAccumulator {
 		s.callsByID[delta.ID] = acc
 	}
 	return acc
+}
+
+// duplicateStart reports whether a fragment is a second call opening under an
+// id that already belongs to another call, as opposed to a later fragment of
+// that call. A fragment names a function only when it opens a call, so one that
+// carries an id already seen, a name, and an index other than the one that call
+// is open at is a new call reusing the id. Merging it would fold two calls'
+// arguments into one under the first's name; opening it separately lets the
+// settlement see both and refuse them (llm.RefuseDuplicateIDs).
+func (s *stream) duplicateStart(seen *callAccumulator, delta wireToolCall) bool {
+	return delta.Function.Name != "" && s.openAtIndex[delta.Index] != seen && s.indexOpenFor(seen) != delta.Index
+}
+
+// indexOpenFor returns the wire index acc is open at, or -1.
+func (s *stream) indexOpenFor(acc *callAccumulator) int {
+	for index, open := range s.openAtIndex {
+		if open == acc {
+			return index
+		}
+	}
+	return -1
 }
 
 func (s *stream) Response() (llm.Response, error) {
@@ -611,36 +631,69 @@ func (s *stream) Response() (llm.Response, error) {
 	// through as a malformed call, the loop hands the model an error result it
 	// can act on: shorten the arguments, or make one call instead of three.
 	sort.Ints(s.callOrder)
-	for _, index := range s.callOrder {
+	// Calls are settled first, together, because whether one may dispatch can
+	// depend on another: two calls sharing an id are both refused.
+	accs := make([]*callAccumulator, len(s.callOrder))
+	ids := make([]llm.CallID, len(s.callOrder))
+	settlements := make([]llm.CallSettlement, len(s.callOrder))
+	for i, index := range s.callOrder {
 		acc := s.calls[index]
+		if acc == nil {
+			// callOrder holds only slots that were opened; refuse rather than
+			// dereference if that ever stops being true.
+			settlements[i] = llm.CallSettlement{Verdict: llm.CallUnusable, Reason: "arrived with no accumulated state"}
+			accs[i] = &callAccumulator{}
+			continue
+		}
 		if acc.id == "" {
 			acc.id = synthesizeCallID("local")
 		}
-		if acc.name == "" {
-			// No name means nothing was asked for: there is no call here to
-			// recover, and inventing one would run a tool at random.
-			s.malformed = append(s.malformed, MalformedCall{
-				ID:     llm.CallID(acc.id),
-				Reason: "the stream carried arguments for a tool call that never named a function",
-			})
-			continue
+		accs[i], ids[i] = acc, llm.CallID(acc.id)
+		// Local servers rewrite their arguments often enough that the repaired
+		// text, not the wire's, is what the rule judges, except when the output
+		// limit ended the response: a repair that extracts a first object out of
+		// a stream the limit cut is a guess at what the model meant to send, and
+		// the rule treats the raw bytes as the cut they are. Empty arguments stay
+		// empty: whether an empty payload may be believed is the rule's call,
+		// because only it knows how the stream ended.
+		raw := acc.args.String()
+		args := raw
+		if strings.TrimSpace(raw) != "" && s.stopReason != llm.StopMaxTokens {
+			repairedArgs, repaired := sanitizeJSONArgumentsReport(raw)
+			if repaired {
+				s.repaired = true
+			}
+			args = string(repairedArgs)
 		}
-		args, repaired := sanitizeJSONArgumentsReport(acc.args.String())
-		if repaired {
-			s.repaired = true
-		}
-		if !json.Valid(args) {
+		// What a complete call is, is decided once for every adapter; see
+		// llm.SettleCall. This wire never frames a call, so the stream's own
+		// terminal frame (already required above) is all the framing there is.
+		settlements[i] = llm.SettleCall(llm.CallEvidence{
+			ID: ids[i], Name: acc.name, Arguments: args,
+			Framing: llm.FramingNone, Stop: s.stopReason,
+		})
+	}
+	llm.RefuseDuplicateIDs(ids, settlements)
+	for i, acc := range accs {
+		settled := settlements[i]
+		if settled.Verdict != llm.CallComplete {
+			// Reported rather than refused, on this wire only. A local server
+			// truncates far more readily than a hosted one (mlx-vlm stops at 2048
+			// output tokens by default), and returning an error ended the whole
+			// turn on a response that merely ran out of room, discarding every
+			// completed step with it. Carried through as a malformed call, the
+			// loop hands the model a result it can act on.
+			reason := settled.Reason
+			if settled.Verdict == llm.CallUnusable {
+				reason = "the tool call " + reason
+			}
 			s.malformed = append(s.malformed, MalformedCall{
-				ID:   llm.CallID(acc.id),
-				Name: acc.name,
-				Reason: fmt.Sprintf(
-					"the arguments were cut off mid-value and are not valid JSON (%s)",
-					truncateForMessage(acc.args.String())),
+				ID: llm.CallID(acc.id), Name: acc.name, Reason: reason,
 			})
 			continue
 		}
 		msg.Content = append(msg.Content, llm.ToolCallBlock{
-			ID: llm.CallID(acc.id), Name: acc.name, Arguments: args,
+			ID: llm.CallID(acc.id), Name: acc.name, Arguments: settled.Arguments,
 		})
 	}
 
@@ -709,24 +762,4 @@ type MalformedCall struct {
 	ID     llm.CallID
 	Name   string
 	Reason string
-}
-
-// truncateForMessage bounds a fragment quoted back to the model.
-//
-// The cut is moved back to a rune boundary. Slicing at a byte offset split
-// multi-byte UTF-8 down the middle and put the orphaned continuation bytes into
-// MalformedCall.Reason, which is both quoted back to the model and written to
-// the session log — measured producing "aaa…\xe6\x97…". Nothing rejected it:
-// json.Marshal substitutes U+FFFD, so the record was corrupted quietly rather
-// than refused, and the model was handed bytes that are not text.
-func truncateForMessage(s string) string {
-	const limit = 120
-	if len(s) <= limit {
-		return s
-	}
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "…"
 }

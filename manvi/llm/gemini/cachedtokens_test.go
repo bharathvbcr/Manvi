@@ -19,10 +19,13 @@ func TestCachedInputTokensAreReadFromTheDocumentedField(t *testing.T) {
 		usage string
 		want  int
 	}{
-		"documented name":       {`{"total_input_tokens":19,"total_cached_tokens":12,"total_output_tokens":41,"total_thought_tokens":8}`, 12},
-		"legacy name":           {`{"total_input_tokens":19,"cached_content_token_count":7,"total_output_tokens":41,"total_thought_tokens":8}`, 7},
-		"both: documented wins": {`{"total_input_tokens":19,"total_cached_tokens":12,"cached_content_token_count":7,"total_output_tokens":41}`, 12},
-		"neither":               {`{"total_input_tokens":19,"total_output_tokens":41}`, 0},
+		"documented name": {`{"total_input_tokens":19,"total_cached_tokens":12,"total_output_tokens":41,"total_thought_tokens":8}`, 12},
+		// generateContent's name, which the Interactions API does not document and
+		// no recorded response carries: it is not read, so it cannot stand in for
+		// the documented field.
+		"generateContent name is not read":    {`{"total_input_tokens":19,"cached_content_token_count":7,"total_output_tokens":41,"total_thought_tokens":8}`, 0},
+		"documented name wins over the other": {`{"total_input_tokens":19,"total_cached_tokens":12,"cached_content_token_count":7,"total_output_tokens":41}`, 12},
+		"neither":                             {`{"total_input_tokens":19,"total_output_tokens":41}`, 0},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

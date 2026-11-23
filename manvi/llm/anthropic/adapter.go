@@ -1125,11 +1125,32 @@ func (s *stream) Response() (llm.Response, error) {
 		Provenance: &llm.AssistantProvenance{Provider: Name, Model: s.model},
 	}
 	var malformed []llm.MalformedCall
+	var decoding llm.DecodingReport
 	// entries mirrors msg.Content in the provider's order with the provider-
 	// hosted blocks among them; it becomes the replay state only when there are
 	// any (or cited text), so a response without them is journaled as before.
 	var entries []serverEntry
 	hostedContent := false
+	// Calls are settled first, together, because whether one may dispatch can
+	// depend on another: two calls sharing an id are both refused.
+	callIndexes := make([]int, 0, len(s.order))
+	callIDs := make([]llm.CallID, 0, len(s.order))
+	settlements := make([]llm.CallSettlement, 0, len(s.order))
+	for _, index := range s.order {
+		if acc := s.blocks[index]; acc != nil && acc.kind == BlockToolUse {
+			callIndexes = append(callIndexes, index)
+			callIDs = append(callIDs, llm.CallID(acc.toolID))
+			settlements = append(settlements, llm.SettleCall(llm.CallEvidence{
+				ID: llm.CallID(acc.toolID), Name: acc.toolName, Arguments: acc.args.String(),
+				Closed: acc.sealed, Framing: llm.FramingRequired, Stop: s.stopReason,
+			}))
+		}
+	}
+	llm.RefuseDuplicateIDs(callIDs, settlements)
+	settledAt := make(map[int]llm.CallSettlement, len(callIndexes))
+	for i, index := range callIndexes {
+		settledAt[index] = settlements[i]
+	}
 	for _, index := range s.order {
 		acc := s.blocks[index]
 		if acc == nil {
@@ -1180,76 +1201,30 @@ func (s *stream) Response() (llm.Response, error) {
 			msg.Content = append(msg.Content, llm.ReasoningBlock{Redacted: true, Signature: acc.data})
 			entries = append(entries, serverEntry{Kind: entryThink})
 		case BlockToolUse:
-			// A tool call has to be routable and answerable, and both halves
-			// zero-value to the empty string. Without a name the tool layer
-			// looks up "" and cannot tell that from a tool that does not
-			// exist; without an id the tool_result this turn sends back
-			// references nothing, so the next request is malformed. Neither is
-			// a call — they are the absence of one wearing its shape, and the
-			// guard below already refuses the third way a block can arrive
-			// unusable.
-			//
-			// The sibling adapters both already refused this and this one did
-			// not: gemini errors with "a tool call arrived with no function
-			// name", and openaicompat records a MalformedCall reasoning that
-			// "inventing one would run a tool at random". Three ports of one
-			// contract, and the odd one out passed the empty call through.
-			// Found by FuzzStreamNeverSettlesIntoAToolCallItCannotRoute.
-			if strings.TrimSpace(acc.toolName) == "" {
-				return llm.Response{}, fmt.Errorf(
-					"anthropic: a tool call arrived with no name (id %q); it cannot be routed, "+
-						"and running a tool chosen some other way would be inventing the call",
-					acc.toolID)
-			}
-			if strings.TrimSpace(acc.toolID) == "" {
-				return llm.Response{}, fmt.Errorf(
-					"anthropic: tool call %q arrived with no id; the tool_result answering it "+
-						"would reference nothing and the next request would be rejected",
-					acc.toolName)
-			}
-			args := json.RawMessage(acc.args.String())
-			if len(args) == 0 {
-				args = json.RawMessage("{}")
-			}
-			// A call is complete when its block was sealed by content_block_stop
-			// and its arguments are valid JSON. Anything less is a prefix, and a
-			// prefix is never run: truncated JSON that happens to parse, or an
-			// unsealed `{}`, is how a half-received call becomes a runnable one.
-			sealedAndValid := acc.sealed && json.Valid(args)
-			if !sealedAndValid && s.stopReason == llm.StopMaxTokens {
-				// The model ran out of output budget in the middle of the call.
-				// That is the model's own limit, not a broken stream, so the turn
-				// survives: the call is reported as malformed, the loop tells the
-				// model it was cut off, and it can ask for less. Returning an
-				// error here discarded every completed step of the turn with it.
-				// This is the same settlement openaicompat reaches for a call
-				// whose arguments did not arrive whole.
+			// What a complete call is, is decided once for every adapter; see
+			// llm.SettleCall and llm.RefuseDuplicateIDs, run above.
+			settled := settledAt[index]
+			switch {
+			case settled.Reportable():
+				// The model's own limit, not a broken stream: the turn survives,
+				// the call is reported, and the model can ask for less.
 				malformed = append(malformed, llm.MalformedCall{
-					ID:   llm.CallID(acc.toolID),
-					Name: acc.toolName,
-					Reason: fmt.Sprintf(
-						"the arguments were cut off by the output limit after %d bytes and are not complete JSON",
-						acc.args.Len()),
+					ID: llm.CallID(acc.toolID), Name: acc.toolName, Reason: settled.Reason,
 				})
 				continue
-			}
-			if !json.Valid(args) {
-				// Not a token limit: the stream itself delivered a call whose
-				// arguments are not JSON, which is not something the model can
-				// be asked to fix.
-				return llm.Response{}, fmt.Errorf(
-					"anthropic: tool call %q arrived with incomplete arguments: %q", acc.toolName, args)
-			}
-			if !acc.sealed {
-				return llm.Response{}, fmt.Errorf(
-					"anthropic: tool call %q (id %q) was never closed by content_block_stop; "+
-						"its arguments may be incomplete and it was not dispatched",
-					acc.toolName, acc.toolID)
+			case settled.Verdict == llm.CallUnusable:
+				return llm.Response{}, fmt.Errorf("anthropic: tool call %q (id %q) %s", acc.toolName, acc.toolID, settled.Reason)
 			}
 			msg.Content = append(msg.Content, llm.ToolCallBlock{
-				ID: llm.CallID(acc.toolID), Name: acc.toolName, Arguments: args,
+				ID: llm.CallID(acc.toolID), Name: acc.toolName, Arguments: settled.Arguments,
 			})
 			entries = append(entries, serverEntry{Kind: entryTool})
+		default:
+			// A block type this build has no reading for. It is not in the
+			// message and not in the replay entries, so the settled turn is
+			// shorter than the stream; the report names the type so that is
+			// seen rather than inferred.
+			decoding.NoteUnknown(acc.kind)
 		}
 	}
 	if hostedContent {
@@ -1266,7 +1241,7 @@ func (s *stream) Response() (llm.Response, error) {
 	}
 	return llm.Response{
 		Message: msg, StopReason: stop, Usage: wholePrompt(s.usage),
-		MaxTokensApplied: s.maxTokensApplied, Malformed: malformed,
+		MaxTokensApplied: s.maxTokensApplied, Malformed: malformed, Decoding: decoding,
 	}, nil
 }
 
