@@ -432,6 +432,11 @@ func (t *Terminal) watchSignals() {
 // Both control ranges go. The second, U+0080 to U+009F, holds the one-character
 // forms of the same controls: U+009C ends a string and U+009D starts one, and a
 // terminal that honours them would read a title carrying them as two sequences.
+//
+// Format runes (bidi overrides and isolates, invisible separators, tag
+// characters) go by the rule the screen buffer applies, render.StripFormatRunes:
+// a title is not drawn through the buffer, and an override in one reorders what
+// a reader sees in the window list.
 func sanitizeTitle(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -440,7 +445,7 @@ func sanitizeTitle(s string) string {
 		}
 		b.WriteRune(r)
 	}
-	return render.TruncateWidth(b.String(), 120, "")
+	return render.TruncateWidth(render.StripFormatRunes(b.String()), 120, "")
 }
 
 // detectProfile resolves colour depth from the environment.

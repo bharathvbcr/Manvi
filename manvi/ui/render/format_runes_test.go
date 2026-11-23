@@ -61,13 +61,13 @@ func TestAFormatRunRunsAreDroppedWhole(t *testing.T) {
 func TestEmojiSequencesKeepTheirFormatRunes(t *testing.T) {
 	b := NewBuffer(40, 1)
 	b.SetString(0, 0, "x👨\u200d👩\u200d👧y", Plain)
-	// The wide rune's continuation cell carries the joiner, as for any
-	// zero-width mark after a wide rune.
-	if c := b.Cell(2, 0); c.Comb != "\u200d" {
-		t.Fatalf("family ZWJ was dropped: cell 2 = %q+%q", c.R, c.Comb)
+	// The wide base carries the joiner, not its continuation cell, which the
+	// painter skips.
+	if c := b.Cell(1, 0); c.Comb != "\u200d" {
+		t.Fatalf("family ZWJ was dropped: cell 1 = %q+%q", c.R, c.Comb)
 	}
-	if c := b.Cell(4, 0); c.Comb != "\u200d" {
-		t.Fatalf("second ZWJ was dropped: cell 4 = %q+%q", c.R, c.Comb)
+	if c := b.Cell(3, 0); c.Comb != "\u200d" {
+		t.Fatalf("second ZWJ was dropped: cell 3 = %q+%q", c.R, c.Comb)
 	}
 
 	b = NewBuffer(40, 1)
@@ -79,8 +79,8 @@ func TestEmojiSequencesKeepTheirFormatRunes(t *testing.T) {
 	flag := "🏴\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"
 	b = NewBuffer(40, 1)
 	b.SetString(0, 0, flag+"z", Plain)
-	if c := b.Cell(1, 0); c.Comb != flag[len("🏴"):] {
-		t.Fatalf("flag tags were dropped: cell 1 comb = %q", c.Comb)
+	if c := b.Cell(0, 0); c.Comb != flag[len("🏴"):] {
+		t.Fatalf("flag tags were dropped: cell 0 comb = %q", c.Comb)
 	}
 	if c := b.Cell(2, 0); c.R != 'z' {
 		t.Fatalf("cell 2 = %q", c.R)
@@ -89,7 +89,7 @@ func TestEmojiSequencesKeepTheirFormatRunes(t *testing.T) {
 	// Tags after anything else, and after a flag followed by other marks, go.
 	b = NewBuffer(40, 1)
 	b.SetString(0, 0, "🏴\u0301\U000e0067", Plain)
-	if c := b.Cell(1, 0); strings.ContainsRune(c.Comb, 0xE0067) {
+	if c := b.Cell(0, 0); strings.ContainsRune(c.Comb, 0xE0067) {
 		t.Fatalf("a tag was accepted after a non-tag mark: %q", c.Comb)
 	}
 }

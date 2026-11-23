@@ -207,12 +207,98 @@ func (b *Buffer) Cell(x, y int) Cell {
 	return b.cells[y*b.W+x]
 }
 
-// SetCell writes one cell, clipped.
+// SetCell writes one cell, clipped, holding it to the format rule SetRune
+// applies: the painter writes a cell's rune and Comb to the tty verbatim, so a
+// caller that builds a Cell must not be able to carry what SetRune refuses.
+// A base rune that is a control or format rune is stored as a space, and Comb
+// is reduced by cleanComb to zero-width marks the format rule allows. The painter's own bookkeeping copies cells that
+// SetRune already filtered and uses storeCell.
 func (b *Buffer) SetCell(x, y int, c Cell) {
+	b.storeCell(x, y, cleanCell(c))
+}
+
+// storeCell writes a cell that is already known to satisfy the format rule.
+func (b *Buffer) storeCell(x, y int, c Cell) {
 	if x < 0 || y < 0 || x >= b.W || y >= b.H {
 		return
 	}
 	b.cells[y*b.W+x] = c
+}
+
+// cleanCell returns c with a control or format base rune replaced by a space
+// and its Comb reduced to what SetRune would have kept.
+func cleanCell(c Cell) Cell {
+	if c.R != 0 && (c.R < 0x20 || unicode.IsControl(c.R) || unicode.Is(unicode.Cf, c.R)) {
+		c.R = ' '
+	}
+	if c.Comb != "" {
+		c.Comb = cleanComb(c.R, c.Comb)
+	}
+	return c
+}
+
+// cleanComb keeps the runes of comb that SetRune would have attached to a cell
+// whose base is base, in order and up to MaxCombPerCell.
+func cleanComb(base rune, comb string) string {
+	kept := make([]rune, 0, len(comb))
+	for _, r := range comb {
+		if len(kept) >= MaxCombPerCell {
+			break
+		}
+		// A mark is zero columns wide: anything with width would shift the
+		// columns after it, and a control character is never a mark.
+		if r < 0x20 || unicode.IsControl(r) || RuneWidth(r) != 0 {
+			continue
+		}
+		if unicode.Is(unicode.Cf, r) && !formatMarkAllowed(r, base, string(kept)) {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return string(kept)
+}
+
+// StripFormatRunes returns s without the format runes (category Cf) that
+// Buffer.SetRune would refuse to draw, by the same contextual rule: bidi
+// controls and invisible separators go, as does every Cf rune that is not a
+// zero-width mark; a joiner after a pictograph, a letter or a mark, and a
+// well-formed flag tag sequence stay. It is for text that reaches the tty
+// without passing through a Buffer, such as a window title. Control characters
+// and the per-cell mark bound are not its concern.
+func StripFormatRunes(s string) string {
+	hasCf := false
+	for _, r := range s {
+		if unicode.Is(unicode.Cf, r) {
+			hasCf = true
+			break
+		}
+	}
+	if !hasCf {
+		return s
+	}
+	var out strings.Builder
+	var base rune
+	comb := ""
+	for _, r := range s {
+		w := RuneWidth(r)
+		cf := unicode.Is(unicode.Cf, r)
+		switch {
+		case w > 0:
+			if cf {
+				continue
+			}
+			base, comb = r, ""
+		case cf:
+			if utf8.RuneCountInString(comb) >= MaxCombPerCell || !formatMarkAllowed(r, base, comb) {
+				continue
+			}
+			comb += string(r)
+		case !unicode.IsControl(r) && utf8.RuneCountInString(comb) < MaxCombPerCell:
+			comb += string(r)
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 
 // SetRune writes a single rune and returns the columns it consumed.
@@ -242,16 +328,24 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 		// A combining mark attaches to the cell on its left. With no cell to
 		// its left there is nothing to attach to, and it is dropped rather
 		// than promoted to a base character it is not.
-		if x-1 >= 0 && x-1 < b.W {
-			left := &b.cells[y*b.W+x-1]
-			base := left.R
-			if base == 0 && x-2 >= 0 {
-				base = b.cells[y*b.W+x-2].R
+		if x-1 >= 0 {
+			target := &b.cells[y*b.W+x-1]
+			if target.R == 0 {
+				// The left cell is the continuation of a wide rune, which
+				// the painter skips: a mark kept there is never drawn. It
+				// belongs to the wide base one cell further left.
+				if x-2 < 0 {
+					return 0
+				}
+				target = &b.cells[y*b.W+x-2]
+				if target.R == 0 {
+					return 0
+				}
 			}
-			if unicode.Is(unicode.Cf, r) && !formatMarkAllowed(r, base, left.Comb) {
+			if unicode.Is(unicode.Cf, r) && !formatMarkAllowed(r, target.R, target.Comb) {
 				return 0
 			}
-			left.addMark(r)
+			target.addMark(r)
 		}
 		return 0
 	}
