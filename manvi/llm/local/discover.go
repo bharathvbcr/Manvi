@@ -186,20 +186,25 @@ func (a *Adapter) probeDimensions(ctx context.Context, model string) Dimensions 
 	log := &probeLog{}
 	ctx = context.WithValue(ctx, probeLogKey{}, log)
 
-	if d, ok := a.probeVLLM(ctx, model); ok {
-		return believable(d, declared)
+	// The probes all ask one host. Once a native probe could not run (refused or
+	// dropped connection, timeout), the rest would only repeat the failure at the
+	// server's expense, so the run ends there and says so. The first probe reads
+	// the model listing, whose failure may be a cached one from an earlier call
+	// and says nothing about the native endpoints, so it does not end the run.
+	probes := []func() (Dimensions, bool){
+		func() (Dimensions, bool) { return a.probeVLLM(ctx, model) },
+		func() (Dimensions, bool) { return a.probeOllama(ctx, model) },
+		func() (Dimensions, bool) { return a.probeLlamaCPP(ctx) },
+		func() (Dimensions, bool) { return a.probeMLX(ctx, model) },
 	}
-	if d, ok := a.probeOllama(ctx, model); ok {
-		return believable(d, declared)
-	}
-	if d, ok := a.probeLlamaCPP(ctx); ok {
-		return believable(d, declared)
-	}
-	if d, ok := a.probeMLX(ctx, model); ok {
-		return believable(d, declared)
-	}
-	if log.failed.Load() {
-		declared.ProbeFailed = true
+	for i, probe := range probes {
+		if d, ok := probe(); ok {
+			return believable(d, declared)
+		}
+		if i > 0 && log.failed.Load() {
+			declared.ProbeFailed = true
+			return declared
+		}
 	}
 	return declared
 }
@@ -232,10 +237,11 @@ func noteProbeFailure(ctx context.Context, err error) {
 }
 
 // unprobedRetry is how long a result for a server that did not answer its
-// probes is kept. It is short because the result is a guess made for want of
-// an answer, and the next caller should ask again soon; it is not zero because
-// a hung server costs every caller DiscoveryTimeout, and a bounded cache is
-// what keeps that from being paid on every call.
+// probes is first kept; each further consecutive failure doubles it (see
+// dimEntry.ttl). It is short because the result is a guess made for want of an
+// answer, and the next caller should ask again soon; it is not zero because a
+// hung server costs every caller DiscoveryTimeout, and a bounded cache is what
+// keeps that from being paid on every call.
 const unprobedRetry = 10 * time.Second
 
 // declaredDimensions is what the operator said, which is the answer whenever
@@ -615,19 +621,29 @@ func (a *Adapter) rememberDimensionsLocked(model string, d Dimensions) {
 			delete(a.dims, oldestKey)
 		}
 	}
-	a.dims[model] = dimEntry{dims: d, at: a.now()}
+	failures := 0
+	if d.ProbeFailed {
+		failures = a.dims[model].failures + 1
+	}
+	a.dims[model] = dimEntry{dims: d, at: a.now(), failures: failures}
 }
 
 type dimEntry struct {
 	dims Dimensions
 	at   time.Time
+	// failures counts the consecutive probe runs of this model that got no
+	// answer; a run that did answer resets it.
+	failures int
 }
 
 // ttl is how long the entry may be served: the discovery TTL, or the shorter
 // unprobedRetry for a result the server never answered.
 func (e dimEntry) ttl(discovery time.Duration) time.Duration {
-	if e.dims.ProbeFailed {
-		return min(discovery, unprobedRetry)
+	if !e.dims.ProbeFailed {
+		return discovery
 	}
-	return discovery
+	// Doubling for each consecutive failure, so a server that stays down is
+	// asked less and less often, up to the discovery TTL. The shift is capped
+	// well before it could overflow.
+	return min(discovery, unprobedRetry<<min(max(e.failures-1, 0), 20))
 }

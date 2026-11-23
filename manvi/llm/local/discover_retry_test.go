@@ -10,6 +10,24 @@ import (
 	"time"
 )
 
+func TestUnansweredProbeRetryDoublesUpToTheDiscoveryTTL(t *testing.T) {
+	failed := Dimensions{ProbeFailed: true}
+	for _, c := range []struct {
+		failures int
+		want     time.Duration
+	}{
+		{1, 10 * time.Second}, {2, 20 * time.Second}, {3, 40 * time.Second}, {4, 80 * time.Second},
+		{30, time.Hour}, {1 << 30, time.Hour},
+	} {
+		if got := (dimEntry{dims: failed, failures: c.failures}).ttl(time.Hour); got != c.want {
+			t.Errorf("failures %d: ttl %s, want %s", c.failures, got, c.want)
+		}
+	}
+	if got := (dimEntry{failures: 5}).ttl(time.Hour); got != time.Hour {
+		t.Errorf("an answered entry's ttl = %s, want the discovery TTL", got)
+	}
+}
+
 // The guess made for a server that did not answer is kept for the short retry,
 // not the discovery TTL, so a server that recovers is read again soon.
 func TestAnUnansweredProbeIsRetriedSoonNotAfterTheTTL(t *testing.T) {

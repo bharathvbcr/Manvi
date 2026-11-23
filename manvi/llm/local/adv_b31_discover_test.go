@@ -16,7 +16,7 @@ import (
 // as a port and answers nothing. hits counts connections.
 func advDropServer(t *testing.T) (url string, hits *atomic.Int64) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
