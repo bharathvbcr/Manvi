@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
@@ -275,10 +274,7 @@ func symlinkedBelow(dir, home string) (string, error) {
 // file before a byte is read. The check is on the descriptor, not the path, so
 // nothing can be swapped in between the check and the read.
 func readSmall(path string, limit int64) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if errors.Is(err, syscall.ELOOP) {
-		return nil, fmt.Errorf("%s is a symbolic link; the account marker must be a regular file where it sits", path)
-	}
+	f, err := openMarker(path)
 	if err != nil {
 		return nil, err
 	}
