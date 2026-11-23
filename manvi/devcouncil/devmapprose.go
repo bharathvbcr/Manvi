@@ -28,28 +28,73 @@ var (
 // noteClauseSeparator is what devmap joins its notes with (combine_reasons).
 const noteClauseSeparator = "; "
 
+// Digit-free renderings of the engine clauses that may follow a call-site
+// clause. A kept clause would carry its numbers, and a receiver can write any
+// clause it likes, so a clause is shown as its fixed marker and never as itself.
+const (
+	markerKeysCapped    = "[only some of the reached keys were checked against the unresolved ledger]"
+	markerNamesCapped   = "[the unresolved ledger was checked for only some names]"
+	markerNamesNotRead  = "[more names were not looked up (`unresolved_namesakes.names_not_checked`)]"
+	markerFailedParse   = "[some files failed to parse, so a caller in them is missing from this answer]"
+	markerNoExtractor   = "[some files are in a language with no call extractor in this build]"
+	markerNoExtracted   = "[no call into or out of them was ever extracted, so an empty or short answer here is the extractor's absence, not the code's]"
+	markerStartsSkipped = "[more start files were not checked for this]"
+	markerLedgerGone    = "[the unresolved ledger could not be read at the generation these edges came from (it was pruned mid-query)]"
+)
+
 // samplesFurtherWithheld marks text that followed a call-site sample and could
 // not be told apart from it.
 const samplesFurtherWithheld = "[further text after the call-site sample withheld]"
 
+// partialAnswerPrefix is what DevCouncil's devmap client puts in front of a
+// walk_incomplete value (dc/devmap runQuery), so the tools that read devmap
+// through that client see the note with it. Client.Advanced returns devmap's
+// data raw, so devcouncil_code's answer carries the bare note. The prefix is
+// the client's own text, never the receiver's, and it stands before the note's
+// first clause, so it is set aside and put back.
+const partialAnswerPrefix = "devmap says the answer is partial: "
+
+// engineClause is a clause devmap writes after its call-site clause and the
+// fixed, digit-free text it is shown as.
+type engineClause struct {
+	re     *regexp.Regexp
+	marker string
+}
+
 var (
-	// completenessClauses are the devmap clauses that carry no sample and
-	// matter to a reader: the caps on how much of the unresolved ledger was
-	// checked. They are kept after a call-site clause only when the whole
-	// clause matches a template exactly, so a receiver that imitates one can
-	// say nothing a reader did not already know.
-	completenessClauses = []*regexp.Regexp{
-		regexp.MustCompile(`^only [0-9]{1,9} of [0-9]{1,9} reached key\(s\) were checked against the unresolved ledger$`),
-		regexp.MustCompile(`^the unresolved ledger was checked for [0-9]{1,9} name\(s\) only$`),
-		regexp.MustCompile("^[0-9]{1,9} more were not looked up \\(`unresolved_namesakes\\.names_not_checked`\\)$"),
-		regexp.MustCompile("^they are listed in `unresolved_namesakes` as candidates to verify, not as callers$"),
+	// engineClauses are the completeness clauses devmap writes, matched whole
+	// (the engine.rs and gaps.rs templates). A receiver can write any of them,
+	// so a match proves nothing about who wrote it: the clause is shown as its
+	// marker and never as itself, and what a forgery can say is only that a
+	// check was partial, which is the safe direction. Their numbers and paths
+	// are not shown.
+	engineClauses = []engineClause{
+		{regexp.MustCompile(`^only [0-9]{1,9} of [0-9]{1,9} reached key\(s\) were checked against the unresolved ledger$`), markerKeysCapped},
+		{regexp.MustCompile(`^the unresolved ledger was checked for [0-9]{1,9} name\(s\) only$`), markerNamesCapped},
+		{regexp.MustCompile("^[0-9]{1,9} more were not looked up \\(`unresolved_namesakes\\.names_not_checked`\\)$"), markerNamesNotRead},
+		{regexp.MustCompile(`^[0-9]{1,9} file\(s\) failed to parse, so a caller in them is missing from this answer: `), markerFailedParse},
+		{regexp.MustCompile(`in a language with no call extractor in this build$`), markerNoExtractor},
+		{regexp.MustCompile(`^no call into or out of (?:it|them) was ever extracted, so an empty or short answer here is the extractor's absence, not the code's$`), markerNoExtracted},
+		{regexp.MustCompile(`^[0-9]{1,9} more start file\(s\) were not checked for this$`), markerStartsSkipped},
+		{regexp.MustCompile(`^the unresolved ledger could not be read at generation [0-9]{1,9}, the one (?:these edges|this answer) came from \(it was pruned mid-query\)$`), markerLedgerGone},
+	}
+	// fixedClauses are clauses with no number and no free text in them, kept as
+	// they are: the markers above and devmap's own two number-free sentences.
+	fixedClauses = map[string]bool{
+		"they are listed in `unresolved_namesakes` as candidates to verify, not as callers":  true,
+		"callers the resolver could not bind are not listed — ask again":                     true,
+		"whether calls the resolver could not bind touch this answer is unknown — ask again": true,
+		WithheldCallSiteSample: true, samplesFurtherWithheld: true,
+		markerKeysCapped: true, markerNamesCapped: true, markerNamesNotRead: true,
+		markerFailedParse: true, markerNoExtractor: true, markerNoExtracted: true,
+		markerStartsSkipped: true, markerLedgerGone: true,
 	}
 	// cappedClause is how a clause that reports a capped check reads. A count
 	// that sat in front of one is a floor.
 	cappedClause = regexp.MustCompile(`(?i)\bonly\b.*\bchecked\b`)
 )
 
-// noteSegment is one clause of a note after sanitizing: kept text, or a
+// noteSegment is one clause of a note after sanitizing: kept text, or the
 // call-site clause reduced to its count.
 type noteSegment struct {
 	text    string
@@ -63,50 +108,76 @@ type noteSegment struct {
 // the model. devmap joins its notes with "; ", and one of them, the call-site
 // clause, quotes up to a handful of receiver.callee labels: raw source text of
 // no known file. That clause is replaced by its opening count and a fixed
-// marker, and every other clause is kept as it was written, so a depth cap or
-// a capped ledger check still reaches the reader.
+// marker.
 //
-// The sample is the one part of a note that is free text, so the clause cannot
-// be delimited by trusting its own punctuation: a receiver can hold "; ". From
-// the opening count, every following clause is dropped unless it matches a
-// completeness template in full, and a drop is marked. A clause that spoke of
-// a capped check and was dropped turns the count into "at least N". Text that
-// does not speak of call sites is returned as it is.
+// The sample is the one part of a note that is free text, and a receiver can
+// hold "; ", digits, a count and a copy of any clause devmap writes, so nothing
+// after the opening count can be told from devmap's own text. The rule is
+// therefore positional: the only number that reaches the reader is the one at
+// the start of the first call-site clause, which sits where devmap wrote it,
+// before any sample. Every later clause is shown as a fixed marker when it
+// matches a template devmap writes (see engineClauses) and is dropped, with a
+// mark, when it does not. A clause that spoke of a capped check and was dropped
+// turns the count into "at least N". Text that does not speak of call sites is
+// returned as it is. The function is idempotent: its output is made of counts
+// it keeps and markers it keeps.
+//
+// Not covered: a clause before the first call-site clause is devmap's and is
+// kept verbatim, including any file paths it lists and the budget note's sample
+// of up to 10 callee names (devmap-resolve model.rs ResolutionBudgetGap).
+// A callee name containing "; N call site(s)" inside that sample could become
+// the anchor: that costs count integrity only, since no receiver text is in it.
+// The fix belongs in devmap (quote the sample names), tracked on a DevCouncil
+// card.
 func WithholdCallSiteSamples(text string) string {
 	if !callSiteNote.MatchString(text) {
 		return text
 	}
+	prefix := ""
+	if rest, ok := strings.CutPrefix(text, partialAnswerPrefix); ok {
+		prefix, text = partialAnswerPrefix, rest
+	}
 	segs := make([]noteSegment, 0, 4)
-	inSample := false
+	siteAt := -1
 	for _, clause := range strings.Split(text, noteClauseSeparator) {
-		m := leadingCount.FindStringSubmatch(clause)
 		switch {
-		case m != nil && callSiteNote.MatchString(clause):
-			segs = append(segs, noteSegment{site: true, count: m[1]})
-			inSample = true
-		case inSample:
-			if isCompletenessClause(clause) {
+		case siteAt >= 0:
+			if fixedClauses[clause] {
 				segs = append(segs, noteSegment{text: clause})
 				continue
 			}
-			for i := len(segs) - 1; i >= 0; i-- {
-				if segs[i].site {
-					segs[i].swallow = true
-					segs[i].capped = segs[i].capped || cappedClause.MatchString(clause)
-					break
-				}
+			if marker, ok := engineMarker(clause); ok {
+				segs = append(segs, noteSegment{text: marker})
+				continue
 			}
-		case callSiteNote.MatchString(clause):
-			segs = append(segs, noteSegment{site: true})
-			inSample = true
+			segs[siteAt].swallow = true
+			segs[siteAt].capped = segs[siteAt].capped || cappedClause.MatchString(clause)
+		case leadingCount.MatchString(clause) && callSiteNote.MatchString(clause):
+			// Only a clause that opens with a count is devmap's call-site
+			// clause. One that merely mentions call sites before it, the
+			// analysis-status note ("…so some ambiguous call sites carry a
+			// partial candidate list…"), is devmap's own text and is kept.
+			m := leadingCount.FindStringSubmatch(clause)
+			segs = append(segs, noteSegment{site: true, count: m[1]})
+			siteAt = len(segs) - 1
 		default:
 			segs = append(segs, noteSegment{text: clause})
 		}
 	}
 	var out []string
+	seen := map[string]bool{}
+	add := func(clause string) {
+		if fixedClauses[clause] {
+			if seen[clause] {
+				return
+			}
+			seen[clause] = true
+		}
+		out = append(out, clause)
+	}
 	for _, seg := range segs {
 		if !seg.site {
-			out = append(out, seg.text)
+			add(seg.text)
 			continue
 		}
 		if seg.count != "" {
@@ -114,23 +185,23 @@ func WithholdCallSiteSamples(text string) string {
 			if seg.capped && !strings.HasPrefix(strings.ToLower(count), "at least ") {
 				count = "at least " + count
 			}
-			out = append(out, count+" call site(s) could not be bound")
+			add(count + " call site(s) could not be bound")
 		}
-		out = append(out, WithheldCallSiteSample)
+		add(WithheldCallSiteSample)
 		if seg.swallow {
-			out = append(out, samplesFurtherWithheld)
+			add(samplesFurtherWithheld)
 		}
 	}
-	return strings.Join(out, noteClauseSeparator)
+	return prefix + strings.Join(out, noteClauseSeparator)
 }
 
-func isCompletenessClause(clause string) bool {
-	for _, re := range completenessClauses {
-		if re.MatchString(clause) {
-			return true
+func engineMarker(clause string) (string, bool) {
+	for _, c := range engineClauses {
+		if c.re.MatchString(clause) {
+			return c.marker, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // DevmapNoteText reads a devmap walk_incomplete or coverage_gap value as the
