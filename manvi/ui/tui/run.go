@@ -498,7 +498,8 @@ func (r *Runner) apply(ctx context.Context, act Action) {
 			r.loopPost(ActionNotice{Text: "external editor: draft unchanged", Status: StatusInfo})
 			return
 		}
-		r.loopPost(ActionSetDraft{SessionID: t.SessionID, Text: sanitizeEditorText(t.Edited)})
+		clean, _ := sanitizeInputText(t.Edited, maxExternalEditorBytes)
+		r.loopPost(ActionSetDraft{SessionID: t.SessionID, Text: clean})
 		return
 	case ActionApprovalRequest:
 		if !r.focused && !r.ttyPaused {

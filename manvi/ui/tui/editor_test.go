@@ -316,8 +316,7 @@ func TestExternalEditorKeybinding(t *testing.T) {
 	}
 
 	app, _ := newTestApp()
-	app.AddSession("s1", "session 1")
-	v := app.Current()
+	v := app.AddSession("s1", "session 1")
 	longPaste := strings.Repeat("x", 220)
 	v.Prompt.SetValue("prefix ")
 	v.Prompt.InsertPaste(longPaste)

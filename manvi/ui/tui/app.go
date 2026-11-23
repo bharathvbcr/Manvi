@@ -388,11 +388,13 @@ func (a *App) Dispatch(act Action) []Effect {
 			return nil
 		}
 		if p := a.textTarget(); p != nil {
-			if v := a.Current(); v != nil && p == v.Prompt && len(t.Text) > 200 {
-				chip := p.InsertPaste(t.Text)
-				a.setNotice("pasted "+itoa(len(t.Text))+" chars (Ctrl+O expands) "+chip, StatusInfo)
+			if v := a.Current(); v != nil && p == v.Prompt {
+				if chip := p.InsertPaste(t.Text); chip != "" {
+					a.setNotice("pasted "+itoa(len(t.Text))+" chars (Ctrl+O expands) "+chip, StatusInfo)
+				}
 			} else {
-				p.InsertString(t.Text)
+				clean, _ := sanitizePasteText(t.Text)
+				p.InsertString(clean)
 			}
 			if a.overlay != nil && a.overlay.Searchable {
 				a.overlay.Refilter()

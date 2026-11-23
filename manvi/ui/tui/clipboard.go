@@ -8,14 +8,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
-	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
 type clipboardBackend struct {
@@ -142,124 +140,17 @@ func isAllowedClipboardTool(name string) bool {
 	}
 }
 
-// clipboardUntrustedRoots returns the working directory and any enclosing or
-// configured workspace roots that an agent or checked-out repository may write.
-func clipboardUntrustedRoots(getenv func(string) string) ([]string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("resolve working directory: %w", err)
-	}
-	var candidates []string
-	addRoot := func(dir string) {
-		if dir == "" {
-			return
-		}
-		clean := filepath.Clean(dir)
-		// A filesystem root (e.g. "/") would distrust every installed system tool.
-		if clean == filepath.Dir(clean) {
-			return
-		}
-		for _, existing := range candidates {
-			if existing == clean {
-				return
-			}
-		}
-		candidates = append(candidates, clean)
-	}
-
-	addRoot(cwd)
-	if absCwd, absErr := filepath.Abs(cwd); absErr == nil {
-		addRoot(absCwd)
-		cur := absCwd
-		for {
-			if hasWorkspaceMarker(cur) {
-				addRoot(cur)
-				break
-			}
-			parent := filepath.Dir(cur)
-			if parent == cur {
-				break
-			}
-			cur = parent
-		}
-	}
-
-	for _, envVal := range []string{
-		getenv("MANVI_PROJECT_ROOT"),
-		getenv("MANVI_ROOT"),
-		getenv("DEVCOUNCIL_ROOT"),
-	} {
-		trimmed := strings.TrimSpace(envVal)
-		if trimmed == "" {
-			continue
-		}
-		if abs, absErr := filepath.Abs(trimmed); absErr == nil {
-			addRoot(abs)
-		} else {
-			addRoot(trimmed)
-		}
-	}
-	return candidates, nil
-}
-
-func hasWorkspaceMarker(dir string) bool {
-	for _, marker := range []string{".devcouncil", ".git"} {
-		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-// clipboardTrustedPath resolves symlinks on candidate and confirms it is an
-// executable regular file outside every untrusted root.
-func clipboardTrustedPath(candidate string, untrustedRoots []string) (string, bool) {
-	resolved, err := filepath.EvalSymlinks(candidate)
-	if err != nil || !filepath.IsAbs(resolved) {
-		return "", false
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || info.IsDir() {
-		return "", false
-	}
-	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
-		return "", false
-	}
-	for _, root := range untrustedRoots {
-		inside, err := mcp.PathIsInside(root, resolved)
-		if err != nil || inside {
-			return "", false
-		}
-	}
-	return resolved, true
-}
-
 // resolveClipboardBinary locates an audited clipboard executable on PATH while
 // rejecting empty, relative, working-directory, and workspace PATH entries.
 func resolveClipboardBinary(name string, getenv func(string) string) (string, error) {
 	if !isAllowedClipboardTool(name) {
 		return "", fmt.Errorf("disallowed clipboard tool %q", name)
 	}
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	roots, err := clipboardUntrustedRoots(getenv)
+	resolved, err := resolveTrustedPathBinary(name, getenv)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("clipboard binary %q not found in trusted PATH: %w", name, err)
 	}
-	for _, dir := range filepath.SplitList(getenv("PATH")) {
-		if dir == "" || !filepath.IsAbs(dir) {
-			continue
-		}
-		p, lookErr := exec.LookPath(filepath.Join(dir, name))
-		if lookErr != nil {
-			continue
-		}
-		if resolved, ok := clipboardTrustedPath(p, roots); ok {
-			return resolved, nil
-		}
-	}
-	return "", fmt.Errorf("clipboard binary %q not found in trusted PATH", name)
+	return resolved, nil
 }
 
 func clipboardBackends(write bool) []clipboardBackend {

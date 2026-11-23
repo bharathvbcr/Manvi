@@ -237,13 +237,13 @@ func (p *Prompt) expandConsecutivePaste(s string) bool {
 	return false
 }
 
-// sanitizePasteText normalizes CRLF/CR line endings to LF, strips C0/DEL/C1
-// control characters (preserving \n and \t), and caps the payload to
-// maxPasteBytes, reporting whether truncation occurred.
-func sanitizePasteText(s string) (string, bool) {
+// sanitizeInputText normalizes CRLF/CR line endings to LF, strips C0/DEL/C1
+// control characters (preserving \n and \t), and when maxBytes > 0 caps the
+// payload on a UTF-8 rune boundary, reporting whether truncation occurred.
+func sanitizeInputText(s string, maxBytes int) (string, bool) {
 	truncated := false
-	if len(s) > maxPasteBytes {
-		cut := maxPasteBytes
+	if maxBytes > 0 && len(s) > maxBytes {
+		cut := maxBytes
 		for cut > 0 && !utf8.RuneStart(s[cut]) {
 			cut--
 		}
@@ -270,6 +270,13 @@ func sanitizePasteText(s string) (string, bool) {
 		}
 	}
 	return b.String(), truncated
+}
+
+// sanitizePasteText normalizes CRLF/CR line endings to LF, strips C0/DEL/C1
+// control characters (preserving \n and \t), and caps the payload to
+// maxPasteBytes, reporting whether truncation occurred.
+func sanitizePasteText(s string) (string, bool) {
+	return sanitizeInputText(s, maxPasteBytes)
 }
 
 // InsertPaste inserts text, collapsing large pastes (>200 chars) into a compact

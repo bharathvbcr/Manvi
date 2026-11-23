@@ -5,11 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
 // maxExternalEditorBytes bounds how much text is read back from the temporary
@@ -21,8 +18,8 @@ const maxExternalEditorBytes = 4 << 20
 //
 // An absolute command path is accepted as operator-pinned; a relative path with
 // a separator (such as "./vim") is rejected; and a bare command name is
-// resolved across absolute PATH directories only, rejecting symlinks or targets
-// inside the working directory or repository root.
+// resolved across absolute PATH directories only via resolveTrustedPathBinary,
+// rejecting symlinks or targets inside the working directory or workspace roots.
 func resolveExternalEditor(getenv func(string) string) (name string, args []string, err error) {
 	if getenv == nil {
 		getenv = os.Getenv
@@ -45,93 +42,11 @@ func resolveExternalEditor(getenv func(string) string) (name string, args []stri
 		}
 		return filepath.Clean(cmdName), parts[1:], nil
 	}
-	resolved, ok := trustedLookPathEditor(cmdName, getenv("PATH"))
-	if !ok {
-		return "", nil, fmt.Errorf("external editor %q not found in a trusted PATH directory", cmdName)
+	resolved, err := resolveTrustedPathBinary(cmdName, getenv)
+	if err != nil {
+		return "", nil, fmt.Errorf("external editor %q not found in a trusted PATH directory: %w", cmdName, err)
 	}
 	return resolved, parts[1:], nil
-}
-
-func trustedLookPathEditor(name, pathEnv string) (string, bool) {
-	for _, dir := range filepath.SplitList(pathEnv) {
-		if !filepath.IsAbs(dir) {
-			continue
-		}
-		p, err := exec.LookPath(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		if resolved, ok := trustedResolvedEditor(p); ok {
-			return resolved, true
-		}
-	}
-	return "", false
-}
-
-func trustedResolvedEditor(candidate string) (string, bool) {
-	resolved, err := filepath.EvalSymlinks(candidate)
-	if err != nil || isAgentWritableEditorPath(resolved) {
-		return "", false
-	}
-	return resolved, true
-}
-
-func isAgentWritableEditorPath(path string) bool {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return true
-	}
-	roots := []string{cwd}
-	if repoRoot := findEditorRepoRoot(cwd); repoRoot != "" && repoRoot != cwd {
-		roots = append(roots, repoRoot)
-	}
-	for _, root := range roots {
-		if clean := filepath.Clean(root); clean == filepath.Dir(clean) {
-			continue
-		}
-		inside, err := mcp.PathIsInside(root, path)
-		if err != nil || inside {
-			return true
-		}
-	}
-	return false
-}
-
-func findEditorRepoRoot(start string) string {
-	dir := filepath.Clean(start)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
-// sanitizeEditorText normalizes line endings and strips C0, DEL, and C1 control
-// characters (preserving \n and \t) from text read back from an external editor.
-func sanitizeEditorText(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\r", "\n")
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r == '\n' || r == '\t' {
-			b.WriteRune(r)
-			continue
-		}
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
 }
 
 // editInExternalEditor writes initial to a private 0600 temporary markdown
@@ -190,5 +105,6 @@ func editInExternalEditor(
 		return "", fmt.Errorf("edited prompt exceeds %d bytes", maxExternalEditorBytes)
 	}
 
-	return strings.TrimSuffix(sanitizeEditorText(string(data)), "\n"), nil
+	clean, _ := sanitizeInputText(string(data), 0)
+	return strings.TrimSuffix(clean, "\n"), nil
 }

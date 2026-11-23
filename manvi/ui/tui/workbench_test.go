@@ -503,8 +503,7 @@ func TestInspectorStepsCollapsibleSubagentsPreservePinnedOutcomes(t *testing.T) 
 
 func TestWideDashboardShowsSplitLivePreviewPaneAndFallsBackNarrow(t *testing.T) {
 	a := NewApp(unicodeDark(), &stubHost{})
-	a.AddSession("S1", "session one")
-	v1 := a.Current()
+	v1 := a.AddSession("S1", "session one")
 	v1.Title = "alpha-session"
 	v1.Status.Posture = "strict"
 	v1.Status.Model = "claude-sonnet-4"

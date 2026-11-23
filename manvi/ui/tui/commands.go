@@ -17,6 +17,7 @@ var uiCommands = []CommandSpec{
 	{Name: "sessions", Summary: "switch between open sessions"},
 	{Name: "inspector", Summary: "toggle the right-hand thinking, steps, diffs, and info drawer (Ctrl+B)"},
 	{Name: "stack", Summary: "toggle stacked turn work capsules vs full verbose stream (Ctrl+O)"},
+	{Name: "edit", Summary: "compose the current prompt in $VISUAL / $EDITOR (Alt+E / F4)"},
 	{Name: "copy", Summary: "open the smart copy menu for replies, code blocks, diffs, and thinking"},
 	{Name: "theme", Summary: "choose a colour palette (dark, light, terminal, plain)"},
 	{Name: "help", Summary: "show keyboard shortcuts and help"},
@@ -236,15 +237,10 @@ func (a *App) runCommand(name, args string) []Effect {
 		}
 		return nil
 	case "stack", "compact":
-		if v != nil {
-			stacked := v.Scroll.ToggleStackWork()
-			if stacked {
-				a.setNotice("work capsules stacked (Ctrl+O expands all)", StatusInfo)
-			} else {
-				a.setNotice("full verbose work stream (Ctrl+O stacks capsules)", StatusInfo)
-			}
-		}
+		a.toggleStackWork()
 		return nil
+	case "edit":
+		return a.launchExternalEditor()
 	case "copy":
 		if ov := CopyOverlay(v); ov != nil {
 			a.overlay = ov

@@ -315,7 +315,7 @@ func renderSideBySide(ops []diffOp, th Theme, width int, maxLines int) []render.
 	type pair struct {
 		left, right render.Line
 	}
-	var pairs []pair
+	pairs := make([]pair, 0, len(ops))
 	i := 0
 	for i < len(ops) {
 		if ops[i].kind == ' ' {

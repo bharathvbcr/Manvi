@@ -66,10 +66,17 @@ func TestReaderCloseAndWaitYieldsPipeWithoutStealingNextWrite(t *testing.T) {
 	}
 }
 
-type fakePollNVAL struct{}
+type fakePollNVAL struct {
+	mu     sync.Mutex
+	closed bool
+}
 
-func (fakePollNVAL) waitReadable(<-chan struct{}) pollResult { return pollFallback }
-func (fakePollNVAL) close()                                {}
+func (*fakePollNVAL) waitReadable(<-chan struct{}) pollResult { return pollFallback }
+func (f *fakePollNVAL) close() {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+}
 
 type blockingSource struct {
 	unblock chan struct{}
@@ -89,14 +96,22 @@ func TestReaderFallsBackOnPOLLNVALAndCloseAndWaitDoesNotHang(t *testing.T) {
 	bs := &blockingSource{unblock: make(chan struct{})}
 	t.Cleanup(bs.release)
 
+	fp := &fakePollNVAL{}
 	r := NewReader(bs)
 	r.pollerFactory = func(io.Reader) (inputPoller, io.Closer, error) {
-		return fakePollNVAL{}, nil, nil
+		return fp, nil, nil
 	}
 	go r.Run()
 
 	// Give the read goroutine a moment to hit pollFallback and enter bs.Read.
 	time.Sleep(20 * time.Millisecond)
+
+	fp.mu.Lock()
+	closed := fp.closed
+	fp.mu.Unlock()
+	if !closed {
+		t.Fatal("pollFallback did not close poller before clearing it")
+	}
 
 	start := time.Now()
 	if r.CloseAndWait() {

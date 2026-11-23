@@ -188,7 +188,7 @@ func TestAdvToolResolverSweepRatchet(t *testing.T) {
 		"serve/verify_checks.go":        "LookPath of the configured VerifierBinary",
 		"cmd/anthropic-account/main.go": "lookPath injection for the account tool",
 		"internal/contract/env.go":      "comment",
-		"ui/tui/clipboard.go":           "hardened LookPath over absolute non-CWD/non-workspace PATH entries for pbcopy/pbpaste/wl-copy/wl-paste/xclip/xsel",
+		"ui/tui/trustedtool.go":         "hardened LookPath over absolute non-CWD/non-workspace PATH entries for audited clipboard tools and external $VISUAL/$EDITOR",
 	}
 	var found []string
 	err := filepath.WalkDir(filepath.Join("..", ".."), func(path string, d os.DirEntry, err error) error {

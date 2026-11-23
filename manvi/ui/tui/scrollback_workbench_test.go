@@ -337,4 +337,36 @@ func TestStackSlashCommandAndCompactAlias(t *testing.T) {
 	if !v.Scroll.StackWork {
 		t.Fatal("/compact alias did not toggle StackWork on")
 	}
+
+	// /edit must be advertised in uiCommands and emit EffectExternalEditor.
+	hasEdit := false
+	for _, spec := range uiCommands {
+		if spec.Name == "edit" {
+			hasEdit = true
+			break
+		}
+	}
+	if !hasEdit {
+		t.Fatal("uiCommands missing /edit")
+	}
+	v.Prompt.SetValue("draft via slash")
+	effs := app.runCommand("edit", "")
+	if len(effs) != 1 {
+		t.Fatalf("/edit returned %d effects, want 1", len(effs))
+	}
+	ee, ok := effs[0].(EffectExternalEditor)
+	if !ok || ee.SessionID != "s1" || ee.Initial != "draft via slash" {
+		t.Fatalf("/edit effect = %#v, want EffectExternalEditor{SessionID:s1, Initial:draft via slash}", effs[0])
+	}
+}
+
+func TestShortActionPasteSanitizesControlsAndCRLF(t *testing.T) {
+	app := NewApp(Dark(), nil)
+	v := app.AddSession("s1", "test")
+
+	// Short paste (<=200 chars) with ESC, BEL, C1 CSI, DEL, and CRLF must be sanitized.
+	app.Dispatch(ActionPaste{Text: "hello\x1b[31m\x07\r\nworld\u009b!\x7f"})
+	if got := v.Prompt.Value(); got != "hello[31m\nworld!" {
+		t.Fatalf("short ActionPaste value = %q, want %q", got, "hello[31m\nworld!")
+	}
 }

@@ -255,6 +255,7 @@ func (r *Reader) Run() {
 				case pollStopped:
 					return
 				case pollFallback:
+					poller.close()
 					r.mu.Lock()
 					r.cancellable = false
 					r.mu.Unlock()
