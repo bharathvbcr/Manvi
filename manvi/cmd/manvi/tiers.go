@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/llm/xai"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
@@ -681,9 +682,10 @@ func (t tierTable) Fallbacks() map[agents.Tier]agents.TierSpec {
 }
 
 // qualifyRow splits a "provider/model" tier value into its provider and model.
-// A bare value is left as it is and keeps running on the session's provider,
-// and so is a value whose prefix names no provider this harness has: that is a
-// model id containing a slash, not a provider.
+// A bare value is left as it is and keeps running on the session's provider.
+// A value naming the session's own provider applies there, off anthropic too.
+// A prefix naming no provider is refused, except on a local session, where it
+// is part of the model id.
 //
 // The main tier may not move the session: llm.default_provider is the one
 // owner of which provider the dispatching agent runs on, and a main tier that
@@ -701,14 +703,24 @@ func qualifyRow(row tierRow, session string) (tierRow, error) {
 			row.Tier, row.ModelKey, row.Model, row.ModelFrom)
 	}
 	if !knownProvider(provider) {
-		// Not a provider this harness has: the whole value is a model id
-		// that contains a slash, as many local and gateway ids do
-		// ("qwen/qwen3-coder"). It is read exactly as it was before tiers
-		// could name a provider, and the catalogue check judges it.
-		return row, nil
+		// On a local session the whole value is a model id that contains a
+		// slash, as local runners' ids often do ("qwen/qwen3-coder"), and the
+		// served-model check judges it. Anywhere else a prefix that names no
+		// adapter is a mistyped provider. It is refused, never read as a bare
+		// id, which off anthropic would be "not applied" and leave the children
+		// silently on the session's model.
+		if session == local.Name {
+			row.Provider = session
+			return row, nil
+		}
+		return row, fmt.Errorf("tier %s: %s=%q (%s) names provider %q, which this harness has no adapter for (%s)",
+			row.Tier, row.ModelKey, row.Model, row.ModelFrom, provider, strings.Join(providerNames(), ", "))
 	}
 	row.Model = model
-	if provider == session {
+	if provider == session && (session == anthropic.Name || row.Tier == agents.TierMain) {
+		// On anthropic a bare id already applies, so naming the session's
+		// provider is the same as writing the bare id. The main tier is the
+		// dispatching agent, whose model other settings decide.
 		return row, nil
 	}
 	if row.Tier == agents.TierMain {

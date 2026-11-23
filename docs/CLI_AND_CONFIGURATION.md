@@ -451,10 +451,11 @@ prints each tier's inherited ceiling.
 own provider, or `provider/model`, which runs on that provider. The shipped
 profile is bare Claude ids, so under any other `llm.provider.default` the bare
 rows are reported by `manvi tiers` as not applied and `manvi run` notes any
-bare tier key that was set but does not apply; a tier that names its provider
-applies on any session. The main tier may not name a provider other than
-`llm.provider.default`, which is the one owner of the session's provider; naming
-the session's own provider reads as the bare id.
+bare tier key that was set but does not apply; a tier that names its provider,
+the session's own included, applies on any session. A prefix that names no
+provider is refused, except on a `local` session, where ids such as
+`qwen/qwen3-coder` are read whole. The main tier may not name a provider other
+than `llm.provider.default`, which is the one owner of the session's provider.
 
 Every provider a tier, a fallback or a team member names is built at startup by
 the same constructor as the session's own, and needs its own credential

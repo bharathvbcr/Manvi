@@ -14,6 +14,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 )
 
 // A tier written as provider/model runs on that provider. Before tiers could
@@ -79,23 +80,49 @@ func TestTheMainTierCannotMoveTheSession(t *testing.T) {
 	}
 }
 
-// A prefix that is not a provider this harness has is part of a model id, as
-// in many local and gateway ids. Before tiers could name a provider such a
-// value was read whole; it still is, and the catalogue check judges it.
-func TestATierPrefixThatIsNoProviderIsPartOfTheModelID(t *testing.T) {
+// On a local session a prefix that is not a provider this harness has is part
+// of the model id, as local runners' ids often are, and the row applies there.
+func TestALocalModelIDWithASlashRunsOnTheLocalSession(t *testing.T) {
 	t.Setenv(flags.EnvKey(tierModelKey(agents.TierLite)), "qwen/qwen3-coder")
-	table, err := resolveTiers(tierRegistry(t), "local")
+	table, err := resolveTiers(tierRegistry(t), local.Name)
 	if err != nil {
 		t.Fatalf("a slash in a local model id refused the session: %v", err)
 	}
 	for _, row := range table.Rows {
-		if row.Tier == agents.TierLite && (row.Provider != "" || row.Model != "qwen/qwen3-coder") {
-			t.Fatalf("lite = %+v; want the whole id on the session's provider", row)
+		if row.Tier == agents.TierLite && (row.Provider != local.Name || row.Model != "qwen/qwen3-coder") {
+			t.Fatalf("lite = %+v; want the whole id on the local session", row)
 		}
 	}
-	t.Setenv(flags.EnvKey(tierModelKey(agents.TierLite)), "openai/gpt-x")
-	if _, err := checkTiers(tierRegistry(t), anthropic.Name); err == nil || !strings.Contains(err.Error(), "openai/gpt-x") {
-		t.Fatalf("= %v, want the id refused against the session's catalogue", err)
+}
+
+// Anywhere but local, a prefix naming no provider is a typo and is refused.
+// Read as a bare id it would be "not applied" off anthropic, and the children
+// would run on the session's model with nothing said in the TUI.
+func TestAMistypedTierProviderIsRefusedOffLocal(t *testing.T) {
+	for _, session := range []string{anthropic.Name, gemini.Name} {
+		t.Setenv(flags.EnvKey(tierModelKey(agents.TierBasic)), "gemnii/gemini-4-hydrogen")
+		if _, err := resolveTiers(tierRegistry(t), session); err == nil || !strings.Contains(err.Error(), "gemnii") {
+			t.Fatalf("%s session: a mistyped provider = %v; want it refused by name", session, err)
+		}
+	}
+}
+
+// A tier naming the session's own provider applies on that session. Before,
+// the provider was stripped to a bare id, which applies only on anthropic, so
+// "gemini/gemini-4-hydrogen" on a gemini session was silently not applied.
+func TestATierNamingTheSessionsOwnProviderAppliesOffAnthropic(t *testing.T) {
+	t.Setenv("MANVI_MODEL", "")
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierBasic)), "gemini/gemini-4-hydrogen")
+	table, err := checkTiers(tierRegistry(t), gemini.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, held := table.Profile()[agents.TierBasic]
+	if !held || spec.Model != "gemini-4-hydrogen" {
+		t.Fatalf("basic on a gemini session = %+v (held %v); want gemini-4-hydrogen applied", spec, held)
+	}
+	if got := table.extraProviders(); len(got) != 0 {
+		t.Fatalf("the session's own provider was built again: %v", got)
 	}
 }
 
