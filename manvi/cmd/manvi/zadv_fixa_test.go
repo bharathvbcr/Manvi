@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -68,7 +69,7 @@ func TestAdvFixaCaseVariantMiddleComponent(t *testing.T) {
 	bin := filepath.Join(realRepo, "bin")
 	elsewhere := filepath.Join(base, "elsewhere")
 	advMkdirs(t, bin, elsewhere)
-	tool := filepath.Join(bin, "dcverify")
+	tool := filepath.Join(bin, exe("dcverify"))
 	writeExecutable(t, tool, "x")
 	advChdir(t, elsewhere)
 
@@ -77,7 +78,7 @@ func TestAdvFixaCaseVariantMiddleComponent(t *testing.T) {
 		t.Error("root with a case-variant middle component did not contain the tool")
 	}
 	t.Setenv("MANVI_PROJECT_ROOT", filepath.Join(base, "Work", "Repo"))
-	variantTool := filepath.Join(base, "wORK", "Repo", "bin", "dcverify")
+	variantTool := filepath.Join(base, "wORK", "Repo", "bin", exe("dcverify"))
 	if !agentWritable(variantTool) {
 		t.Error("tool spelled with a case-variant middle component was called outside the root")
 	}
@@ -96,7 +97,7 @@ func TestAdvFixaCaseVariantLastComponentViaCwd(t *testing.T) {
 	repo := filepath.Join(base, "Repo")
 	other := filepath.Join(base, "Other")
 	advMkdirs(t, filepath.Join(repo, "bin"), other)
-	tool := filepath.Join(repo, "bin", "dcverify")
+	tool := filepath.Join(repo, "bin", exe("dcverify"))
 	writeExecutable(t, tool, "x")
 	t.Setenv("MANVI_PROJECT_ROOT", other)
 	advChdir(t, filepath.Join(base, "rEPO"))
@@ -112,13 +113,13 @@ func TestAdvFixaSymlinkToCaseVariantPath(t *testing.T) {
 	repo := filepath.Join(base, "Repo")
 	other := filepath.Join(base, "Other")
 	advMkdirs(t, filepath.Join(repo, "bin"), other)
-	writeExecutable(t, filepath.Join(repo, "bin", "dcverify"), "x")
+	writeExecutable(t, filepath.Join(repo, "bin", exe("dcverify")), "x")
 	link := filepath.Join(other, "link")
 	advSymlink(t, filepath.Join(base, "rEPO", "bin"), link)
 	advChdir(t, other)
 	t.Setenv("MANVI_PROJECT_ROOT", repo)
 
-	if !agentWritable(filepath.Join(link, "dcverify")) {
+	if !agentWritable(filepath.Join(link, exe("dcverify"))) {
 		t.Error("a symlink to a case-variant spelling of the repo hid a tool inside it")
 	}
 	t.Setenv("PATH", link)
@@ -135,15 +136,15 @@ func TestAdvFixaSymlinkedPathEntryIntoRepo(t *testing.T) {
 	good := filepath.Join(base, "good")
 	other := filepath.Join(base, "other")
 	advMkdirs(t, filepath.Join(repo, "bin"), good, other)
-	writeExecutable(t, filepath.Join(repo, "bin", "dcverify"), "planted")
-	writeExecutable(t, filepath.Join(good, "dcverify"), "trusted")
+	writeExecutable(t, filepath.Join(repo, "bin", exe("dcverify")), "planted")
+	writeExecutable(t, filepath.Join(good, exe("dcverify")), "trusted")
 	link := filepath.Join(other, "tools")
 	advSymlink(t, filepath.Join(repo, "bin"), link)
 	advRelease(t, filepath.Join(base, "install"), repo, other)
 	t.Setenv("PATH", link+string(os.PathListSeparator)+good)
 
 	got, ok := trustedLookPath("dcverify")
-	if !ok || got != filepath.Join(good, "dcverify") {
+	if !ok || got != filepath.Join(good, exe("dcverify")) {
 		t.Errorf("trustedLookPath = %q, %v; want the trusted binary in %s", got, ok, good)
 	}
 }
@@ -153,7 +154,7 @@ func TestAdvFixaRepoReachedThroughSymlink(t *testing.T) {
 	repo := filepath.Join(base, "realrepo")
 	other := filepath.Join(base, "other")
 	advMkdirs(t, filepath.Join(repo, "bin"), other)
-	tool := filepath.Join(repo, "bin", "dcverify")
+	tool := filepath.Join(repo, "bin", exe("dcverify"))
 	writeExecutable(t, tool, "x")
 	alias := filepath.Join(other, "alias")
 	advSymlink(t, repo, alias)
@@ -167,7 +168,7 @@ func TestAdvFixaRepoReachedThroughSymlink(t *testing.T) {
 		t.Error("a project root reached through a symlink did not contain the real tool path")
 	}
 	t.Setenv("MANVI_PROJECT_ROOT", repo)
-	if !agentWritable(filepath.Join(alias, "bin", "dcverify")) {
+	if !agentWritable(filepath.Join(alias, "bin", exe("dcverify"))) {
 		t.Error("a tool reached through a symlink to the repo was called outside it")
 	}
 	// cwd reached through the symlink.
@@ -188,7 +189,7 @@ func TestAdvFixaPathEntryIsAnOutwardSymlinkInsideRepo(t *testing.T) {
 	outside := filepath.Join(base, "outside")
 	cwd := filepath.Join(base, "cwd")
 	advMkdirs(t, repo, outside, cwd)
-	writeExecutable(t, filepath.Join(outside, "dcverify"), "x")
+	writeExecutable(t, filepath.Join(outside, exe("dcverify")), "x")
 	link := filepath.Join(repo, "tools")
 	advSymlink(t, outside, link)
 	advRelease(t, filepath.Join(base, "install"), repo, cwd)
@@ -207,7 +208,7 @@ func TestAdvFixaDotDotAndTrailingSlashSpellings(t *testing.T) {
 	repo := filepath.Join(base, "repo")
 	other := filepath.Join(base, "other")
 	advMkdirs(t, filepath.Join(repo, "bin"), other)
-	writeExecutable(t, filepath.Join(repo, "bin", "dcverify"), "x")
+	writeExecutable(t, filepath.Join(repo, "bin", exe("dcverify")), "x")
 	advRelease(t, filepath.Join(base, "install"), repo, other)
 
 	for name, entry := range map[string]string{
@@ -226,7 +227,7 @@ func TestAdvFixaDotDotAndTrailingSlashSpellings(t *testing.T) {
 	}
 	// A dotdot that escapes the repo is outside, not inside.
 	t.Setenv("PATH", filepath.Join(repo, "bin", "..", "..", "other"))
-	writeExecutable(t, filepath.Join(other, "dcverify"), "x")
+	writeExecutable(t, filepath.Join(other, exe("dcverify")), "x")
 	if _, ok := trustedLookPath("dcverify"); ok {
 		t.Error("cwd is other; a binary there must be agent-writable")
 	}
@@ -238,17 +239,17 @@ func TestAdvFixaRelativePathEntriesSkipped(t *testing.T) {
 	good := filepath.Join(base, "good")
 	advMkdirs(t, filepath.Join(repo, "bin"), good)
 	marker := filepath.Join(repo, "marker")
-	advWriteScript(t, filepath.Join(repo, "bin", "dcverify"), marker)
-	advWriteScript(t, filepath.Join(repo, "dcverify"), marker)
-	writeExecutable(t, filepath.Join(good, "dcverify"), "x")
+	advWriteScript(t, filepath.Join(repo, "bin", exe("dcverify")), marker)
+	advWriteScript(t, filepath.Join(repo, exe("dcverify")), marker)
+	writeExecutable(t, filepath.Join(good, exe("dcverify")), "x")
 	advRelease(t, filepath.Join(base, "install"), repo, repo)
 
 	for _, entry := range []string{"bin", ".", "", "./bin", "..", "../repo/bin"} {
 		t.Run("entry="+entry, func(t *testing.T) {
 			t.Setenv("PATH", entry+string(os.PathListSeparator)+good)
 			got, ok := trustedLookPath("dcverify")
-			if !ok || got != filepath.Join(good, "dcverify") {
-				t.Errorf("PATH entry %q: got %q, %v; want %s", entry, got, ok, filepath.Join(good, "dcverify"))
+			if !ok || got != filepath.Join(good, exe("dcverify")) {
+				t.Errorf("PATH entry %q: got %q, %v; want %s", entry, got, ok, filepath.Join(good, exe("dcverify")))
 			}
 			if bin := toolBinary("MANVI_ADV_FIXA_UNSET", "dcverify"); strings.HasPrefix(bin, repo) {
 				t.Errorf("toolBinary returned %q from the repo", bin)
@@ -269,7 +270,7 @@ func TestAdvFixaUnicodeNormalisationNFCvsNFD(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(base, nfd)); err != nil {
 		t.Skipf("volume at %s distinguishes NFC from NFD", base)
 	}
-	tool := filepath.Join(repo, "bin", "dcverify")
+	tool := filepath.Join(repo, "bin", exe("dcverify"))
 	writeExecutable(t, tool, "x")
 	advChdir(t, other)
 
@@ -278,7 +279,7 @@ func TestAdvFixaUnicodeNormalisationNFCvsNFD(t *testing.T) {
 		t.Error("NFD root did not contain an NFC-spelled tool")
 	}
 	t.Setenv("MANVI_PROJECT_ROOT", repo)
-	if !agentWritable(filepath.Join(base, nfd, "bin", "dcverify")) {
+	if !agentWritable(filepath.Join(base, nfd, "bin", exe("dcverify"))) {
 		t.Error("NFD-spelled tool was called outside an NFC root")
 	}
 }
@@ -287,6 +288,9 @@ func TestAdvFixaUnicodeNormalisationNFCvsNFD(t *testing.T) {
 
 func advDenied(t *testing.T, dir string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0 denies a directory through unix mode bits; Windows ignores them, so the directory stays searchable and nothing is denied")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
@@ -302,18 +306,18 @@ func TestAdvFixaUnexaminablePathFailsClosedAndResolutionContinues(t *testing.T) 
 	good := filepath.Join(base, "good")
 	denied := filepath.Join(base, "denied")
 	advMkdirs(t, repo, good, filepath.Join(denied, "bin"))
-	writeExecutable(t, filepath.Join(good, "dcverify"), "x")
+	writeExecutable(t, filepath.Join(good, exe("dcverify")), "x")
 	advDenied(t, denied)
 	advRelease(t, filepath.Join(base, "install"), repo, repo)
 
-	if !agentWritable(filepath.Join(denied, "bin", "dcverify")) {
+	if !agentWritable(filepath.Join(denied, "bin", exe("dcverify"))) {
 		t.Error("a permission-denied component was read as outside the agent's tree")
 	}
 	missing := filepath.Join(base, "no-such-dir")
 	t.Setenv("PATH", strings.Join([]string{missing, filepath.Join(denied, "bin"), good}, string(os.PathListSeparator)))
 	got, ok := trustedLookPath("dcverify")
-	if !ok || got != filepath.Join(good, "dcverify") {
-		t.Errorf("got %q, %v; want %s", got, ok, filepath.Join(good, "dcverify"))
+	if !ok || got != filepath.Join(good, exe("dcverify")) {
+		t.Errorf("got %q, %v; want %s", got, ok, filepath.Join(good, exe("dcverify")))
 	}
 }
 
@@ -323,7 +327,7 @@ func TestAdvFixaUnexaminableRootFailsClosed(t *testing.T) {
 	good := filepath.Join(base, "good")
 	denied := filepath.Join(base, "denied")
 	advMkdirs(t, good, filepath.Join(denied, "repo"))
-	tool := filepath.Join(good, "dcverify")
+	tool := filepath.Join(good, exe("dcverify"))
 	writeExecutable(t, tool, "x")
 	advDenied(t, denied)
 	advRelease(t, filepath.Join(base, "install"), filepath.Join(denied, "repo"), good)
@@ -342,7 +346,7 @@ func TestAdvFixaNonexistentPathInsideRoot(t *testing.T) {
 	advMkdirs(t, repo, other)
 	advChdir(t, other)
 	t.Setenv("MANVI_PROJECT_ROOT", repo)
-	if !agentWritable(filepath.Join(repo, "not", "yet", "dcverify")) {
+	if !agentWritable(filepath.Join(repo, "not", "yet", exe("dcverify"))) {
 		t.Error("a not-yet-created file inside the root was called outside it")
 	}
 }
@@ -355,12 +359,12 @@ func TestAdvFixaExeDirInsideRepoIsSkippedForPATH(t *testing.T) {
 	good := filepath.Join(base, "good")
 	other := filepath.Join(base, "other")
 	advMkdirs(t, filepath.Join(repo, "dist"), good, other)
-	writeExecutable(t, filepath.Join(repo, "dist", "dcverify"), "planted")
-	writeExecutable(t, filepath.Join(good, "dcverify"), "trusted")
+	writeExecutable(t, filepath.Join(repo, "dist", exe("dcverify")), "planted")
+	writeExecutable(t, filepath.Join(good, exe("dcverify")), "trusted")
 	advRelease(t, filepath.Join(repo, "dist"), repo, other)
 	t.Setenv("PATH", good)
-	if got := toolBinary("MANVI_ADV_FIXA_UNSET", "dcverify"); got != filepath.Join(good, "dcverify") {
-		t.Errorf("toolBinary = %q; want the PATH binary %s", got, filepath.Join(good, "dcverify"))
+	if got := toolBinary("MANVI_ADV_FIXA_UNSET", "dcverify"); got != filepath.Join(good, exe("dcverify")) {
+		t.Errorf("toolBinary = %q; want the PATH binary %s", got, filepath.Join(good, exe("dcverify")))
 	}
 	t.Setenv("PATH", other)
 	if got := toolBinary("MANVI_ADV_FIXA_UNSET", "dcverify"); got != unresolvedTool("dcverify") {
@@ -380,11 +384,11 @@ func TestAdvFixaExeSymlinkAndCompanionSymlink(t *testing.T) {
 	install := filepath.Join(base, "install")
 	other := filepath.Join(base, "other")
 	advMkdirs(t, filepath.Join(repo, "dist"), install, other)
-	planted := filepath.Join(repo, "dist", "dcverify")
+	planted := filepath.Join(repo, "dist", exe("dcverify"))
 	writeExecutable(t, planted, "planted")
 	writeExecutable(t, filepath.Join(repo, "dist", "manvi"), "x")
 	advSymlink(t, filepath.Join(repo, "dist", "manvi"), filepath.Join(install, "manvi"))
-	advSymlink(t, planted, filepath.Join(install, "dcverify"))
+	advSymlink(t, planted, filepath.Join(install, exe("dcverify")))
 	advRelease(t, install, repo, other)
 	t.Setenv("PATH", other)
 
@@ -397,7 +401,7 @@ func TestAdvFixaExeSymlinkAndCompanionSymlink(t *testing.T) {
 	realExe := filepath.Join(base, "realinstall")
 	advMkdirs(t, realExe)
 	writeExecutable(t, filepath.Join(realExe, "manvi"), "x")
-	advSymlink(t, planted, filepath.Join(realExe, "dcverify"))
+	advSymlink(t, planted, filepath.Join(realExe, exe("dcverify")))
 	releaseStandIn(t, realExe)
 	if got := toolBinary("MANVI_ADV_FIXA_UNSET", "dcverify"); got != unresolvedTool("dcverify") {
 		t.Errorf("toolBinary = %q; a companion symlinked into the repo was trusted", got)
@@ -410,7 +414,7 @@ func TestAdvFixaExeDirInsideCwdOnly(t *testing.T) {
 	root := filepath.Join(base, "root")
 	cwd := filepath.Join(base, "cwd")
 	advMkdirs(t, root, filepath.Join(cwd, "dist"))
-	writeExecutable(t, filepath.Join(cwd, "dist", "dcverify"), "planted")
+	writeExecutable(t, filepath.Join(cwd, "dist", exe("dcverify")), "planted")
 	advRelease(t, filepath.Join(cwd, "dist"), root, cwd)
 	t.Setenv("PATH", t.TempDir())
 	if got := toolBinary("MANVI_ADV_FIXA_UNSET", "dcverify"); got != unresolvedTool("dcverify") {
