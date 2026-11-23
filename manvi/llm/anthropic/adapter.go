@@ -1131,6 +1131,26 @@ func (s *stream) Response() (llm.Response, error) {
 	// any (or cited text), so a response without them is journaled as before.
 	var entries []serverEntry
 	hostedContent := false
+	// Calls are settled first, together, because whether one may dispatch can
+	// depend on another: two calls sharing an id are both refused.
+	callIndexes := make([]int, 0, len(s.order))
+	callIDs := make([]llm.CallID, 0, len(s.order))
+	settlements := make([]llm.CallSettlement, 0, len(s.order))
+	for _, index := range s.order {
+		if acc := s.blocks[index]; acc != nil && acc.kind == BlockToolUse {
+			callIndexes = append(callIndexes, index)
+			callIDs = append(callIDs, llm.CallID(acc.toolID))
+			settlements = append(settlements, llm.SettleCall(llm.CallEvidence{
+				ID: llm.CallID(acc.toolID), Name: acc.toolName, Arguments: acc.args.String(),
+				Closed: acc.sealed, Framing: llm.FramingRequired, Stop: s.stopReason,
+			}))
+		}
+	}
+	llm.RefuseDuplicateIDs(callIDs, settlements)
+	settledAt := make(map[int]llm.CallSettlement, len(callIndexes))
+	for i, index := range callIndexes {
+		settledAt[index] = settlements[i]
+	}
 	for _, index := range s.order {
 		acc := s.blocks[index]
 		if acc == nil {
@@ -1182,21 +1202,17 @@ func (s *stream) Response() (llm.Response, error) {
 			entries = append(entries, serverEntry{Kind: entryThink})
 		case BlockToolUse:
 			// What a complete call is, is decided once for every adapter; see
-			// llm.SettleCall. This wire closes each call with content_block_stop,
-			// so the rule is told whether it came.
-			settled := llm.SettleCall(llm.CallEvidence{
-				ID: llm.CallID(acc.toolID), Name: acc.toolName, Arguments: acc.args.String(),
-				Closed: acc.sealed, Framing: llm.FramingRequired, Stop: s.stopReason,
-			})
-			switch settled.Verdict {
-			case llm.CallCutByLimit:
+			// llm.SettleCall and llm.RefuseDuplicateIDs, run above.
+			settled := settledAt[index]
+			switch {
+			case settled.Reportable():
 				// The model's own limit, not a broken stream: the turn survives,
 				// the call is reported, and the model can ask for less.
 				malformed = append(malformed, llm.MalformedCall{
 					ID: llm.CallID(acc.toolID), Name: acc.toolName, Reason: settled.Reason,
 				})
 				continue
-			case llm.CallUnusable:
+			case settled.Verdict == llm.CallUnusable:
 				return llm.Response{}, fmt.Errorf("anthropic: tool call %q (id %q) %s", acc.toolName, acc.toolID, settled.Reason)
 			}
 			msg.Content = append(msg.Content, llm.ToolCallBlock{

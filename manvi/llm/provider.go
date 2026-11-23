@@ -287,6 +287,9 @@ type DecodingReport struct {
 	// UnknownKindsMore counts the distinct unrecognised types past the bound
 	// that UnknownKinds did not list, so a capped list is never read as whole.
 	UnknownKindsMore int `json:"unknown_kinds_more,omitempty"`
+	// unknownOverflow remembers the names counted in UnknownKindsMore so a
+	// repeat is not counted twice. Not part of the wire or the journal.
+	unknownOverflow map[string]struct{}
 }
 
 // Clean reports whether the response decoded without compensating for anything.

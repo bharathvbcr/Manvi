@@ -155,7 +155,7 @@ func TestEveryDecoderSettlesACallByTheSameRule(t *testing.T) {
 		// Whole JSON that is not an object is not arguments.
 		{name: "array arguments", id: "c1", tool: "bash", args: "[1,2]", closed: true, expect: adaptertest.ExpectNoDispatch},
 		{name: "string arguments", id: "c1", tool: "bash", args: "\"ls\"", closed: true, expect: adaptertest.ExpectNoDispatch},
-		{name: "array arguments, output limit", id: "c1", tool: "bash", args: "[1,2]", closed: true, limit: true, expect: adaptertest.ExpectCutCall},
+		{name: "array arguments, output limit", id: "c1", tool: "bash", args: "[1,2]", closed: true, limit: true, expect: adaptertest.ExpectNoDispatch},
 		{name: "two objects run together", id: "c1", tool: "bash", args: "{\"a\":1}{\"b\":2}", closed: true, expect: adaptertest.ExpectNoDispatch},
 		// A call that cannot be routed is not run, whatever else is true of it.
 		{name: "empty name", id: "c1", tool: "", args: "{}", closed: true, expect: adaptertest.ExpectNoDispatch},

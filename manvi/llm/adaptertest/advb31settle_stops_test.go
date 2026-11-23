@@ -54,7 +54,7 @@ func TestAdvB31SettleStopReasonTable(t *testing.T) {
 				if stop == "limit" && !a.whole && len(o.calls) == 0 {
 					if o.err != nil || len(o.resp.Malformed) != 1 || o.resp.StopReason != llm.StopMaxTokens {
 						// "no bytes, closed" is a legitimate {} call
-						if !(a.deltas == nil && a.closed) {
+						if a.deltas != nil || !a.closed {
 							t.Errorf("%s/%s/limit: want one malformed call and a settled turn, got %s", name, a.name, o.class())
 						}
 					}

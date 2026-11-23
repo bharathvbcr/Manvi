@@ -22,8 +22,8 @@ type advSpec struct {
 // stops: end, tool, limit, filter, none.
 func advBody(wireName string, specs []advSpec, stop string) string {
 	var b strings.Builder
-	switch {
-	case wireName == "anthropic":
+	switch wireName {
+	case "anthropic":
 		b.WriteString(anthropicStart)
 		for i, s := range specs {
 			fmt.Fprintf(&b, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"tool_use\",\"id\":%q,\"name\":%q}}\n\n", i, s.ID, s.Name)
@@ -40,7 +40,7 @@ func advBody(wireName string, specs []advSpec, stop string) string {
 		} else {
 			b.WriteString(anthropicFinish(m[stop]))
 		}
-	case wireName == "gemini":
+	case "gemini":
 		for i, s := range specs {
 			idf := ""
 			if s.ID != "" {
@@ -63,7 +63,7 @@ func advBody(wireName string, specs []advSpec, stop string) string {
 	default:
 		for i, s := range specs {
 			for j, d := range s.Deltas {
-				fn := "{}"
+				var fn string
 				idField := ""
 				if j == 0 {
 					fn = fmt.Sprintf("{\"name\":%q,\"arguments\":%s}", s.Name, jsonString(d))

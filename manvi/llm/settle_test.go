@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSettleCallIsOneRuleForWhatACompleteCallIs(t *testing.T) {
@@ -17,7 +18,12 @@ func TestSettleCallIsOneRuleForWhatACompleteCallIs(t *testing.T) {
 		{"closed object", CallEvidence{ID: "i", Name: "n", Arguments: "{\"a\":1}", Closed: true, Framing: FramingRequired}, CallComplete, "{\"a\":1}", ""},
 		{"closed, no bytes, is {}", CallEvidence{ID: "i", Name: "n", Closed: true, Framing: FramingRequired}, CallComplete, "{}", ""},
 		{"closed, no bytes, at the limit, is still {}", CallEvidence{ID: "i", Name: "n", Closed: true, Framing: FramingRequired, Stop: StopMaxTokens}, CallComplete, "{}", ""},
-		{"unframed wire, no bytes, is {}", CallEvidence{ID: "i", Name: "n", Framing: FramingNone}, CallComplete, "{}", ""},
+		{"unframed wire, no bytes, is {}", CallEvidence{ID: "i", Name: "n", Framing: FramingNone, Stop: StopToolUse}, CallComplete, "{}", ""},
+		{"unframed wire, no bytes, content filter", CallEvidence{ID: "i", Name: "n", Framing: FramingNone, Stop: StopOther}, CallUnusable, "", "stop reason"},
+		{"unframed wire, no bytes, refusal", CallEvidence{ID: "i", Name: "n", Framing: FramingNone, Stop: StopRefusal}, CallUnusable, "", "stop reason"},
+		{"unframed wire, no bytes, no stop reason", CallEvidence{ID: "i", Name: "n", Framing: FramingNone}, CallUnusable, "", "stop reason"},
+		{"whole array at the limit is not a cut", CallEvidence{ID: "i", Name: "n", Arguments: "[1]", Closed: true, Stop: StopMaxTokens}, CallUnusable, "", "not a JSON object"},
+		{"whole unclosed object at the limit says so", CallEvidence{ID: "i", Name: "n", Arguments: "{}", Framing: FramingRequired, Stop: StopMaxTokens}, CallCutByLimit, "", "before the wire closed"},
 		{"unframed wire, no bytes, at the limit, is cut", CallEvidence{ID: "i", Name: "n", Framing: FramingNone, Stop: StopMaxTokens}, CallCutByLimit, "", "output limit after 0 bytes"},
 		{"optional framing accepts a whole unclosed object", CallEvidence{ID: "i", Name: "n", Arguments: "{\"a\":1}", Framing: FramingOptional}, CallComplete, "{\"a\":1}", ""},
 		{"optional framing, unclosed, no bytes", CallEvidence{ID: "i", Name: "n", Framing: FramingOptional}, CallUnusable, "", "never closed"},
@@ -69,5 +75,48 @@ func TestNoteUnknownIsSortedDistinctAndBounded(t *testing.T) {
 		if len(k) > maxUnknownKindLen {
 			t.Fatalf("kind of %d bytes kept", len(k))
 		}
+	}
+}
+
+func TestRefuseDuplicateIDsRefusesBothOrNeither(t *testing.T) {
+	done := func() CallSettlement { return CallSettlement{Verdict: CallComplete, Arguments: []byte("{}")} }
+	cut := CallSettlement{Verdict: CallCutByLimit}
+
+	both := []CallSettlement{done(), done(), done()}
+	RefuseDuplicateIDs([]CallID{"a", "a", "b"}, both)
+	if both[0].Verdict != CallUnusable || both[1].Verdict != CallUnusable || both[2].Verdict != CallComplete {
+		t.Fatalf("verdicts = %+v, want both a refused and b kept", both)
+	}
+	if both[0].Reportable() || len(both[0].Arguments) != 0 {
+		t.Fatalf("a duplicate is a refusal, not a report: %+v", both[0])
+	}
+
+	// A whole call and a cut call may share an id: only one would dispatch.
+	mixed := []CallSettlement{done(), cut}
+	RefuseDuplicateIDs([]CallID{"a", "a"}, mixed)
+	if mixed[0].Verdict != CallComplete {
+		t.Fatalf("a whole call was refused for sharing an id with a cut one: %+v", mixed[0])
+	}
+
+	// Blank ids are not duplicates of each other; the wire that tolerates them
+	// mints its own.
+	blank := []CallSettlement{done(), done()}
+	RefuseDuplicateIDs([]CallID{"", ""}, blank)
+	if blank[0].Verdict != CallComplete || blank[1].Verdict != CallComplete {
+		t.Fatalf("blank ids refused: %+v", blank)
+	}
+}
+
+func TestBoundKindKeepsEmptyDistinctAndNamesDistinctPastTheCut(t *testing.T) {
+	if boundKind("") == boundKind("(empty)") {
+		t.Fatal("empty name collides with the literal (empty)")
+	}
+	p := strings.Repeat("p", 80)
+	a, b := boundKind(p+"A"), boundKind(p+"B")
+	if a == b || len(a) > maxUnknownKindLen || len(b) > maxUnknownKindLen {
+		t.Fatalf("a=%q b=%q", a, b)
+	}
+	if !utf8.ValidString(boundKind(strings.Repeat("€", 100))) || strings.ContainsAny(boundKind("a\x1bb\nc"), "\x1b\n") {
+		t.Fatal("not sanitised or cut mid-rune")
 	}
 }

@@ -258,7 +258,7 @@ func (c *continuation) steps(dropped *droppedCalls) ([]json.RawMessage, error) {
 		}
 		if !s.final {
 			if s.call != nil && s.kind == TypeFunctionCall {
-				args := s.call.args.String()
+				args := strings.TrimSpace(s.call.args.String())
 				if args == "" {
 					args = "{}"
 				}
@@ -319,7 +319,7 @@ func validateContinuation(msg llm.Message, steps []json.RawMessage) error {
 		// journal never held. Refused by name, so the adapter that has fallen
 		// behind the wire is the thing the reader is pointed at.
 		if !knownStepType(step.Type) {
-			return fmt.Errorf("gemini: continuation holds a step of unknown type %q; this adapter cannot verify it against the journaled message, so the turn is refused rather than replayed", step.Type)
+			return fmt.Errorf("gemini: continuation holds a step of unknown type %q; this adapter cannot verify it against the journaled message, so the turn is refused rather than replayed", llm.TruncateForMessage(step.Type))
 		}
 		if step.Type == TypeFunctionCall {
 			calls = append(calls, llm.ToolCallBlock{ID: llm.CallID(step.ID), Name: step.Name, Arguments: step.Arguments})
@@ -337,7 +337,7 @@ func validateContinuation(msg llm.Message, steps []json.RawMessage) error {
 		return errors.New("gemini: private continuation differs from journaled assistant content; use parameter references for sensitive data or start a new history")
 	}
 	for i, call := range calls {
-		if call.ID != expected[i].ID || call.Name != expected[i].Name || !equalArguments(call.Arguments, expected[i].Arguments) {
+		if (call.ID != expected[i].ID && string(call.ID) != wireCallID(expected[i].ID)) || call.Name != expected[i].Name || !equalArguments(call.Arguments, expected[i].Arguments) {
 			return errors.New("gemini: private continuation differs from journaled tool call; use parameter references for sensitive data or start a new history")
 		}
 	}

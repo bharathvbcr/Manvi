@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
@@ -318,7 +319,7 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 			}
 			out = append(out, wireInput{
 				Type: TypeFunctionCall, Name: b.Name, Arguments: args,
-				ID: string(b.ID), Signature: signature,
+				ID: wireCallID(b.ID), Signature: signature,
 			})
 		case llm.ToolResultBlock:
 			var content []wireContent
@@ -359,7 +360,7 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 						"cannot be named; this wire requires the name on every result", b.ToolCallID)
 			}
 			out = append(out, wireInput{
-				Type: TypeFunctionResult, CallID: string(b.ToolCallID), Name: name, Result: encoded,
+				Type: TypeFunctionResult, CallID: wireCallID(b.ToolCallID), Name: name, Result: encoded,
 			})
 		case llm.ImageBlock:
 			c, err := inputContent(b)
@@ -1194,6 +1195,30 @@ func (s *stream) seal(id, name string) {
 	}
 }
 
+// anonCallPrefix marks an id this adapter minted for a call the server did not
+// identify. See wireCallID.
+const anonCallPrefix = "gemini_anon_"
+
+var anonCallSeq atomic.Uint64
+
+// dupCallMarker separates a server id from the suffix that makes a reused one
+// distinct in the neutral journal.
+const dupCallMarker = "~gemini_dup_"
+
+// wireCallID is the id to put on the wire for a neutral call id: a minted id is
+// not the server's, so it is sent as what the server sent, which is nothing for
+// an anonymous call and the original id for a reused one.
+func wireCallID(id llm.CallID) string {
+	s := string(id)
+	if strings.HasPrefix(s, anonCallPrefix) {
+		return ""
+	}
+	if i := strings.Index(s, dupCallMarker); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 func (s *stream) Response() (llm.Response, error) {
 	if err := s.ctx.Err(); err != nil {
 		return llm.Response{}, err
@@ -1218,17 +1243,27 @@ func (s *stream) Response() (llm.Response, error) {
 		malformed []llm.MalformedCall
 		cut       []*callAccumulator
 	)
-	for _, acc := range s.order {
+	// Each call is settled by the one rule. A reused id is not refused on this
+	// wire; it is made distinct where the calls are built, below.
+	ids := make([]llm.CallID, len(s.order))
+	settlements := make([]llm.CallSettlement, len(s.order))
+	for i, acc := range s.order {
+		ids[i] = llm.CallID(acc.id)
 		// What a complete call is, is decided once for every adapter; see
 		// llm.SettleCall. This wire closes a call with step.stop but accepts a
 		// whole JSON object without it, so an unclosed call with no argument
-		// bytes is the one case the framing decides.
-		settled := llm.SettleCall(llm.CallEvidence{
-			ID: llm.CallID(acc.id), Name: acc.name, Arguments: acc.args.String(),
+		// bytes is the one case the framing decides. It answers a call by
+		// function name when the call carries no id, so the id is optional.
+		settlements[i] = llm.SettleCall(llm.CallEvidence{
+			ID: ids[i], Name: acc.name, Arguments: acc.args.String(),
 			Closed: acc.sealed, Framing: llm.FramingOptional, IDOptional: true, Stop: stop,
 		})
-		switch settled.Verdict {
-		case llm.CallCutByLimit:
+	}
+	dispatchedID := make(map[string]int, len(s.order))
+	for i, acc := range s.order {
+		settled := settlements[i]
+		switch {
+		case settled.Reportable():
 			// The model ran out of output budget in the middle of the call. The
 			// turn survives: the call is reported as malformed, the loop tells the
 			// model it was cut off, and it can ask for less. Returning an error
@@ -1239,12 +1274,30 @@ func (s *stream) Response() (llm.Response, error) {
 			})
 			cut = append(cut, acc)
 			continue
-		case llm.CallUnusable:
-			return llm.Response{}, fmt.Errorf("gemini: tool call %q (id %q) %s", acc.name, acc.id, settled.Reason)
+		case settled.Verdict == llm.CallUnusable:
+			return llm.Response{}, fmt.Errorf("gemini: tool call %q (id %q) %s",
+				llm.TruncateForMessage(acc.name), llm.TruncateForMessage(acc.id), settled.Reason)
 		}
-		calls = append(calls, llm.ToolCallBlock{
-			ID: llm.CallID(acc.id), Name: acc.name, Arguments: settled.Arguments,
-		})
+		// A call the server left without an id still has to be told apart from
+		// its siblings: the loop pairs a result with its call by id. The id minted
+		// here lives only in the neutral journal; wireCallID removes it again
+		// before anything is sent.
+		//
+		// The same is done for a call that reuses an id an earlier call of this
+		// response already dispatched under. This wire does not promise ids are
+		// unique across a stream (a sealed call's id may be reused), so refusing
+		// the pair would reject well-formed responses the live wire sends;
+		// instead the later call's neutral id is made distinct and wireCallID
+		// maps it back to what the server sent.
+		id := llm.CallID(acc.id)
+		switch {
+		case acc.id == "":
+			id = llm.CallID(fmt.Sprintf("%s%d", anonCallPrefix, anonCallSeq.Add(1)))
+		case dispatchedID[acc.id] > 0:
+			id = llm.CallID(fmt.Sprintf("%s%s%d", acc.id, dupCallMarker, dispatchedID[acc.id]))
+		}
+		dispatchedID[acc.id]++
+		calls = append(calls, llm.ToolCallBlock{ID: id, Name: acc.name, Arguments: settled.Arguments})
 	}
 
 	msg := llm.Message{
