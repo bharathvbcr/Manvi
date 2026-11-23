@@ -123,7 +123,7 @@ func plainWithFormat(text string) bool {
 		if r == utf8.RuneError || (unicode.IsControl(r) && r != '\n' && r != '\t') {
 			return false
 		}
-		if isInvisibleFormat(r) && !(unicode.Is(unicode.Cf, r) && keep) {
+		if isInvisibleFormat(r) && (!unicode.Is(unicode.Cf, r) || !keep) {
 			return false
 		}
 	}
