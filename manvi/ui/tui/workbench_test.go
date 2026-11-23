@@ -348,19 +348,19 @@ func rectString(b *render.Buffer, r render.Rect) string {
 
 func TestInspectorDiffsLinksHonestyAndSanitization(t *testing.T) {
 	a, _ := newTestApp()
-	// 1. Granted edit: must carry granted glyph + [granted].
+	// 1. Granted edit with absolute path: must carry granted glyph + [granted] and OSC 8 file:// link.
 	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
 		Kind: ui.KindToolStart, Tool: "patch_file",
-		Arguments: []byte(`{"path":"granted.go","target_content":"a := 1","replacement_content":"a := 2"}`),
+		Arguments: []byte(`{"path":"/repo/granted file.go","target_content":"a := 1","replacement_content":"a := 2"}`),
 	}})
 	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
-		Kind: ui.KindToolResult, Tool: "patch_file", Text: "patched granted.go",
+		Kind: ui.KindToolResult, Tool: "patch_file", Text: "patched granted file.go",
 		GrantID: "G-42", GrantedBy: "human",
 	}})
 	// 2. Clean edit with hostile control char in path: must strip controls and refuse OSC 8 link.
 	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
 		Kind: ui.KindToolStart, Tool: "write_file",
-		Arguments: []byte(`{"path":"evil\u001b]52;c;YQ==\u0007.go","content":"package main\n"}`),
+		Arguments: []byte(`{"path":"/repo/evil\u001b]52;c;YQ==\u0007.go","content":"package main\n"}`),
 	}})
 	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
 		Kind: ui.KindToolResult, Tool: "write_file", Text: "wrote file",
@@ -397,16 +397,30 @@ func TestInspectorDiffsLinksHonestyAndSanitization(t *testing.T) {
 	if !strings.Contains(frame, "[granted]") {
 		t.Fatalf("granted edit missing [granted] qualifier:\n%s", frame)
 	}
-	// Valid path must emit OSC 8 file:// link.
-	if !strings.Contains(wireStr, "\x1b]8;;file://") || !strings.Contains(wireStr, "granted.go\x1b\\") {
-		t.Fatalf("Diffs tab did not emit OSC 8 file:// link for granted.go:\n%q", wireStr)
+	// Absolute path must emit percent-encoded OSC 8 file:/// link.
+	if !strings.Contains(wireStr, "\x1b]8;;file:///repo/granted%20file.go\x1b\\") {
+		t.Fatalf("Diffs tab did not emit percent-encoded OSC 8 file:// link:\n%q", wireStr)
 	}
 	// Hostile path must NOT inject OSC 52 or emit an OSC 8 link for that path.
 	if strings.Contains(wireStr, "\x1b]52;") {
 		t.Fatalf("hostile path injected OSC 52 into painter output: %q", wireStr)
 	}
-	if got := fileLinkURL("bad\x1bpath.go"); got != "" {
-		t.Fatalf("fileLinkURL accepted path with ESC: %q", got)
+
+	for _, bad := range []string{
+		"/repo/bad\x1bpath.go",
+		"file://host/share",
+		"file:///etc/passwd",
+		"https://example.com/a.go",
+		"javascript:alert(1)",
+		"//host/share/a.go",
+		"relative/foo.go",
+	} {
+		if got := fileLinkURL(bad); got != "" {
+			t.Fatalf("fileLinkURL(%q) = %q, want empty (refused)", bad, got)
+		}
+	}
+	if got := fileLinkURL("/repo/sub/../clean file.go"); got != "file:///repo/clean%20file.go" {
+		t.Fatalf("fileLinkURL clean absolute = %q, want file:///repo/clean%%20file.go", got)
 	}
 }
 

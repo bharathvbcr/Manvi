@@ -675,19 +675,23 @@ func fileLinkURL(path string) string {
 	if path == "" || hasControlOrInvalidUTF8(path) {
 		return ""
 	}
-	if strings.HasPrefix(path, "file://") {
-		return path
-	}
-	abs := path
-	if !filepath.IsAbs(path) {
-		if resolved, err := filepath.Abs(path); err == nil {
-			abs = resolved
-		}
-	}
-	if hasControlOrInvalidUTF8(abs) {
+	// Refuse any input that already carries a URL scheme (e.g. file://host/share
+	// or javascript:...) or UNC prefix, and link only absolute local paths since
+	// AgentView/Status does not carry a session workspace root.
+	if strings.Contains(path, "://") || strings.HasPrefix(path, "//") || strings.HasPrefix(path, `\\`) {
 		return ""
 	}
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Clean(abs))}).String()
+	if u, err := url.Parse(path); err == nil && len(u.Scheme) > 1 {
+		return ""
+	}
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if !strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "//") {
+		return ""
+	}
+	return (&url.URL{Scheme: "file", Path: clean}).String()
 }
 
 func (ins *Inspector) drawDiffsTab(b *render.Buffer, r render.Rect, th Theme, edits []inspectorEdit) {
