@@ -124,8 +124,8 @@ func TestCaptureDropsTheQueryAndStillForwardsIt(t *testing.T) {
 			t.Fatalf("capture wrote part of the query %q: %s", leaked, text)
 		}
 	}
-	if strings.Count(text, "/v1beta/interactions") != 2 {
-		t.Fatalf("capture lost the request path: %s", text)
+	if strings.Count(text, "POST .../interactions ") != 2 {
+		t.Fatalf("capture lost the request label: %s", text)
 	}
 }
 

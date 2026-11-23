@@ -27,7 +27,7 @@ func advProxy(t *testing.T, upstream string, client *http.Client) (*proxy, strin
 
 func advRead(t *testing.T, path string) string {
 	t.Helper()
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- a path the test just created
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +151,7 @@ func TestAdvB31OpsCaptureSymlinkDoesNotTruncateOrChmodItsTarget(t *testing.T) {
 	}
 	dir := t.TempDir()
 	victim := filepath.Join(dir, "victim.txt")
+	// #nosec G306 -- the mode is what the test checks survives
 	if err := os.WriteFile(victim, []byte("precious"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -162,11 +163,14 @@ func TestAdvB31OpsCaptureSymlinkDoesNotTruncateOrChmodItsTarget(t *testing.T) {
 	if err == nil {
 		_ = f.Close()
 	}
-	b, rerr := os.ReadFile(victim)
+	b, rerr := os.ReadFile(victim) // #nosec G304 -- a path the test just created
 	if rerr != nil {
 		t.Fatal(rerr)
 	}
-	info, _ := os.Stat(victim)
+	info, serr := os.Stat(victim)
+	if serr != nil {
+		t.Fatal(serr)
+	}
 	if string(b) != "precious" || info.Mode().Perm() != 0o644 {
 		t.Fatalf("through a symlink the capture opened (err=%v) and changed its target: content %q mode %v", err, b, info.Mode().Perm())
 	}
@@ -188,7 +192,10 @@ func TestAdvB31OpsCaptureRefusesAFileThatCannotBeTightened(t *testing.T) {
 		_ = f.Close()
 		t.Fatalf("openCapture accepted a file we do not own (/dev/null)")
 	}
-	after, _ := os.Stat("/dev/null")
+	after, serr := os.Stat("/dev/null")
+	if serr != nil {
+		t.Fatal(serr)
+	}
 	if after.Mode() != before.Mode() {
 		t.Fatalf("mode of /dev/null changed %v -> %v", before.Mode(), after.Mode())
 	}
@@ -197,7 +204,7 @@ func TestAdvB31OpsCaptureRefusesAFileThatCannotBeTightened(t *testing.T) {
 func TestAdvB31OpsConcurrentRequestsKeepEveryBlockIntact(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(time.Duration(len(r.URL.Path)%7) * time.Millisecond)
-		_, _ = w.Write([]byte("RESP-" + r.Header.Get("X-Id") + "-" + strings.Repeat("z", 20000)))
+		_, _ = w.Write([]byte("RESP-" + r.Header.Get("X-Id") + "-" + strings.Repeat("z", 20000))) // #nosec G705 -- a test server echoing a header into a recorder
 	}))
 	defer up.Close()
 	p, path := advProxy(t, up.URL, up.Client())
@@ -207,7 +214,7 @@ func TestAdvB31OpsConcurrentRequestsKeepEveryBlockIntact(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			id := string(rune('A'+i%26)) + string(rune('a'+i/26))
+			id := string(rune('A'+i%26)) + string(rune('a'+i/26)) // #nosec G115 -- i < 60
 			advServe(t, p, "POST", "/v1beta/x"+strings.Repeat("p", i), map[string]string{"X-Id": id}, "BODY-"+id+"-"+strings.Repeat("q", 5000))
 		}()
 	}

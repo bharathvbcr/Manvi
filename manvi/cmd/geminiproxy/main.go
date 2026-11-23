@@ -18,12 +18,15 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -61,9 +64,27 @@ func main() {
 // openCapture creates the capture file readable by its owner alone. The capture
 // holds request bodies, which carry the caller's prompts, so a file left
 // group- or world-readable by the umask (or by an earlier run) is tightened too.
+//
+// The path is opened without following a final symlink, and what was opened
+// must be a regular file this user owns before it is truncated or chmodded: a
+// capture path that is a link to someone's file, a device or another user's file
+// is refused rather than rewritten.
 func openCapture(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- the operator's own PROXY_CAPTURE path
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|noFollow, 0o600) // #nosec G304 -- the operator's own PROXY_CAPTURE path
 	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
+		_ = f.Close()
+		return nil, fmt.Errorf("capture %s is not a regular file owned by this user", path)
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
 		return nil, err
 	}
 	if err := f.Chmod(0o600); err != nil {
@@ -73,14 +94,43 @@ func openCapture(path string) (*os.File, error) {
 	return f, nil
 }
 
-// transportReason is why a request to the upstream failed, without the URL
-// net/http puts in its error: that URL carries the query, and with it the key.
-func transportReason(err error) string {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return ue.Op + ": " + ue.Err.Error()
+// requestLabel is how the capture names a request: its method and the last
+// path segment. Earlier segments are dropped because a gateway may carry a key
+// in the path, and nothing in this repository can tell a key from a name.
+func requestLabel(r *http.Request) string {
+	p := r.URL.EscapedPath()
+	last := p[strings.LastIndex(p, "/")+1:]
+	return r.Method + " .../" + last
+}
+
+// transportClass is the kind of failure an upstream request ended in, and
+// nothing else: net/http's error text carries the request URL, query and any
+// redirect target, and with them the caller's key.
+func transportClass(err error) string {
+	var netErr net.Error
+	var certInvalid x509.CertificateInvalidError
+	var unknownAuth x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var certVerify *tls.CertificateVerificationError
+	var record tls.RecordHeaderError
+	var op *net.OpError
+	var dns *net.DNSError
+	text := err.Error()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
+		return "timeout"
+	case strings.Contains(text, "redirect") || strings.Contains(text, "Location header"):
+		return "redirect"
+	case errors.As(err, &certInvalid) || errors.As(err, &unknownAuth) || errors.As(err, &hostname) ||
+		errors.As(err, &certVerify) || errors.As(err, &record) || strings.Contains(text, "tls:"):
+		return "tls"
+	case errors.As(err, &dns) || (errors.As(err, &op) && op.Op == "dial"):
+		return "dial"
+	case strings.Contains(text, "unsupported protocol scheme") || strings.Contains(text, "malformed HTTP") || strings.Contains(text, "http:"):
+		return "protocol"
+	default:
+		return "other"
 	}
-	return err.Error()
 }
 
 func envOr(k, d string) string {
@@ -132,8 +182,8 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	p.note("\n===== REQUEST %d %s %s (%d bytes) headers=%v =====\n%s\n",
-		n, r.Method, r.URL.EscapedPath(), len(body), names, string(body))
+	p.note("\n===== REQUEST %d %s (%d bytes) headers=%v =====\n%s\n",
+		n, requestLabel(r), len(body), names, string(body))
 
 	out, err := http.NewRequestWithContext(r.Context(), r.Method,
 		p.upstream+r.URL.Path+"?"+r.URL.RawQuery, bytes.NewReader(body))
@@ -152,9 +202,9 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(out)
 	if err != nil {
-		reason := transportReason(err)
-		p.note("===== RESPONSE %d TRANSPORT ERROR: %s =====\n", n, reason)
-		http.Error(w, reason, http.StatusBadGateway)
+		class := transportClass(err)
+		p.note("===== RESPONSE %d TRANSPORT ERROR: %s =====\n", n, class)
+		http.Error(w, "upstream request failed: "+class, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
