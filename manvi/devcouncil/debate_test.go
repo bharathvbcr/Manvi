@@ -100,10 +100,7 @@ func TestADebateRunsRoundsAndAJudgeOnTheNamedMembers(t *testing.T) {
 		}
 	}
 	// The second round shows each participant the other's answer, by letter.
-	var second []SubAgentRequest
-	for _, req := range seen[2:4] {
-		second = append(second, req)
-	}
+	second := seen[2:4]
 	for _, req := range second {
 		if !strings.Contains(req.Prompt, "round 2 of 2") || !strings.Contains(req.Prompt, "--- participant") {
 			t.Errorf("round two prompt for %s does not carry the other answer:\n%s", req.Label, req.Prompt)
