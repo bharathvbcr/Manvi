@@ -951,19 +951,26 @@ func (r *Registry) newCommits(ctx context.Context, oid string, recorded []string
 	// The recorded ids grow with the number of refs, so they go on standard
 	// input: as arguments, tens of thousands of them exceed the operating
 	// system's limit and the call fails with "argument list too long".
-	var in strings.Builder
-	in.WriteString(oid + "^{commit}\n")
-	if len(recorded) > 0 {
-		in.WriteString("--not\n")
-		for _, id := range recorded {
-			in.WriteString(id + "\n")
-		}
-	}
-	out, err := runGitStdin(ctx, r.deps.Root, in.String(), "rev-list", fmt.Sprintf("--max-count=%d", maxGuardCommits+1), "--stdin")
+	out, err := runGitStdin(ctx, r.deps.Root, revListInput(oid, recorded), "rev-list", fmt.Sprintf("--max-count=%d", maxGuardCommits+1), "--stdin")
 	if err != nil {
 		return nil, err
 	}
 	return strings.Fields(out), nil
+}
+
+// revListInput is what newCommits writes to `git rev-list --stdin`: the tip as
+// a plain line and each excluded id as a "^<id>" line. There is no option line:
+// git before 2.42 reads only revisions from standard input (a "--not" line is
+// an error there), and every line is parsed as a revision argument, where the
+// "^" prefix means exclusion. The names were checked as bare hex by the caller,
+// so the prefix cannot be turned into an option.
+func revListInput(oid string, recorded []string) string {
+	var in strings.Builder
+	in.WriteString(oid + "^{commit}\n")
+	for _, id := range recorded {
+		in.WriteString("^" + id + "\n")
+	}
+	return in.String()
 }
 
 // maxObjectNameLen is the longest object name git writes (SHA-256, in hex).
