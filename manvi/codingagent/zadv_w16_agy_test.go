@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -218,7 +219,17 @@ func TestZadvW16AgyChild(t *testing.T) {
 				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"refusal"}}`, in.ID)
 				waitFrame(500 * time.Millisecond)
 			default:
-				if raw, ok := strings.CutPrefix(scenario, "raw:"); ok {
+				raw, ok := strings.CutPrefix(scenario, "raw:")
+				if path, fromFile := strings.CutPrefix(scenario, "rawfile:"); fromFile {
+					// The frame is in a file because it cannot ride on the command
+					// line everywhere: Windows rewrites invalid UTF-8 in an argument
+					// and refuses one over 32 KiB, so the two frames that exist to be
+					// invalid or enormous arrived as something else.
+					if data, err := os.ReadFile(path); err == nil { //nolint:gosec // the fixture's own temp file, named by its parent test
+						raw, ok = string(data), true
+					}
+				}
+				if ok {
 					fmt.Fprintln(out, strings.ReplaceAll(raw, "SESS", zadvSession)) //nolint:errcheck // a fixture child writing to its own stdout
 					_ = out.Flush()
 					waitFrame(500 * time.Millisecond)
@@ -743,7 +754,11 @@ func TestZadvW16MalformedMidTurnFramesFailTheTurnNeverHangOrSucceed(t *testing.T
 	}
 	for name, frame := range frames {
 		t.Run(name, func(t *testing.T) {
-			s := zadvMust(t, "raw:"+frame, "ask")
+			framePath := filepath.Join(t.TempDir(), "frame")
+			if err := os.WriteFile(framePath, []byte(frame), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s := zadvMust(t, "rawfile:"+framePath, "ask")
 			zadvStart(t, s)
 			events, err := zadvDrain(t, s, 5*time.Second)
 			if errors.Is(err, context.DeadlineExceeded) {

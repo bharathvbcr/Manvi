@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -46,6 +47,9 @@ func TestRunProcRefusesASpecWithNoEnvironment(t *testing.T) {
 // The verifier is the operator's own tool and inherits the operator's
 // environment, minus the provider credentials. A stand-in records what it saw.
 func TestTheVerifierDoesNotSeeProviderCredentials(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in verifier is a #!/bin/sh script, which Windows cannot start; the withheld-credentials rule itself is covered on Windows by the childenv package tests")
+	}
 	childenvtest.SetParent(t)
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env.txt")

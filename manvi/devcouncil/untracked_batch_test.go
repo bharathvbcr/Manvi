@@ -2,6 +2,8 @@ package devcouncil
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +23,9 @@ func batchTree(t *testing.T) (string, []string) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"link-to-dir", "q\"uote.go", `back\slash.go`, "tab\tname.go", "new\nline.go"} {
-		if err := os.Remove(filepath.Join(root, name)); err != nil {
+		// Absent where the platform could not create the name (see
+		// trickyUntrackedTree).
+		if err := os.Remove(filepath.Join(root, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			t.Fatal(err)
 		}
 	}

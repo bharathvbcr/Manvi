@@ -23,7 +23,7 @@ func TestStartClaudeRefusesShellAndUnknownInterpretersBeforeAnySpawn(t *testing.
 				t.Fatal(err)
 			}
 			marker := filepath.Join(t.TempDir(), "ran")
-			script := filepath.Join(dir, "claude")
+			script := filepath.Join(dir, exeName("claude"))
 			// #nosec G306 -- a test script that has to be executable, in a temp dir.
 			if err := os.WriteFile(script, []byte(tc.shebang+"\ntouch '"+marker+"'\n"), 0o700); err != nil {
 				t.Fatal(err)
@@ -44,12 +44,12 @@ func TestStartClaudeRefusesShellAndUnknownInterpretersBeforeAnySpawn(t *testing.
 // the fixture harness cannot make a node script speak the protocol, so that the
 // kernel runs the interpreter in place under the same pid is not exercised here.
 func TestAnNpmStyleNodeLauncherPassesTheLaunchCheck(t *testing.T) {
-	script := writeFile(t, "claude", 0o755, []byte("#!/usr/bin/env node\nrequire('./cli.js')\n"))
+	script := writeFile(t, exeName("claude"), 0o755, []byte("#!/usr/bin/env node\nrequire('./cli.js')\n"))
 	if err := requireLaunchableClaude(script); err != nil {
 		t.Fatalf("an npm-style launcher was refused: %v", err)
 	}
 	var wrapper *ClaudeWrapperError
-	zsh := writeFile(t, "claude", 0o755, []byte("#!/bin/zsh\n"))
+	zsh := writeFile(t, exeName("claude"), 0o755, []byte("#!/bin/zsh\n"))
 	if err := requireLaunchableClaude(zsh); !errors.As(err, &wrapper) {
 		t.Fatalf("a zsh wrapper was accepted: %v", err)
 	}
