@@ -1,0 +1,92 @@
+name: win-debug
+# Temporary, branch-only: runs the windows job's steps with a package list read
+# from scripts/windebug.args, so a Windows result does not wait on the whole
+# verify workflow. Removed before the pull request is marked ready.
+on:
+  push:
+    branches: [fix/windows-ci]
+permissions:
+  contents: read
+concurrency:
+  group: win-debug-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    name: go test (windows-latest, debug)
+    runs-on: windows-latest
+    timeout-minutes: 80
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Module replacements
+        shell: bash
+        run: bash scripts/fetch-modules.sh
+      - name: Crate symlinks
+        shell: bash
+        run: |
+          git ls-files -s -- crates | while read -r mode hash _ path; do
+            [ "$mode" = "120000" ] || continue
+            target="$(git cat-file -p "$hash")"
+            target="${target//$'\r'/}"
+            target="${target//$'\n'/}"
+            dest="$(cd "$(dirname "$path")" && cd "$target" && pwd -W)" || exit 1
+            if [ -L "$path" ] || [ -f "$path" ]; then
+              rm -f "$path"
+            fi
+            if [ ! -e "$path" ]; then
+              pwsh -NoProfile -Command "New-Item -ItemType Junction -Path '$(cygpath -w "$path")' -Target '$dest' | Out-Null"
+            fi
+          done
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: manvi/go.mod
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.22.2
+      - name: Rust toolchain
+        shell: bash
+        run: |
+          . scripts/tool-versions.env
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Restore Rust build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/target
+          key: cargo-windows-latest-${{ hashFiles('crates/Cargo.lock', 'scripts/tool-versions.env') }}
+          restore-keys: cargo-windows-latest-
+      - name: Rust binaries the Go tests exec
+        shell: bash
+        working-directory: crates
+        run: |
+          cargo build -p dc-store --bin dcstore
+          cargo build -p dc-verify --bin dcverify
+          cargo build -p dc-grep --bin dcgrep
+      - name: go test
+        shell: bash
+        working-directory: manvi
+        run: |
+          args="$(tr -d '\r' < ../scripts/windebug.args)"
+          echo "go test -json -count=1 -timeout 12m $args"
+          # shellcheck disable=SC2086
+          go test -json -count=1 -timeout 12m $args | tee ../go-test.json | node ../scripts/go-test-report.mjs text
+      - name: Where the time went
+        if: always()
+        shell: bash
+        run: |
+          if [ -s go-test.json ]; then
+            GO_TEST_REPORT_TITLE='go test — windows debug' node scripts/go-test-report.mjs report go-test.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: go-test-windows-debug
+          path: go-test.json
+          retention-days: 7
