@@ -608,18 +608,19 @@ func (s *Scrubber) Watch(secret Secret) {
 	if secret.Len() < minScrubLen {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	// RevealBytes rather than Reveal: the value goes from one guarded buffer
 	// straight into another without a Go string in between. A secret that
 	// cannot be opened, or a value with no locked memory to hold it
 	// (ErrLockedMemory), is never held in pageable memory instead; it unarms
 	// the scrubber.
+	//
+	// The write lock is taken only to publish. Callers re-arm on every use, so
+	// nearly every call finds its value already watched, and that check runs
+	// under the read lock: holding the write lock across opening the enclave
+	// and the scan stalled every Clean behind a call that changed nothing.
 	err := secret.RevealBytes(func(raw []byte) error {
-		for _, existing := range s.values {
-			if existing.EqualTo(raw) {
-				return nil
-			}
+		if s.watching(raw) {
+			return nil
 		}
 		// Allocate-and-copy, not NewBufferFromBytes. That constructor *moves*:
 		// it wipes its source, and the source here is the buffer Enclave.Open
@@ -633,6 +634,14 @@ func (s *Scrubber) Watch(secret Secret) {
 		}
 		buf.Copy(raw)
 		buf.Freeze()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		// Another Watch may have published the same value while this one built
+		// its buffer, so the check is made again, now that nothing can race it.
+		if s.watchingLocked(raw) {
+			buf.Destroy()
+			return nil
+		}
 		// Publish a new slice rather than appending to and sorting the one
 		// Clean may be walking: Clean takes the slice header under the lock
 		// and iterates it after releasing it, so a slice that has been handed
@@ -647,8 +656,27 @@ func (s *Scrubber) Watch(secret Secret) {
 		return nil
 	})
 	if err != nil {
+		s.mu.Lock()
 		s.markUnarmed(fmt.Errorf("credentials: the scrubber could not watch the value from %s: %w", secret.Source(), err))
+		s.mu.Unlock()
 	}
+}
+
+// watching reports whether raw is already among the watched values.
+func (s *Scrubber) watching(raw []byte) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.watchingLocked(raw)
+}
+
+// watchingLocked is watching for a caller that holds s.mu.
+func (s *Scrubber) watchingLocked(raw []byte) bool {
+	for _, existing := range s.values {
+		if existing.EqualTo(raw) {
+			return true
+		}
+	}
+	return false
 }
 
 // WatchValue watches a raw value that is not a provider key — an environment
@@ -659,15 +687,9 @@ func (s *Scrubber) WatchValue(value, source string) {
 	if len(value) < minScrubLen {
 		return
 	}
-	raw := []byte(value)
-	s.mu.RLock()
-	for _, existing := range s.values {
-		if existing.EqualTo(raw) {
-			s.mu.RUnlock()
-			return
-		}
+	if s.watching([]byte(value)) {
+		return
 	}
-	s.mu.RUnlock()
 	s.Watch(NewSecret(value, source))
 }
 
