@@ -318,7 +318,7 @@ func (m *Module) FieldsWithoutReaders(structName, declFile string, allow map[str
 // alternative to honouring it.
 func (m *Module) ArgFieldsWithoutReaders(allow map[string]string) []Finding {
 	var out []Finding
-	for path, file := range m.files {
+	for _, file := range m.files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			decl, ok := n.(*ast.FuncDecl)
 			if !ok || decl.Body == nil {
@@ -353,8 +353,6 @@ func (m *Module) ArgFieldsWithoutReaders(allow map[string]string) []Finding {
 						if read[fname.Name] {
 							continue
 						}
-						rel, _ := filepath.Rel(m.root, path)
-						_ = rel
 						out = append(out, Finding{
 							Kind: "tool-arg", Name: key, Where: m.pos(fname),
 							Why: "decoded from the model's arguments and never read, so the schema advertises a " +
@@ -488,7 +486,7 @@ func (m *Module) SchemaPropsWithoutDecoders(allow map[string]string) []Finding {
 	decoded := m.jsonTagNames()
 
 	var out []Finding
-	for path, file := range m.files {
+	for _, file := range m.files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -511,8 +509,6 @@ func (m *Module) SchemaPropsWithoutDecoders(allow map[string]string) []Finding {
 				if decoded[prop] {
 					continue
 				}
-				rel, _ := filepath.Rel(m.root, path)
-				_ = rel
 				out = append(out, Finding{
 					Kind: "schema-prop", Name: key, Where: m.pos(lit),
 					Why: "advertised to the model in this tool's schema and decoded by no argument struct, " +

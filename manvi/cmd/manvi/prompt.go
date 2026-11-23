@@ -135,13 +135,17 @@ func recordPromptAssembly(log *session.Log, report prompt.Report, text string, b
 	for _, in := range report.Included {
 		data.Included = append(data.Included, in.Name)
 	}
-	// Both lists, because they mean different things: Omitted holds sections
-	// the budget refused *and* essential ones kept past it, and Failed holds
-	// contributors that broke. Flattening them would lose which happened.
+	// Three lists, because they mean different things: Omitted holds sections
+	// the budget refused, Failed holds contributors that broke, and Overrun
+	// holds essential sections kept past the budget, which the model did see.
+	// Flattening them would lose which happened.
 	for _, group := range [][]prompt.Omitted{report.Omitted, report.Failed} {
 		for _, o := range group {
 			data.Dropped = append(data.Dropped, o.Name+": "+o.Reason)
 		}
+	}
+	for _, o := range report.Overrun {
+		data.Overrun = append(data.Overrun, o.Name+": "+o.Reason)
 	}
 	_, err := log.Append(session.PromptAssembled, data)
 	return err
@@ -589,11 +593,10 @@ func boundProjectInstructions(body string, budget int) string {
 // whose content did not reach the prompt.
 //
 // The test is "did this source's content arrive", not "does the Report mention
-// it". Report.Omitted also carries the benign case of an essential section
-// kept past the budget, so matching on reason strings would make this brittle
-// in the direction of crying wolf on a healthy prompt. Comparing what was
-// registered against Report.Included answers the question directly, and stays
-// correct if the Report grows new reasons.
+// it". Comparing what was registered against Report.Included answers the
+// question directly, and stays correct if the Report grows new reasons; an
+// essential section kept past the budget is in Included (and in Report.Overrun,
+// not Omitted), so it is not reported missing.
 func assembleSections(sources []prompt.Source, maxTokens int) (string, prompt.Report, []string) {
 	a := prompt.New()
 	a.MaxTokens = maxTokens

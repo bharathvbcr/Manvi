@@ -8,10 +8,13 @@
 # .golangci-debt.yml, counted, where the count can only go down.
 #
 # gocritic is enabled for exactly one checker: ruleguard, which loads this
-# repository's own invariants from gorules/rules.go. Its DSL import is the only
-# entry in go.mod, is excluded from every build by the `ruleguard` tag, and is
-# absent from the build graph — `go list -deps ./...` reports no external
-# packages, which verify.sh asserts rather than assumes.
+# repository's own invariants from gorules/rules.go. Its DSL import is one
+# requirement among the few go.mod carries (memguard, x/sys, DevCouncil's
+# go_orchestrator, starlark, gusset), but gorules/rules.go is excluded from every
+# build by the `ruleguard` tag, so the DSL is absent from the build graph.
+# verify.sh's "Go — dependency surface" step asserts rather than assumes that:
+# it lists the graph with `go list -deps ./...` and refuses any external package
+# outside its allowlist.
 version: "2"
 
 run:

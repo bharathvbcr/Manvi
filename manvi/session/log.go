@@ -191,6 +191,10 @@ type (
 		// Dropped names sections the budget refused, each with the reason the
 		// assembler gave.
 		Dropped []string `json:"dropped,omitempty"`
+		// Overrun names essential sections that are in the prompt but did not
+		// fit the budget, each with the assembler's reason. They are not in
+		// Dropped: the model saw them.
+		Overrun []string `json:"overrun,omitempty"`
 		Tokens  int      `json:"tokens"`
 		Budget  int      `json:"budget,omitempty"`
 		// Digest is the hex SHA-256 of the exact system-prompt text this

@@ -2,6 +2,8 @@ package contract
 
 import (
 	"go/ast"
+	"go/token"
+	"go/types"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -15,8 +17,9 @@ import (
 // read as deliberate in review.
 //
 // ChildEnvSites is that review made total. Every exec.Command and
-// exec.CommandContext in production code must sit in a function that assigns
-// some .Env, and os.Environ() may be read only by package childenv — which is
+// exec.CommandContext in production code must be bound to a variable whose Env
+// the same function assigns (or be an exec.Cmd literal with an Env field), and
+// os.Environ() may be read only by package childenv — which is
 // where the rule that no provider credential reaches a child is implemented —
 // or at a site excused with a reason.
 
@@ -57,13 +60,25 @@ func (m *Module) ChildEnvSites(allowEnviron map[string]string) ChildEnvScan {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			var spawns []ast.Node
-			assignsEnv := false
+			// A spawn is excused by an Env assignment to the variable it is
+			// bound to, not by any Env assignment in the function: with two
+			// children and one `cmd.Env =`, the other still inherits. bound
+			// maps a spawn expression to the text of the place it is stored in;
+			// it is filled when the enclosing statement is visited, which is
+			// before the expression itself.
+			type spawn struct {
+				node  ast.Node
+				bound string
+				env   bool // an exec.Cmd literal that sets Env itself
+			}
+			var spawns []spawn
+			bound := map[ast.Expr]string{}
+			envAssigned := map[string]bool{}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.CallExpr:
 					if isPkgCall(x, execName, "Command", "CommandContext") {
-						spawns = append(spawns, x)
+						spawns = append(spawns, spawn{node: x, bound: bound[x]})
 					}
 					if isPkgCall(x, osName, "Environ") && !strings.HasPrefix(rel, "childenv/") {
 						scan.Environ[rel] = true
@@ -76,35 +91,65 @@ func (m *Module) ChildEnvSites(allowEnviron map[string]string) ChildEnvScan {
 					}
 				case *ast.CompositeLit:
 					if sel, ok := x.Type.(*ast.SelectorExpr); ok && isIdent(sel.X, execName) && sel.Sel.Name == "Cmd" {
-						spawns = append(spawns, x)
+						sp := spawn{node: x, bound: bound[x]}
 						for _, el := range x.Elts {
 							if kv, ok := el.(*ast.KeyValueExpr); ok && isIdent(kv.Key, "Env") {
-								assignsEnv = true
+								sp.env = true
 							}
 						}
+						spawns = append(spawns, sp)
 					}
 				case *ast.AssignStmt:
+					if len(x.Lhs) == len(x.Rhs) {
+						for i, rhs := range x.Rhs {
+							bound[unwrapSpawn(rhs)] = types.ExprString(x.Lhs[i])
+						}
+					}
 					for _, lhs := range x.Lhs {
 						if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Env" {
-							assignsEnv = true
+							envAssigned[types.ExprString(sel.X)] = true
+						}
+					}
+				case *ast.ValueSpec:
+					if len(x.Names) == len(x.Values) {
+						for i, v := range x.Values {
+							bound[unwrapSpawn(v)] = x.Names[i].Name
 						}
 					}
 				}
 				return true
 			})
 			scan.Spawns += len(spawns)
-			if assignsEnv {
-				continue
-			}
-			for _, spawn := range spawns {
+			for _, sp := range spawns {
+				if sp.env || (sp.bound != "" && envAssigned[sp.bound]) {
+					continue
+				}
 				scan.Findings = append(scan.Findings, Finding{
-					Kind: "spawn", Name: fn.Name.Name, Where: m.pos(spawn),
-					Why: "starts a child without assigning Env, so it inherits this process's provider keys",
+					Kind: "spawn", Name: fn.Name.Name, Where: m.pos(sp.node),
+					Why: "starts a child without assigning Env to the command it creates, so it inherits this process's provider keys",
 				})
 			}
 		}
 	}
 	return scan
+}
+
+// unwrapSpawn strips the parentheses and address-of around a spawn expression,
+// so `cmd := &exec.Cmd{...}` binds the literal, not the `&` around it.
+func unwrapSpawn(e ast.Expr) ast.Expr {
+	for {
+		switch x := e.(type) {
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.UnaryExpr:
+			if x.Op != token.AND {
+				return e
+			}
+			e = x.X
+		default:
+			return e
+		}
+	}
 }
 
 // importName is the name file refers to path by, or "" when it does not
