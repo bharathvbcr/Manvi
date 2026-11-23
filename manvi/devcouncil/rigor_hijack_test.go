@@ -226,16 +226,29 @@ func TestRunRigorDegradationNamesEveryOwnedGate(t *testing.T) {
 }
 
 func TestGapsFromUsesDevCouncilWording(t *testing.T) {
-	_, actions := gapsFrom("T", &rigorResult{Findings: []Finding{
-		{Gate: "runner_hijack", Severity: "blocking", Path: "a/conftest.py", Line: 2},
-		{Gate: "lean_tcb", Severity: "blocking", Path: "s/P.lean", Line: 4},
-	}})
-	want := []string{
-		"Remove the test-runner hijack in a/conftest.py so the real test harness executes and reports failures honestly.",
-		"Replace the Lean 4 TCB soundness hole, metaprogramming escape, or non-standard axiom/extern hook in s/P.lean with a kernel- and lean4checker-verified proof, then re-verify.",
-	}
-	if len(actions) != 2 || actions[0].Action != want[0] || actions[1].Action != want[1] {
-		t.Fatalf("actions = %+v, want DevCouncil's next_actions.go wording %q", actions, want)
+	for _, tc := range []struct {
+		gate, path string
+		line       int
+		want       string
+	}{
+		{"secret_scan", "a/k.go", 3, "Remove the detected secret/finding from the diff and rotate any exposed credential."},
+		{"stub_detection", "a/s.go", 7, "Replace the stub/placeholder at a/s.go:7 with a real implementation, then re-verify. Do not mark work complete while placeholders remain."},
+		{"stub_detection", "", 0, "Replace the stub/placeholder at the affected file:0 with a real implementation, then re-verify. Do not mark work complete while placeholders remain."},
+		{"stub_allowed", "a/s.go", 9, "Review the intentional stub declared at a/s.go:9; replace it before marking done."},
+		{"assert_free_test", "a/t_test.go", 4, "Make the added test assert on the behaviour it is named for, or call a helper that does."},
+		{"skipped_test", "a/t_test.go", 5, "Remove the unconditional skip, or make the skip conditional on what the test needs."},
+		{"runner_hijack", "a/conftest.py", 2, "Remove the test-runner hijack in a/conftest.py so the real test harness executes and reports failures honestly."},
+		{"runner_hijack", "", 0, "Remove the test-runner hijack in the affected file so the real test harness executes and reports failures honestly."},
+		{"lean_tcb", "s/P.lean", 4, "Replace the Lean 4 TCB soundness hole, metaprogramming escape, or non-standard axiom/extern hook in s/P.lean with a kernel- and lean4checker-verified proof, then re-verify."},
+		{"lean_tcb", "", 0, "Replace the Lean 4 TCB soundness hole, metaprogramming escape, or non-standard axiom/extern hook in the affected file with a kernel- and lean4checker-verified proof, then re-verify."},
+		{"some_future_gate", "a/x.go", 1, "the verifier's own message"},
+	} {
+		_, actions := gapsFrom("T", &rigorResult{Findings: []Finding{
+			{Gate: tc.gate, Severity: "blocking", Path: tc.path, Line: tc.line, Message: "the verifier's own message"},
+		}})
+		if len(actions) != 1 || actions[0].Action != tc.want {
+			t.Errorf("gate %s path %q: action = %+v, want %q", tc.gate, tc.path, actions, tc.want)
+		}
 	}
 }
 
