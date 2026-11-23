@@ -169,27 +169,11 @@ func (t *Terminal) Start(opts Options) error {
 		b.WriteString("\x1b[22;0t") // push the current title so it can be restored
 		b.WriteString(titleSequence(t.status.base))
 	}
-	if opts.Mouse {
-		// 1000 button events, 1002 drag, 1006 SGR encoding.
-		// SGR matters: the original encoding packs coordinates into single
-		// bytes and simply cannot address a column past 223, which any
-		// full-width terminal has.
-		b.WriteString("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
-		t.mouse = true
-	}
-	if opts.Mouse && opts.Motion {
-		// 1003 any-motion, layered on 1002's drag-only reporting.
-		b.WriteString("\x1b[?1003h")
-		t.motion = true
-	}
-	if opts.BracketedPaste {
-		b.WriteString("\x1b[?2004h")
-		t.paste = true
-	}
-	if opts.Focus {
-		b.WriteString("\x1b[?1004h")
-		t.focus = true
-	}
+	t.mouse = opts.Mouse
+	t.motion = opts.Mouse && opts.Motion
+	t.paste = opts.BracketedPaste
+	t.focus = opts.Focus
+	b.WriteString(t.enableModesLocked())
 	b.WriteString("\x1b[?25l") // hide the cursor; the painter places it
 	if _, err := io.WriteString(t.out, b.String()); err != nil {
 		// A failure here leaves the terminal raw with the UI never drawn, which
@@ -200,6 +184,53 @@ func (t *Terminal) Start(opts Options) error {
 
 	t.watchSignals()
 	return nil
+}
+
+// enableModesLocked is the sequence that turns on every reporting mode this
+// terminal was started with, and nothing else. Start, and the resume after a
+// suspend, both write it, so what is turned back on is by construction what
+// was on.
+func (t *Terminal) enableModesLocked() string {
+	var b strings.Builder
+	if t.mouse {
+		// 1000 button events, 1002 drag, 1006 SGR encoding.
+		// SGR matters: the original encoding packs coordinates into single
+		// bytes and simply cannot address a column past 223, which any
+		// full-width terminal has.
+		b.WriteString("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
+	}
+	if t.motion {
+		// 1003 any-motion, layered on 1002's drag-only reporting.
+		b.WriteString("\x1b[?1003h")
+	}
+	if t.paste {
+		b.WriteString("\x1b[?2004h")
+	}
+	if t.focus {
+		b.WriteString("\x1b[?1004h")
+	}
+	return b.String()
+}
+
+// disableModesLocked is the sequence that takes back exactly what
+// enableModesLocked turned on, in the reverse order. Stop and Suspend both
+// write it: a shell that is handed the terminal with focus or any-motion
+// reporting still on receives every focus change and pointer move as input.
+func (t *Terminal) disableModesLocked() string {
+	var b strings.Builder
+	if t.focus {
+		b.WriteString("\x1b[?1004l")
+	}
+	if t.paste {
+		b.WriteString("\x1b[?2004l")
+	}
+	if t.motion {
+		b.WriteString("\x1b[?1003l")
+	}
+	if t.mouse {
+		b.WriteString("\x1b[?1006l\x1b[?1002l\x1b[?1000l")
+	}
+	return b.String()
 }
 
 // Bell emits a terminal alert.
@@ -247,21 +278,8 @@ func (t *Terminal) restoreLocked() error {
 	}
 
 	var b strings.Builder
-	if t.focus {
-		b.WriteString("\x1b[?1004l")
-		t.focus = false
-	}
-	if t.paste {
-		b.WriteString("\x1b[?2004l")
-	}
-	if t.motion {
-		b.WriteString("\x1b[?1003l")
-		t.motion = false
-	}
-	if t.mouse {
-		b.WriteString("\x1b[?1006l\x1b[?1002l\x1b[?1000l")
-		t.mouse = false
-	}
+	b.WriteString(t.disableModesLocked())
+	t.focus, t.paste, t.motion, t.mouse = false, false, false, false
 	b.WriteString("\x1b[0m")     // drop any style the last frame left set
 	b.WriteString("\x1b[?25h")   // show the cursor again
 	b.WriteString("\x1b[?1049l") // leave the alternate screen
@@ -328,7 +346,7 @@ func (t *Terminal) Suspend() error {
 	}
 
 	t.mu.Lock()
-	saved, mouse, paste := t.saved, t.mouse, t.paste
+	saved, off, on := t.saved, t.disableModesLocked(), t.enableModesLocked()
 	// The tab must not go on saying an agent is running while the process is
 	// stopped and a shell has the terminal. Settling also forgets what was
 	// written, so the first frame after the resume writes both again.
@@ -343,7 +361,7 @@ func (t *Terminal) Suspend() error {
 
 	// Hand the terminal back before stopping. A process suspended while the tty
 	// is raw leaves the shell with no echo and no line editing.
-	_, _ = io.WriteString(t.out, "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l"+settle)
+	_, _ = io.WriteString(t.out, off+"\x1b[0m\x1b[?25h\x1b[?1049l"+settle)
 	if err := setState(t.in.Fd(), saved); err != nil {
 		return err
 	}
@@ -368,12 +386,7 @@ func (t *Terminal) Suspend() error {
 	}
 	var b strings.Builder
 	b.WriteString("\x1b[?1049h")
-	if mouse {
-		b.WriteString("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
-	}
-	if paste {
-		b.WriteString("\x1b[?2004h")
-	}
+	b.WriteString(on)
 	b.WriteString("\x1b[?25l")
 	if _, err := io.WriteString(t.out, b.String()); err != nil {
 		return err
@@ -432,6 +445,11 @@ func (t *Terminal) watchSignals() {
 // Both control ranges go. The second, U+0080 to U+009F, holds the one-character
 // forms of the same controls: U+009C ends a string and U+009D starts one, and a
 // terminal that honours them would read a title carrying them as two sequences.
+//
+// Format runes (bidi overrides and isolates, invisible separators, tag
+// characters) go by the rule the screen buffer applies, render.StripFormatRunes:
+// a title is not drawn through the buffer, and an override in one reorders what
+// a reader sees in the window list.
 func sanitizeTitle(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -440,7 +458,7 @@ func sanitizeTitle(s string) string {
 		}
 		b.WriteRune(r)
 	}
-	return render.TruncateWidth(b.String(), 120, "")
+	return render.TruncateWidth(render.StripFormatRunes(b.String()), 120, "")
 }
 
 // detectProfile resolves colour depth from the environment.

@@ -33,6 +33,15 @@ type Scrollback struct {
 
 	// MaxEntries bounds retention. Zero means unbounded.
 	MaxEntries int
+	// MaxBytes bounds retention by the text the entries hold. A count of
+	// entries does not bound memory: one tool result can be megabytes, and the
+	// entry bound alone let five thousand of them stand. Zero means unbounded.
+	// The newest entry is never retired by it, so a single reply larger than
+	// the bound is kept whole rather than cut out from under the reader.
+	MaxBytes int
+	// bytes is what the retained entries hold, kept current as entries arrive,
+	// grow and retire so the bound does not rescan the transcript per event.
+	bytes int
 	// dropped counts entries retired by that bound. It is surfaced in the
 	// viewport rather than kept private: a transcript that silently loses its
 	// beginning is a transcript that cannot be used as evidence.
@@ -109,7 +118,22 @@ type layoutSlot struct {
 
 // NewScrollback builds an empty transcript.
 func NewScrollback() *Scrollback {
-	return &Scrollback{follow: true, selected: -1, MaxEntries: 5000, barCol: -1}
+	return &Scrollback{follow: true, selected: -1, MaxEntries: 5000, MaxBytes: DefaultMaxScrollbackBytes, barCol: -1}
+}
+
+// DefaultMaxScrollbackBytes is the text a transcript retains by default.
+const DefaultMaxScrollbackBytes = 32 << 20
+
+// eventBytes is what an event holds that can be large: its text, tool
+// arguments, diagnostic payload and the lists of strings it carries.
+func eventBytes(ev ui.Event) int {
+	n := len(ev.Text) + len(ev.Detail) + len(ev.Tool) + len(ev.Path) + len(ev.Arguments) + len(ev.Data)
+	for _, list := range [][]string{ev.Choices, ev.Paths, ev.Findings, ev.SelectedTests} {
+		for _, item := range list {
+			n += len(item)
+		}
+	}
+	return n
 }
 
 // ScrollbarCol is the screen column of the last frame's scrollbar, or -1 when
@@ -163,6 +187,7 @@ func (s *Scrollback) Append(ev ui.Event) {
 		last := s.entries[len(s.entries)-1]
 		if last.Event.Kind == ev.Kind && last.Event.Agent == ev.Agent {
 			last.Body.WriteString(ev.Text)
+			s.bytes += len(ev.Text)
 			if !ev.At.IsZero() {
 				last.until = ev.At
 			}
@@ -177,6 +202,7 @@ func (s *Scrollback) Append(ev ui.Event) {
 			}
 			last.Invalidate()
 			s.changed(len(s.entries) - 1)
+			s.enforceBounds()
 			return
 		}
 	}
@@ -235,21 +261,42 @@ func (s *Scrollback) Append(ev ui.Event) {
 		}
 	}
 	s.entries = append(s.entries, e)
+	s.bytes += eventBytes(ev) + e.Body.Len()
+	s.enforceBounds()
+}
 
+// enforceBounds retires the oldest entries until the transcript is within
+// both bounds: the entry count, and the bytes it holds. The newest entry
+// stays whatever its size, because retiring it would drop what is on screen.
+func (s *Scrollback) enforceBounds() {
+	drop := 0
 	if s.MaxEntries > 0 && len(s.entries) > s.MaxEntries {
-		drop := len(s.entries) - s.MaxEntries
-		s.entries = append([]*Entry(nil), s.entries[drop:]...)
-		s.dropped += drop
-		// Every row's entry index just shifted. Rewriting them in place would
-		// work, but this happens once per new entry at the bound and rows are
-		// cheap to re-gather from the entries' own caches; a second, subtler
-		// path is not worth it.
-		s.touch()
-		if s.selected >= 0 {
-			s.selected -= drop
-			if s.selected < 0 {
-				s.selected = -1
-			}
+		drop = len(s.entries) - s.MaxEntries
+	}
+	held := s.bytes
+	for _, e := range s.entries[:drop] {
+		held -= eventBytes(e.Event) + e.Body.Len()
+	}
+	for s.MaxBytes > 0 && held > s.MaxBytes && drop < len(s.entries)-1 {
+		e := s.entries[drop]
+		held -= eventBytes(e.Event) + e.Body.Len()
+		drop++
+	}
+	if drop == 0 {
+		return
+	}
+	s.entries = append([]*Entry(nil), s.entries[drop:]...)
+	s.bytes = held
+	s.dropped += drop
+	// Every row's entry index just shifted. Rewriting them in place would
+	// work, but this happens once per new entry at the bound and rows are
+	// cheap to re-gather from the entries' own caches; a second, subtler
+	// path is not worth it.
+	s.touch()
+	if s.selected >= 0 {
+		s.selected -= drop
+		if s.selected < 0 {
+			s.selected = -1
 		}
 	}
 }

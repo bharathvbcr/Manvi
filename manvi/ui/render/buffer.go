@@ -1,6 +1,7 @@
 package render
 
 import (
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -206,12 +207,110 @@ func (b *Buffer) Cell(x, y int) Cell {
 	return b.cells[y*b.W+x]
 }
 
-// SetCell writes one cell, clipped.
+// SetCell writes one cell, clipped, holding it to the format rule SetRune
+// applies: the painter writes a cell's rune and Comb to the tty verbatim, so a
+// caller that builds a Cell must not be able to carry what SetRune refuses.
+// A base rune that is a control, format or other zero-width rune is stored as a
+// space (the column the painter counts for it), and Comb is reduced by
+// cleanComb to zero-width marks the format rule allows. The painter's own
+// bookkeeping copies cells that SetRune already filtered and uses storeCell.
 func (b *Buffer) SetCell(x, y int, c Cell) {
+	c = cleanCell(c)
+	// A wide rune in the last column would hang half a glyph off the row;
+	// SetRune stores a bare space there, and so does SetCell, Comb included.
+	if RuneWidth(c.R) == 2 && x+1 >= b.W {
+		c = Cell{R: ' ', Style: c.Style}
+	}
+	b.storeCell(x, y, c)
+}
+
+// storeCell writes a cell that is already known to satisfy the format rule.
+func (b *Buffer) storeCell(x, y int, c Cell) {
 	if x < 0 || y < 0 || x >= b.W || y >= b.H {
 		return
 	}
 	b.cells[y*b.W+x] = c
+}
+
+// cleanCell returns c with a control, format or zero-width base rune replaced by a space
+// and its Comb reduced to what SetRune would have kept.
+func cleanCell(c Cell) Cell {
+	// R == 0 is the continuation marker and stays. Any other base that is zero
+	// columns wide would be attached to the previous glyph by the terminal while
+	// the painter counted a column for it; SetRune would have made it a mark of
+	// the left cell or dropped it, and a cell write cannot reach its neighbour,
+	// so the faithful equivalent is a space.
+	if c.R != 0 && (c.R < 0x20 || unicode.IsControl(c.R) || unicode.Is(unicode.Cf, c.R) || RuneWidth(c.R) == 0) {
+		c.R = ' '
+	}
+	if c.Comb != "" {
+		c.Comb = cleanComb(c.R, c.Comb)
+	}
+	return c
+}
+
+// cleanComb keeps the runes of comb that SetRune would have attached to a cell
+// whose base is base, in order and up to MaxCombPerCell.
+func cleanComb(base rune, comb string) string {
+	kept := make([]rune, 0, len(comb))
+	for _, r := range comb {
+		if len(kept) >= MaxCombPerCell {
+			break
+		}
+		// A mark is zero columns wide: anything with width would shift the
+		// columns after it, and a control character is never a mark.
+		if r < 0x20 || unicode.IsControl(r) || RuneWidth(r) != 0 {
+			continue
+		}
+		if unicode.Is(unicode.Cf, r) && !formatMarkAllowed(r, base, string(kept)) {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return string(kept)
+}
+
+// StripFormatRunes returns s without the format runes (category Cf) that
+// Buffer.SetRune would refuse to draw, by the same contextual rule: bidi
+// controls and invisible separators go, as does every Cf rune that is not a
+// zero-width mark; a joiner after a pictograph, a letter or a mark, and a
+// well-formed flag tag sequence stay. It is for text that reaches the tty
+// without passing through a Buffer, such as a window title. Control characters
+// and the per-cell mark bound are not its concern.
+func StripFormatRunes(s string) string {
+	hasCf := false
+	for _, r := range s {
+		if unicode.Is(unicode.Cf, r) {
+			hasCf = true
+			break
+		}
+	}
+	if !hasCf {
+		return s
+	}
+	var out strings.Builder
+	var base rune
+	comb := ""
+	for _, r := range s {
+		w := RuneWidth(r)
+		cf := unicode.Is(unicode.Cf, r)
+		switch {
+		case w > 0:
+			if cf {
+				continue
+			}
+			base, comb = r, ""
+		case cf:
+			if utf8.RuneCountInString(comb) >= MaxCombPerCell || !formatMarkAllowed(r, base, comb) {
+				continue
+			}
+			comb += string(r)
+		case !unicode.IsControl(r) && utf8.RuneCountInString(comb) < MaxCombPerCell:
+			comb += string(r)
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 
 // SetRune writes a single rune and returns the columns it consumed.
@@ -241,9 +340,31 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 		// A combining mark attaches to the cell on its left. With no cell to
 		// its left there is nothing to attach to, and it is dropped rather
 		// than promoted to a base character it is not.
-		if x-1 >= 0 && x-1 < b.W {
-			b.cells[y*b.W+x-1].addMark(r)
+		if x-1 >= 0 {
+			target := &b.cells[y*b.W+x-1]
+			if target.R == 0 {
+				// The left cell is the continuation of a wide rune, which
+				// the painter skips: a mark kept there is never drawn. It
+				// belongs to the wide base one cell further left.
+				if x-2 < 0 {
+					return 0
+				}
+				target = &b.cells[y*b.W+x-2]
+				if target.R == 0 {
+					return 0
+				}
+			}
+			if unicode.Is(unicode.Cf, r) && !formatMarkAllowed(r, target.R, target.Comb) {
+				return 0
+			}
+			target.addMark(r)
 		}
+		return 0
+	}
+	// A Cf rune that RuneWidth gives a column (U+00AD soft hyphen is the one
+	// below U+0300) is not a mark, but it is the same invisible format rune and
+	// would be stored as a base cell. Apply the format rule here too: drop it.
+	if unicode.Is(unicode.Cf, r) {
 		return 0
 	}
 	if x < 0 {
@@ -260,6 +381,86 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 	}
 	b.cells[y*b.W+x] = Cell{R: r, Style: s}
 	return 1
+}
+
+// formatMarkAllowed reports whether a zero-width format rune (category Cf) may
+// attach to a cell whose base rune is base and which already holds comb.
+//
+// Cf is the category of every bidirectional override and isolate (U+202A-202E,
+// U+2066-2069, the LRM/RLM/ALM marks), of the invisible separators (ZWSP,
+// word joiner, BOM) and of the tag block. None is control, so the check in
+// SetRune does not catch them, and all are zero-width, so they would be stored
+// as a combining mark and written to the tty verbatim: a bidi override
+// reorders what a reviewer reads (Trojan Source), and the rest carry text that
+// nothing displays. ui.Sanitize replaces a bidi rune with a visible marker of
+// several columns. A cell cannot grow, and RuneWidth promises callers this rune
+// is zero columns wide, so the closest faithful behaviour here is to drop it,
+// as SetRune already does for control characters; Sanitize remains the layer
+// that shows the reader something was there. Bidi runes are dropped in every
+// context.
+//
+// Three uses are legitimate and kept, each bounded so a cell cannot become a
+// carrier for hidden data:
+//   - A zero-width joiner after a pictograph builds an emoji sequence.
+//   - A joiner (ZWNJ U+200C or ZWJ U+200D) after a letter or combining mark is
+//     script shaping: Persian "می‌خواهم", Hindi क्‍ष, Bengali, Sinhala and the
+//     Malayalam chillu letters change meaning without it. Dropping it was a
+//     regression for those scripts. After a digit, space, punctuation or at the
+//     start of a line it joins nothing and is dropped.
+//   - Tag characters after the black flag U+1F3F4 spell a subdivision flag: the
+//     flag, one to six tag letters, then the cancel tag U+E007F, and nothing
+//     after the cancel tag. Anywhere else they are invisible smuggled ASCII.
+//
+// A cell holds at most ONE joiner of either kind (a run of them joins nothing
+// and is hidden payload), and at most one tag sequence.
+func formatMarkAllowed(r, base rune, comb string) bool {
+	switch {
+	case r == 0x200C || r == 0x200D:
+		if strings.ContainsRune(comb, 0x200C) || strings.ContainsRune(comb, 0x200D) {
+			return false
+		}
+		if r == 0x200D && isPictographic(base) {
+			return true
+		}
+		last := base
+		if comb != "" {
+			last, _ = utf8.DecodeLastRuneInString(comb)
+		}
+		return isLetterOrMark(base) && isLetterOrMark(last)
+	case r >= 0xE0020 && r <= 0xE007F:
+		if base != 0x1F3F4 {
+			return false
+		}
+		specs := 0
+		for _, c := range comb {
+			switch {
+			case c == 0xE007F:
+				return false // nothing follows the cancel tag
+			case c >= 0xE0020 && c <= 0xE007E:
+				specs++
+			case c != 0xFE0F:
+				return false
+			}
+		}
+		if r == 0xE007F {
+			return specs >= 1
+		}
+		return specs < maxFlagTagSpecs
+	}
+	return false
+}
+
+// maxFlagTagSpecs is the most tag letters a subdivision flag carries: an ISO
+// 3166-2 code is a two-letter region plus at most four characters.
+const maxFlagTagSpecs = 6
+
+func isLetterOrMark(r rune) bool { return unicode.IsLetter(r) || unicode.IsMark(r) }
+
+// isPictographic reports whether r can anchor a zero-width-joiner emoji
+// sequence: a symbol or emoji outside the scripts, which excludes letters,
+// digits and marks.
+func isPictographic(r rune) bool {
+	return r >= 0x2190 && !unicode.IsLetter(r) && !unicode.IsDigit(r) && !unicode.IsMark(r) && !unicode.IsSpace(r)
 }
 
 // SetString writes a string left to right and returns the columns consumed.
