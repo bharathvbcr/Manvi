@@ -78,7 +78,11 @@ func runTUI(reg *flags.Registry, args []string) error {
 	// Started before the loop and cancelled with it. The index is the one piece
 	// of startup whose cost scales with the repository rather than with the
 	// command, so it runs beside the UI instead of in front of it.
-	go host.refreshIndexInBackground(ctx)
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		host.refreshIndexInBackground(ctx)
+	}()
 
 	runErr := runner.Run(ctx)
 
@@ -95,7 +99,7 @@ func runTUI(reg *flags.Registry, args []string) error {
 	// above, whose kill is a goroutine this process would otherwise outrun --
 	// is ended before the process is. An index writer that outlives the session
 	// that owns it writes into a repository nobody is watching.
-	if problem := endLeftoverChildren(); problem != "" {
+	if problem := endRun(cancel, refreshDone, indexRefreshBound, endLeftoverChildren); problem != "" {
 		fmt.Fprintf(os.Stderr, "manvi: %s\n", problem)
 	}
 	// Read last, so a signal that arrived at any point up to here is reported,
@@ -103,6 +107,43 @@ func runTUI(reg *flags.Registry, args []string) error {
 	// handler is still installed then, so it did not kill the process and it
 	// did not reach the loop either.
 	return stoppedBy(stopped(), runErr)
+}
+
+// indexRefreshBound is how long a quit waits for the index refresh to return
+// once it has been cancelled. The devmap client abandons a cancelled call at
+// once, so the goroutine normally returns in milliseconds; the bound is for one
+// that does not, which must not hold the exit. Two seconds leaves the sweep its
+// own childrenReapBound after it.
+const indexRefreshBound = 2 * time.Second
+
+// endRun ends what the run started and abandoned: the run's context is
+// cancelled (a plain quit never cancelled it before, so the refresh was only
+// ever ended by the sweep), the refresh goroutine is waited for, for at most
+// bound, and only then is sweep run for whatever is still there. A refresh that
+// does not return within bound is reported with the sweep's own problems and
+// does not delay the sweep.
+//
+// What the cancel does to the devmap child is not softer than the sweep: the
+// pinned DevCouncil client's cancel is itself a group SIGKILL (proc.ConfigureGroup,
+// used by devmap's invoke), and its capability probe runs detached from
+// cancellation (Client.Probe, deliberately: its result is cached for the next
+// caller). Both are DevCouncil's to change (ft-4e2e8926). Until that lands the
+// gain is the ordering: the quit has cancelled the build and waited for the
+// client to return before it sweeps, instead of sweeping first.
+func endRun(cancel context.CancelFunc, refreshDone <-chan struct{}, bound time.Duration, sweep func() string) string {
+	cancel()
+	var problems []string
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-refreshDone:
+	case <-timer.C:
+		problems = append(problems, fmt.Sprintf("the index refresh did not stop within %v of the run ending", bound))
+	}
+	if problem := sweep(); problem != "" {
+		problems = append(problems, problem)
+	}
+	return strings.Join(problems, "; ")
 }
 
 // stoppedBy is what a TUI run returns once it is over: the run's own error if

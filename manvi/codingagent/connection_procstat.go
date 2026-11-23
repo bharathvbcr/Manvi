@@ -4,6 +4,7 @@ package codingagent
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"strconv"
@@ -43,6 +44,22 @@ func memberInGroup(read func(pid int) (string, error), pgid int, m groupMember) 
 // isAbsent reports whether err says the /proc entry does not exist.
 func isAbsent(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
+// listStatError classifies a failed /proc/<pid>/stat read made while listing a
+// process group. A process that is gone (isAbsent: it exited between the
+// directory listing and the read) was not a member any more, so it is skipped
+// and nil is returned. Anything else, EACCES and EPERM included, means the
+// process could not be examined, and a process that cannot be examined may be a
+// member: an error is returned, so the listing fails closed instead of reading
+// the group as emptier than it is. It is the same split memberInGroup makes.
+// On a hidepid=1 host that means every listing fails and groupLive runs on the
+// bare kill(-pgid, 0) probe (see groupMembers for what that costs).
+func listStatError(pid int, err error) error {
+	if isAbsent(err) {
+		return nil
+	}
+	return fmt.Errorf("read /proc/%d/stat while listing a process group: %w", pid, err)
 }
 
 // parseProcStat returns the process group (field 5) and start time (field 22)
