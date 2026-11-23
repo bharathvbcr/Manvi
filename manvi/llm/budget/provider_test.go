@@ -16,6 +16,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
 	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 const model = "claude-opus-5-5"
@@ -421,5 +422,60 @@ func TestAnInStreamOverloadIsRetriedAndMeteredPerAttempt(t *testing.T) {
 	s := snapshot(t, l)
 	if calls.Load() != 2 || s.Settled != 1 || s.SpentNanoUSD != turnCost || s.RetainedAttempts != 1 || len(s.InFlight) != 0 {
 		t.Fatalf("calls=%d snapshot=%+v, want one retained refusal and one settled turn of %d", calls.Load(), s, turnCost)
+	}
+}
+
+// twoPostProvider makes two gated POSTs before it returns a stream: the shape
+// of an adapter that spends one request on a side call (a probe, a continuation
+// fetch) before the request whose answer it streams. Both are accepted by the
+// server, so both hold a reservation that only the budget wrapper can resolve.
+type twoPostProvider struct {
+	client *transport.Client
+}
+
+func (*twoPostProvider) Name() string { return "probe" }
+func (*twoPostProvider) Capability(string) (llm.Capability, bool) {
+	return llm.Capability{ContextWindow: 100_000, MaxOutputTokens: 100}, true
+}
+func (*twoPostProvider) AttemptGateSupported() bool { return true }
+func (*twoPostProvider) PriceOf(string) (budget.Prices, bool) {
+	return budget.Prices{Rates: budget.Rates{Input: 1, Output: 1, CacheWrite: 1, CacheRead: 1}}, true
+}
+func (p *twoPostProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	for range 2 {
+		resp, err := p.client.Post(ctx, "/v1/call", map[string]string{"k": "v"})
+		if err != nil {
+			return nil, err
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	return replay.New(replay.Fixture{Turns: []replay.Turn{{Message: llm.Message{Role: llm.RoleAssistant}, Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}}}}).Stream(ctx, req)
+}
+
+func TestSettlementKeepsEveryAdmittedAttemptOfAStreamCall(t *testing.T) {
+	var posts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts.Add(1)
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer server.Close()
+	l := ledger(t, 1_000_000_000)
+	inner := &twoPostProvider{client: transport.New("probe", server.URL, func() (http.Header, error) { return http.Header{}, nil })}
+	p := &budget.Provider{Inner: inner, Ledger: l}
+	stream, err := p.Stream(context.Background(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, stream)
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := snapshot(t, l)
+	if posts.Load() != 2 {
+		t.Fatalf("setup: %d POSTs, want 2", posts.Load())
+	}
+	if len(s.InFlight) != 0 || s.Settled != 1 || s.RetainedAttempts != 1 || s.RetainedNanoUSD <= 0 {
+		t.Fatalf("an earlier admitted attempt was left in flight: %+v", s)
 	}
 }
