@@ -124,11 +124,12 @@ under **Unreleased** in the same commit as the code.
   longer runs `{}`), with one conformance table; Gemini stops reading the
   undocumented cached-token field.
 - **b31-llmops:** budget attempts are owned by a per-process token and a zombie
-  owner counts as gone, so new ledger records carry `owner`/`owner_start` and an
-  older binary refuses a ledger a newer one wrote; every admitted attempt of a
-  `Stream` call is kept; `llm/local` backs off exponentially when a server stays
+  owner counts as gone; every admitted attempt of a `Stream` call is kept; `llm/local` backs off exponentially when a server stays
   down; `geminiproxy` records only a request label and an error class and opens
-  its capture without following links.
+  its capture without following links. **Budget ledgers written by this version
+  (records carry `owner` and `owner_start`) are refused by older Manvi binaries;
+  the schema version stays 2.** Upgrade every Manvi that shares a ledger
+  together, for example a GitPulse-bundled `manvi` alongside a CLI `manvi`.
 
 ### Added
 
