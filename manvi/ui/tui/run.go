@@ -56,6 +56,9 @@ type Runner struct {
 	local []Action
 	// turns counts live turn goroutines, so shutdown can wait for them.
 	turns sync.WaitGroup
+	// editors counts an active external editor goroutine so shutdown waits for
+	// terminal mode restoration before Stop runs.
+	editors sync.WaitGroup
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
@@ -282,6 +285,7 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 			err = stopErr
 		}
 	}()
+	defer r.editors.Wait()
 
 	// Anything written to stderr while the UI owns the screen lands on top of
 	// the frame, and the painter — which believes it knows what every cell
@@ -343,8 +347,12 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 	}()
 
 	for !r.app.Quitting() {
+		var readerEvents <-chan input.Event
+		if r.reader != nil && !r.ttyPaused {
+			readerEvents = r.reader.Events()
+		}
 		select {
-		case ev, ok := <-r.reader.Events():
+		case ev, ok := <-readerEvents:
 			if !ok {
 				return nil
 			}
@@ -464,14 +472,40 @@ func (r *Runner) apply(ctx context.Context, act Action) {
 		}
 		return
 	case actionClipboardFallback:
-		r.emitOSC52(t.Text)
+		r.emitOSC52(t.Text, os.Getenv)
+		return
+	case actionEditorDone:
+		r.ttyPaused = false
+		if r.cfg.In != nil && r.reader != nil {
+			r.reader = input.NewReader(r.cfg.In)
+			go r.reader.Run()
+		}
+		if r.term != nil {
+			w, h := r.term.Size()
+			if r.painter != nil {
+				r.painter.Resize(w, h)
+				r.painter.Invalidate()
+			}
+			r.apply(ctx, ActionResize{W: w, H: h})
+		} else if r.painter != nil {
+			r.painter.Invalidate()
+		}
+		if t.Err != nil {
+			r.loopPost(ActionNotice{Text: "external editor failed: " + t.Err.Error(), Status: StatusWarn})
+			return
+		}
+		if t.Edited == t.Initial {
+			r.loopPost(ActionNotice{Text: "external editor: draft unchanged", Status: StatusInfo})
+			return
+		}
+		r.loopPost(ActionSetDraft{SessionID: t.SessionID, Text: sanitizeEditorText(t.Edited)})
 		return
 	case ActionApprovalRequest:
-		if !r.focused {
+		if !r.focused && !r.ttyPaused {
 			r.term.Notify("MANVI: Approval Required", t.Request.Rule+" ("+t.Request.SubjectLabel()+")")
 		}
 	case ActionTurnEnded:
-		if !r.focused {
+		if !r.focused && !r.ttyPaused {
 			r.term.Notify("MANVI: Turn Finished", "Session "+t.SessionID+" completed")
 		}
 	}
@@ -797,55 +831,44 @@ func (r *Runner) runEffect(ctx context.Context, e Effect) {
 		}()
 
 	case EffectExternalEditor:
+		if r.ttyPaused {
+			return
+		}
 		if _, _, err := resolveExternalEditor(os.Getenv); err != nil {
 			r.loopPost(ActionNotice{Text: "external editor unavailable: " + err.Error(), Status: StatusWarn})
 			return
 		}
 		if r.reader != nil {
-			r.reader.Close()
+			r.reader.CloseAndWait()
 		}
 		r.ttyPaused = true
-		var edited string
-		runErr := r.term.RunExternal(func() error {
-			var err error
-			edited, err = editInExternalEditor(t.Initial, os.Getenv, func(name string, args ...string) error {
-				cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // operator-configured $VISUAL/$EDITOR
-				cmd.Env = childenv.Inherit()
-				cmd.Stdin = r.cfg.In
-				cmd.Stdout = r.cfg.Out
-				if stderr := r.realStderr(); stderr != nil {
-					cmd.Stderr = stderr
-				} else {
-					cmd.Stderr = os.Stderr
-				}
-				return cmd.Run()
+		r.editors.Add(1)
+		go func() {
+			defer r.editors.Done()
+			var edited string
+			runErr := r.term.RunExternal(func() error {
+				var err error
+				edited, err = editInExternalEditor(t.Initial, os.Getenv, func(name string, args ...string) error {
+					cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // resolved via trusted resolveExternalEditor
+					cmd.Env = childenv.Inherit()
+					cmd.Stdin = r.cfg.In
+					cmd.Stdout = r.cfg.Out
+					if stderr := r.realStderr(); stderr != nil {
+						cmd.Stderr = stderr
+					} else {
+						cmd.Stderr = os.Stderr
+					}
+					return cmd.Run()
+				})
+				return err
 			})
-			return err
-		})
-		r.ttyPaused = false
-		if r.cfg.In != nil {
-			r.reader = input.NewReader(r.cfg.In)
-			go r.reader.Run()
-		}
-		if r.term != nil {
-			w, h := r.term.Size()
-			if r.painter != nil {
-				r.painter.Resize(w, h)
-				r.painter.Invalidate()
-			}
-			r.apply(ctx, ActionResize{W: w, H: h})
-		} else if r.painter != nil {
-			r.painter.Invalidate()
-		}
-		if runErr != nil {
-			r.loopPost(ActionNotice{Text: "external editor failed: " + runErr.Error(), Status: StatusWarn})
-			return
-		}
-		if edited == t.Initial {
-			r.loopPost(ActionNotice{Text: "external editor: draft unchanged", Status: StatusInfo})
-			return
-		}
-		r.loopPost(ActionSetDraft{SessionID: t.SessionID, Text: edited})
+			r.post(actionEditorDone{
+				SessionID: t.SessionID,
+				Initial:   t.Initial,
+				Edited:    edited,
+				Err:       runErr,
+			})
+		}()
 
 	case EffectSuspend:
 		if err := r.term.Suspend(); err != nil {
@@ -955,6 +978,17 @@ type actionClipboardFallback struct{ Text string }
 
 func (actionClipboardFallback) action() {}
 
+// actionEditorDone delivers the result of an off-loop external editor run back
+// to the UI loop.
+type actionEditorDone struct {
+	SessionID string
+	Initial   string
+	Edited    string
+	Err       error
+}
+
+func (actionEditorDone) action() {}
+
 // copyToClipboard writes the selection to the clipboard.
 //
 // In a live local terminal (not over SSH), it runs the native OS clipboard
@@ -987,13 +1021,12 @@ func (r *Runner) copyToClipboardWith(
 	}()
 }
 
-func (r *Runner) emitOSC52(text string, getenvs ...func(string) string) {
+func (r *Runner) emitOSC52(text string, getenv func(string) string) {
 	if r.ttyPaused || r.term == nil {
 		return
 	}
-	getenv := os.Getenv
-	if len(getenvs) > 0 && getenv != nil && getenvs[0] != nil {
-		getenv = getenvs[0]
+	if getenv == nil {
+		getenv = os.Getenv
 	}
 	seq, truncated := osc52Sequence(text, getenv)
 	if out := r.term.Out(); out != nil {
