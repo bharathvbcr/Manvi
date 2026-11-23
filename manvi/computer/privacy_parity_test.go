@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -23,37 +24,38 @@ import (
 // production path is held to, byte for byte, and the baseline the benchmark
 // measures against. Do not "improve" them.
 
-func oracleSanitize(raw Observation, policy PrivacyPolicy) (Observation, error) {
+func oracleSanitize(raw Observation, policy PrivacyPolicy) (Observation, []image.Rectangle, error) {
 	if policy.PID == 0 || policy.WindowID == 0 || raw.Window.PID != policy.PID || raw.Window.ID != policy.WindowID {
-		return Observation{}, errors.New("capture is outside approved window")
+		return Observation{}, nil, errors.New("capture is outside approved window")
 	}
 	if !raw.Complete || len(raw.Nodes) > 2000 {
-		return Observation{}, errors.New("incomplete accessibility evidence cannot establish capture privacy")
+		return Observation{}, nil, errors.New("incomplete accessibility evidence cannot establish capture privacy")
 	}
 	if raw.Screenshot.MIMEType != "image/png" || len(raw.Screenshot.Base64) > 16<<20 {
-		return Observation{}, errors.New("unsupported or oversized screenshot")
+		return Observation{}, nil, errors.New("unsupported or oversized screenshot")
 	}
 	b, err := base64.StdEncoding.DecodeString(raw.Screenshot.Base64)
 	if err != nil {
-		return Observation{}, errors.New("invalid screenshot encoding")
+		return Observation{}, nil, errors.New("invalid screenshot encoding")
 	}
 	config, err := png.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
-		return Observation{}, errors.New("invalid PNG screenshot")
+		return Observation{}, nil, errors.New("invalid PNG screenshot")
 	}
 	if config.Width < 1 || config.Height < 1 || int64(config.Width)*int64(config.Height) > 8_000_000 || int64(config.Width) != int64(raw.Screenshot.Width) || int64(config.Height) != int64(raw.Screenshot.Height) {
-		return Observation{}, errors.New("screenshot dimensions are invalid")
+		return Observation{}, nil, errors.New("screenshot dimensions are invalid")
 	}
 	w := raw.Window.Bounds
 	if !finite(w.X) || !finite(w.Y) || !finite(w.Width) || !finite(w.Height) || w.Width <= 0 || w.Height <= 0 {
-		return Observation{}, errors.New("capture geometry is unavailable")
+		return Observation{}, nil, errors.New("capture geometry is unavailable")
 	}
 	decoded, err := png.Decode(bytes.NewReader(b))
 	if err != nil {
-		return Observation{}, errors.New("screenshot decode failed")
+		return Observation{}, nil, errors.New("screenshot decode failed")
 	}
 	masked := image.NewRGBA(decoded.Bounds())
 	draw.Draw(masked, masked.Bounds(), decoded, decoded.Bounds().Min, draw.Src)
+	var masks []image.Rectangle
 	out := raw
 	out.Nodes = make([]Node, len(raw.Nodes))
 	out.Window.Title = policy.Scrub(out.Window.Title)
@@ -81,9 +83,12 @@ func oracleSanitize(raw Observation, policy PrivacyPolicy) (Observation, error) 
 		if policy.sensitive(node) {
 			rect, err := sensitivePixelRect(node, w, config.Width, config.Height)
 			if err != nil {
-				return Observation{}, err
+				return Observation{}, nil, err
 			}
-			draw.Draw(masked, rect, image.NewUniform(color.RGBA{20, 20, 24, 255}), image.Point{}, draw.Src)
+			if !rect.Empty() {
+				draw.Draw(masked, rect, image.NewUniform(color.RGBA{20, 20, 24, 255}), image.Point{}, draw.Src)
+				masks = append(masks, rect)
+			}
 			v := "[redacted]"
 			n.Value = &v
 		}
@@ -91,10 +96,10 @@ func oracleSanitize(raw Observation, policy PrivacyPolicy) (Observation, error) 
 	}
 	var result bytes.Buffer
 	if err := png.Encode(&result, masked); err != nil {
-		return Observation{}, err
+		return Observation{}, nil, err
 	}
 	out.Screenshot.Base64 = base64.StdEncoding.EncodeToString(result.Bytes())
-	return out, nil
+	return out, masks, nil
 }
 
 func oracleFrameFingerprint(o Observation) ([32]byte, error) {
@@ -133,12 +138,14 @@ func oracleFrameFingerprint(o Observation) ([32]byte, error) {
 }
 
 func oracleCapture(raw Observation, policy PrivacyPolicy) (Observation, [32]byte, error) {
-	safe, err := oracleSanitize(raw, policy)
+	safe, masks, err := oracleSanitize(raw, policy)
 	if err != nil {
 		return Observation{}, [32]byte{}, err
 	}
 	fp, err := oracleFrameFingerprint(raw)
-	return safe, fp, err
+	// The approval digest binds where the masks landed (bindMasks), which the
+	// oracle takes from its own loop.
+	return safe, bindMasks(fp, masks), err
 }
 
 func encodePNG(t testing.TB, img image.Image) string {
@@ -164,6 +171,15 @@ func dim32(n int) uint32 {
 		panic("image dimension out of range")
 	}
 	return uint32(n)
+}
+
+// wide folds a test-chosen sample into 0..65535, keeping the low byte busy so a
+// conversion that drops the low byte of a 16-bit sample cannot pass unnoticed.
+func wide(n int) uint16 {
+	if n < 0 {
+		n = -n
+	}
+	return uint16(n % 65536)
 }
 
 // patterned returns a frame with structure at every scale, so it compresses like
@@ -203,6 +219,30 @@ func patterned(w, h int, kind string) image.Image {
 		for y := 0; y < h; y++ {
 			for x := 0; x < w; x++ {
 				m.SetColorIndex(x, y, byteOf((x/8+y/8)%4))
+			}
+		}
+		return m
+	case "rgba64":
+		m := image.NewRGBA64(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				m.SetRGBA64(x, y, color.RGBA64{wide(x*257 + y), wide(y*251 + x*3), wide(65535 - x*131), 65535})
+			}
+		}
+		return m
+	case "nrgba64": // translucent, so the encoder keeps the alpha channel and decodes to NRGBA64
+		m := image.NewNRGBA64(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				m.SetNRGBA64(x, y, color.NRGBA64{wide(x*257 + y), wide(y*251 + x*3), wide(65535 - x*131), wide(30000 + (x+y)%5*9000)})
+			}
+		}
+		return m
+	case "gray16":
+		m := image.NewGray16(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				m.SetGray16(x, y, color.Gray16{wide(x*509 + y*17)})
 			}
 		}
 		return m
@@ -246,10 +286,11 @@ func TestCaptureMatchesTheDecodeTwiceOracleByteForByte(t *testing.T) {
 		"overlapping":     {sensitiveNode("a", "Member ID", 20, 20, 40, 30), sensitiveNode("b", "Member ID", 40, 35, 40, 30), plain},
 		"watched value":   {{ID: "w", Role: "text_field", Name: "Notes", Value: func() *string { s := "see synthetic-secret"; return &s }(), Enabled: true, Bounds: &Bounds{60, 60, 30, 10}}},
 	}
-	for _, kind := range []string{"rgba", "nrgba", "alpha", "gray", "paletted"} {
+	for _, kind := range []string{"rgba", "nrgba", "alpha", "gray", "paletted", "rgba64", "nrgba64", "gray16"} {
 		for name, nodes := range regions {
 			t.Run(kind+"/"+name, func(t *testing.T) {
 				raw := parityObservation(t, W, H, kind, nodes)
+				requireDecodedAs(t, raw, kind)
 				wantSafe, wantFP, wantErr := oracleCapture(raw, policy)
 				var r workResult
 				gotErr := r.capture(raw, policy)
@@ -270,6 +311,28 @@ func TestCaptureMatchesTheDecodeTwiceOracleByteForByte(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// requireDecodedAs fails when a 16-bit case degrades to an 8-bit decode (the
+// encoder picks the depth from the source image), so the case keeps testing
+// what its name says.
+func requireDecodedAs(t *testing.T, raw Observation, kind string) {
+	t.Helper()
+	want := map[string]string{"rgba64": "*image.RGBA64", "nrgba64": "*image.NRGBA64", "gray16": "*image.Gray16"}[kind]
+	if want == "" {
+		return
+	}
+	b, err := base64.StdEncoding.DecodeString(raw.Screenshot.Base64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%T", img); got != want {
+		t.Fatalf("%s frame decodes as %s, want %s", kind, got, want)
 	}
 }
 
@@ -312,9 +375,43 @@ func TestApprovalReusesTheCaptureDigestWithoutChangingIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := r.approval(raw, sel); got != want {
-			t.Fatalf("%s: approval digest differs from approvalFingerprint", name)
+		if got, err := r.approval(raw, policy, sel); err != nil || got != want {
+			t.Fatalf("%s: approval digest differs from approvalFingerprint (err %v)", name, err)
 		}
+	}
+}
+
+// approval used to hand back whatever digest the caller's earlier capture left
+// in the result: with no capture that is the zero digest, which equals the
+// "reviewed" value of a run that has reviewed nothing. It now takes the frame
+// itself, so a fresh result still yields the real digest of raw, and a frame it
+// cannot capture yields an error rather than a digest.
+func TestApprovalNeedsNoPriorCaptureAndNeverYieldsAnUnreviewedZero(t *testing.T) {
+	policy := PrivacyPolicy{PID: 1, WindowID: 2}
+	raw := parityObservation(t, 64, 48, "alpha", []Node{{ID: "p", Role: "button", Name: "Go", Enabled: true}})
+	for name, sel := range map[string]workflow.Selector{"semantic": {Role: "button", Name: "Go"}, "visual": {Visual: &workflow.VisualAnchor{}}} {
+		var fresh workResult // no capture has run
+		got, err := fresh.approval(raw, policy, sel)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var reviewed [32]byte // execute starts with reviewed == 0
+		if got == reviewed {
+			t.Fatalf("%s: approval without a prior capture returned the zero digest, which passes against reviewed=0", name)
+		}
+		if fresh.observation == nil {
+			t.Fatalf("%s: approval did not leave the sanitized frame it digested", name)
+		}
+		want, err := approvalFingerprint(raw, sel)
+		if err != nil || got != want {
+			t.Fatalf("%s: digest is not that of the frame passed in (err %v)", name, err)
+		}
+	}
+	bad := raw
+	bad.Complete = false
+	var refused workResult
+	if got, err := refused.approval(bad, policy, workflow.Selector{Visual: &workflow.VisualAnchor{}}); err == nil || got != ([32]byte{}) {
+		t.Fatalf("an uncapturable frame yielded a digest: %x, %v", got, err)
 	}
 }
 
