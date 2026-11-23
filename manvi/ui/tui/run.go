@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 	"github.com/bharathvbcr/Manvi/manvi/ui/input"
@@ -64,7 +66,8 @@ type Runner struct {
 	// selects on it (see post), because after the stop nothing drains actions.
 	done chan struct{}
 
-	focused bool
+	focused   bool
+	ttyPaused bool
 
 	// panics holds the report of each turn that panicked, written to the real
 	// stderr once the terminal has been given back. See guardTurn.
@@ -302,7 +305,11 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 
 	r.reader = input.NewReader(r.cfg.In)
 	go r.reader.Run()
-	defer r.reader.Close()
+	defer func() {
+		if r.reader != nil {
+			r.reader.Close()
+		}
+	}()
 	defer close(r.done)
 
 	if r.cfg.FirstSession {
@@ -425,7 +432,10 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 // credential whose bytes were rewritten first would no longer match the value
 // the scrubber watches.
 func (r *Runner) clean(text string) string {
-	return ui.Sanitize(r.cfg.Scrubber.Clean(text))
+	if r.cfg.Scrubber != nil {
+		text = r.cfg.Scrubber.Clean(text)
+	}
+	return ui.Sanitize(text)
 }
 
 // apply dispatches an action and runs whatever effects it asked for.
@@ -440,6 +450,22 @@ func (r *Runner) apply(ctx context.Context, act Action) {
 	switch t := act.(type) {
 	case ActionFocus:
 		r.focused = t.In
+	case ActionSetDraft:
+		if r.app != nil {
+			v := r.app.viewByID(t.SessionID)
+			if v == nil && t.SessionID == "" {
+				v = r.app.Current()
+			}
+			if v != nil {
+				v.Focus = CtxPrompt
+				v.Prompt.SetValue(t.Text)
+				r.app.refreshCompletion()
+			}
+		}
+		return
+	case actionClipboardFallback:
+		r.emitOSC52(t.Text)
+		return
 	case ActionApprovalRequest:
 		if !r.focused {
 			r.term.Notify("MANVI: Approval Required", t.Request.Rule+" ("+t.Request.SubjectLabel()+")")
@@ -519,6 +545,9 @@ func cleanError(err error, clean func(string) string) error {
 }
 
 func (r *Runner) draw() error {
+	if r.ttyPaused {
+		return nil
+	}
 	caret := r.app.Draw(r.painter.Buffer())
 	cursor := render.Cursor{}
 	if caret.W > 0 {
@@ -628,6 +657,14 @@ func readNotice(r *bufio.Reader) (line string, truncated bool, err error) {
 			return string(buf), truncated, nil
 		}
 	}
+}
+
+// realStderr returns the original stderr file descriptor saved while captureStderr
+// is active, or nil when stderr is not redirected.
+func (r *Runner) realStderr() *os.File {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.savedStderr
 }
 
 // restoreStderr puts the real stderr back. It is idempotent.
@@ -759,6 +796,57 @@ func (r *Runner) runEffect(ctx context.Context, e Effect) {
 			r.post(ActionPaste{Text: text})
 		}()
 
+	case EffectExternalEditor:
+		if _, _, err := resolveExternalEditor(os.Getenv); err != nil {
+			r.loopPost(ActionNotice{Text: "external editor unavailable: " + err.Error(), Status: StatusWarn})
+			return
+		}
+		if r.reader != nil {
+			r.reader.Close()
+		}
+		r.ttyPaused = true
+		var edited string
+		runErr := r.term.RunExternal(func() error {
+			var err error
+			edited, err = editInExternalEditor(t.Initial, os.Getenv, func(name string, args ...string) error {
+				cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // operator-configured $VISUAL/$EDITOR
+				cmd.Env = childenv.Inherit()
+				cmd.Stdin = r.cfg.In
+				cmd.Stdout = r.cfg.Out
+				if stderr := r.realStderr(); stderr != nil {
+					cmd.Stderr = stderr
+				} else {
+					cmd.Stderr = os.Stderr
+				}
+				return cmd.Run()
+			})
+			return err
+		})
+		r.ttyPaused = false
+		if r.cfg.In != nil {
+			r.reader = input.NewReader(r.cfg.In)
+			go r.reader.Run()
+		}
+		if r.term != nil {
+			w, h := r.term.Size()
+			if r.painter != nil {
+				r.painter.Resize(w, h)
+				r.painter.Invalidate()
+			}
+			r.apply(ctx, ActionResize{W: w, H: h})
+		} else if r.painter != nil {
+			r.painter.Invalidate()
+		}
+		if runErr != nil {
+			r.loopPost(ActionNotice{Text: "external editor failed: " + runErr.Error(), Status: StatusWarn})
+			return
+		}
+		if edited == t.Initial {
+			r.loopPost(ActionNotice{Text: "external editor: draft unchanged", Status: StatusInfo})
+			return
+		}
+		r.loopPost(ActionSetDraft{SessionID: t.SessionID, Text: edited})
+
 	case EffectSuspend:
 		if err := r.term.Suspend(); err != nil {
 			r.loopPost(ActionNotice{Text: "suspend failed: " + err.Error(), Status: StatusWarn})
@@ -861,24 +949,61 @@ func (r *Runner) reportPanics() {
 // truncate silently, so the cap is applied here where it can be reported.
 const osc52Limit = 96 * 1024
 
+// actionClipboardFallback triggers OSC 52 on the UI loop when native OS
+// clipboard copy fails or is unavailable.
+type actionClipboardFallback struct{ Text string }
+
+func (actionClipboardFallback) action() {}
+
 // copyToClipboard writes the selection to the clipboard.
 //
-// In a live local terminal (not over SSH), it writes the full untruncated text
-// to the native OS clipboard (pbcopy / wl-copy / xclip / xsel). It also emits
-// OSC 52 (automatically wrapped in tmux/screen DCS passthrough when nested) so
-// remote SSH and multiplexer sessions work seamlessly.
+// In a live local terminal (not over SSH), it runs the native OS clipboard
+// tool (pbcopy / wl-copy / xclip / xsel) off-loop so the UI never blocks and
+// selections over 96KB are not overwritten by a truncated OSC 52 sequence. When
+// running remotely over SSH or when native copy fails, it falls back to OSC 52
+// (wrapped in tmux/screen DCS passthrough when nested).
 func (r *Runner) copyToClipboard(ctx context.Context, text string) {
-	nativeOK := false
-	if r.term.Started() {
-		if _, err := writeNativeClipboard(ctx, text, os.Getenv); err == nil {
-			nativeOK = true
-		}
+	r.copyToClipboardWith(ctx, text, os.Getenv, writeNativeClipboard)
+}
+
+func (r *Runner) copyToClipboardWith(
+	ctx context.Context,
+	text string,
+	getenv func(string) string,
+	writeNative func(context.Context, string, func(string) string) (string, error),
+) {
+	if r.term == nil {
+		return
 	}
-	seq, truncated := osc52Sequence(text, os.Getenv)
-	_, _ = io.WriteString(r.term.Out(), seq)
+	if !r.term.Started() || isRemoteSession(getenv) {
+		r.emitOSC52(text, getenv)
+		return
+	}
+	go func() {
+		if _, err := writeNative(ctx, text, getenv); err == nil {
+			return
+		}
+		r.post(actionClipboardFallback{Text: text})
+	}()
+}
+
+func (r *Runner) emitOSC52(text string, getenvs ...func(string) string) {
+	if r.ttyPaused || r.term == nil {
+		return
+	}
+	getenv := os.Getenv
+	if len(getenvs) > 0 && getenv != nil && getenvs[0] != nil {
+		getenv = getenvs[0]
+	}
+	seq, truncated := osc52Sequence(text, getenv)
+	if out := r.term.Out(); out != nil {
+		_, _ = io.WriteString(out, seq)
+	}
 	// The painter believes it owns the screen, and this wrote past it.
-	r.painter.Invalidate()
-	if truncated && !nativeOK {
+	if r.painter != nil {
+		r.painter.Invalidate()
+	}
+	if truncated {
 		r.loopPost(ActionNotice{
 			Text:   "copied the first 96KB — the selection was larger",
 			Status: StatusWarn,

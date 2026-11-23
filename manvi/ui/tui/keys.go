@@ -78,6 +78,7 @@ const (
 	CmdExpandPaste
 	CmdYank
 	CmdUndo
+	CmdExternalEditor
 
 	// Dashboard.
 	CmdRenameSession
@@ -188,6 +189,7 @@ var bindings = []Binding{
 	{Keys: []string{"ctrl+o"}, Cmd: CmdExpandPaste, Ctx: CtxPrompt, Label: "expand paste"},
 	{Keys: []string{"ctrl+r"}, Cmd: CmdHistorySearch, Ctx: CtxPrompt, Label: "history search"},
 	{Keys: []string{"ctrl+v"}, Cmd: CmdPasteClipboard, Ctx: CtxPrompt, Label: "paste"},
+	{Keys: []string{"alt+e", "f4"}, Cmd: CmdExternalEditor, Ctx: CtxPrompt, Label: "external editor"},
 	{Keys: []string{"esc"}, Cmd: CmdClearDraft, Ctx: CtxPrompt, Label: "clear"},
 
 	// Scrollback.
@@ -429,14 +431,7 @@ func (a *App) key(binding string) []Effect {
 		}
 		return nil
 	case CmdToggleVerbose:
-		if v := a.Current(); v != nil {
-			stacked := v.Scroll.ToggleStackWork()
-			if stacked {
-				a.setNotice("work capsules stacked (Ctrl+O expands all)", StatusInfo)
-			} else {
-				a.setNotice("full verbose work stream (Ctrl+O stacks capsules)", StatusInfo)
-			}
-		}
+		a.toggleStackWork()
 		return nil
 	case CmdCopyMenu:
 		if v := a.Current(); v != nil {
@@ -458,6 +453,11 @@ func (a *App) key(binding string) []Effect {
 		return nil
 	case CmdPasteClipboard:
 		return []Effect{EffectPasteClipboard{}}
+	case CmdExternalEditor:
+		if ctx != CtxPrompt {
+			return nil
+		}
+		return a.launchExternalEditor()
 	case CmdInspectorNextTab:
 		if v := a.Current(); v != nil && v.Inspector != nil {
 			v.Inspector.NextTab(1)
@@ -726,15 +726,10 @@ func (a *App) promptKey(p *Prompt, binding string, ctx Context) bool {
 	case CmdExpandPaste:
 		if p.ExpandPastes() {
 			a.setNotice("expanded paste", StatusInfo)
-		} else if v := a.Current(); v != nil {
+		} else {
 			// When there are no paste chips to expand in the composer, Ctrl+O
 			// acts as the universal verbose-transcript toggle.
-			stacked := v.Scroll.ToggleStackWork()
-			if stacked {
-				a.setNotice("work capsules stacked (Ctrl+O expands all)", StatusInfo)
-			} else {
-				a.setNotice("full verbose work stream (Ctrl+O stacks capsules)", StatusInfo)
-			}
+			a.toggleStackWork()
 		}
 	default:
 		return false
@@ -826,4 +821,27 @@ func (a *App) complete() []Effect {
 		return nil
 	}
 	return a.acceptOverlay()
+}
+
+func (a *App) toggleStackWork() {
+	v := a.Current()
+	if v == nil {
+		return
+	}
+	if v.Scroll.ToggleStackWork() {
+		a.setNotice("work capsules stacked (Ctrl+O expands all)", StatusInfo)
+		return
+	}
+	a.setNotice("full verbose work stream (Ctrl+O stacks capsules)", StatusInfo)
+}
+
+func (a *App) launchExternalEditor() []Effect {
+	v := a.Current()
+	if v == nil {
+		return nil
+	}
+	return []Effect{EffectExternalEditor{
+		SessionID: v.ID,
+		Initial:   v.Prompt.Value(),
+	}}
 }

@@ -338,6 +338,112 @@ func (t *Terminal) Resized() <-chan struct{} { return t.resize }
 // been put back into raw mode and the screen must be repainted from scratch.
 func (t *Terminal) Resumed() <-chan struct{} { return t.suspended }
 
+// ttyModeSnapshot records the active terminal modes across a temporary yield
+// (Ctrl+Z suspend or an external interactive process).
+type ttyModeSnapshot struct {
+	saved  *state
+	mouse  bool
+	motion bool
+	paste  bool
+	focus  bool
+	kitty  bool
+}
+
+func (t *Terminal) snapshotLocked() ttyModeSnapshot {
+	return ttyModeSnapshot{
+		saved:  t.saved,
+		mouse:  t.mouse,
+		motion: t.motion,
+		paste:  t.paste,
+		focus:  t.focus,
+		kitty:  t.kitty,
+	}
+}
+
+func leaveTTY(out io.Writer, fd uintptr, snap ttyModeSnapshot, settle string) error {
+	var down strings.Builder
+	if snap.kitty {
+		down.WriteString("\x1b[<u")
+	}
+	if snap.focus {
+		down.WriteString("\x1b[?1004l")
+	}
+	if snap.paste {
+		down.WriteString("\x1b[?2004l")
+	}
+	if snap.motion {
+		down.WriteString("\x1b[?1003l")
+	}
+	if snap.mouse {
+		down.WriteString("\x1b[?1006l\x1b[?1002l\x1b[?1000l")
+	}
+	down.WriteString("\x1b[0m\x1b[?25h\x1b[?1049l")
+	down.WriteString(settle)
+	_, _ = io.WriteString(out, down.String())
+	return setState(fd, snap.saved)
+}
+
+func enterTTY(out io.Writer, fd uintptr, snap ttyModeSnapshot) error {
+	if _, err := makeRaw(fd); err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("\x1b[?1049h")
+	if snap.mouse {
+		b.WriteString("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
+	}
+	if snap.motion {
+		b.WriteString("\x1b[?1003h")
+	}
+	if snap.paste {
+		b.WriteString("\x1b[?2004h")
+	}
+	if snap.focus {
+		b.WriteString("\x1b[?1004h")
+	}
+	if snap.kitty {
+		b.WriteString("\x1b[>1u")
+	}
+	b.WriteString("\x1b[?25l")
+	_, err := io.WriteString(out, b.String())
+	return err
+}
+
+// RunExternal temporarily leaves raw mode, alternate screen, mouse, paste,
+// focus, and Kitty keyboard modes, runs fn, and restores the active TUI modes
+// afterwards so an interactive program (such as $VISUAL/$EDITOR) can own tty.
+func (t *Terminal) RunExternal(fn func() error) (retErr error) {
+	if fn == nil {
+		return nil
+	}
+	if t == nil {
+		return fn()
+	}
+
+	t.mu.Lock()
+	started := t.started
+	snap := t.snapshotLocked()
+	settle := ""
+	if started && snap.saved != nil {
+		settle = t.settleStatusLocked()
+	}
+	t.mu.Unlock()
+
+	if !started || snap.saved == nil {
+		return fn()
+	}
+
+	if err := leaveTTY(t.out, t.in.Fd(), snap, settle); err != nil {
+		return err
+	}
+	defer func() {
+		if rErr := enterTTY(t.out, t.in.Fd(), snap); rErr != nil {
+			retErr = errors.Join(retErr, rErr)
+		}
+	}()
+	return fn()
+}
+
 // Suspend performs a Ctrl+Z: restore the terminal, stop this process, and on
 // resume put everything back and ask for a repaint.
 // afterRestoreForTest runs after the tty is restored and before the process
@@ -351,41 +457,22 @@ func (t *Terminal) Suspend() error {
 	}
 
 	t.mu.Lock()
-	saved, mouse, motion, paste, focus, kitty := t.saved, t.mouse, t.motion, t.paste, t.focus, t.kitty
+	snap := t.snapshotLocked()
 	// The tab must not go on saying an agent is running while the process is
 	// stopped and a shell has the terminal. Settling also forgets what was
 	// written, so the first frame after the resume writes both again.
 	settle := ""
-	if saved != nil {
+	if snap.saved != nil {
 		settle = t.settleStatusLocked()
 	}
 	t.mu.Unlock()
-	if saved == nil {
+	if snap.saved == nil {
 		return nil
 	}
 
 	// Hand the terminal back before stopping. A process suspended while the tty
 	// is raw leaves the shell with no echo and no line editing.
-	var down strings.Builder
-	if kitty {
-		down.WriteString("\x1b[<u")
-	}
-	if focus {
-		down.WriteString("\x1b[?1004l")
-	}
-	if paste {
-		down.WriteString("\x1b[?2004l")
-	}
-	if motion {
-		down.WriteString("\x1b[?1003l")
-	}
-	if mouse {
-		down.WriteString("\x1b[?1006l\x1b[?1002l\x1b[?1000l")
-	}
-	down.WriteString("\x1b[0m\x1b[?25h\x1b[?1049l")
-	down.WriteString(settle)
-	_, _ = io.WriteString(t.out, down.String())
-	if err := setState(t.in.Fd(), saved); err != nil {
+	if err := leaveTTY(t.out, t.in.Fd(), snap, settle); err != nil {
 		return err
 	}
 	if afterRestoreForTest != nil {
@@ -404,28 +491,7 @@ func (t *Terminal) Suspend() error {
 	// Resumed: re-establish everything, then ask for a full repaint. The screen
 	// contents are gone and the painter's diff would otherwise skip every cell
 	// it believes is already correct.
-	if _, err := makeRaw(t.in.Fd()); err != nil {
-		return err
-	}
-	var b strings.Builder
-	b.WriteString("\x1b[?1049h")
-	if mouse {
-		b.WriteString("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
-	}
-	if motion {
-		b.WriteString("\x1b[?1003h")
-	}
-	if paste {
-		b.WriteString("\x1b[?2004h")
-	}
-	if focus {
-		b.WriteString("\x1b[?1004h")
-	}
-	if kitty {
-		b.WriteString("\x1b[>1u")
-	}
-	b.WriteString("\x1b[?25l")
-	if _, err := io.WriteString(t.out, b.String()); err != nil {
+	if err := enterTTY(t.out, t.in.Fd(), snap); err != nil {
 		return err
 	}
 	// Signals are deliberately not re-armed here: the notification registered
