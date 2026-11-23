@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"sort"
@@ -74,7 +75,14 @@ type subAgentConfig struct {
 	// reaches the faces and the NDJSON stream without touching what the parent
 	// replays to the model.
 	sink ui.Sink
+	// verdictNonce mints the per-dispatch part of a verdict marker. Nil is a
+	// fresh random value; a test sets it to a known one.
+	verdictNonce func() string
 }
+
+// newVerdictNonce is the default verdictNonce: unguessable, and unknown to
+// anything written before the dispatch it is minted for.
+func newVerdictNonce() string { return rand.Text() }
 
 // maxSubAgentSteps bounds a child's turn independently of its parent's ceiling.
 //
@@ -274,6 +282,12 @@ type childTurn struct {
 	// the dispatching model should hear about.
 	notes   []string
 	cleanup func()
+	// verdictMarker is the marker this dispatch told the child to write, empty
+	// when no judgement was asked for. It is what the child's answer is read
+	// against: the child was given this one value, and the caller's request
+	// carries only the kind of marker, which every file in a repository can
+	// spell.
+	verdictMarker string
 }
 
 func (c childTurn) close() {
@@ -390,7 +404,7 @@ func (r *subAgentRunner) attempt(ctx context.Context, cfg *subAgentConfig, req d
 	// fixed shape; anything else — a missing line, a pass that still lists
 	// objections — comes back as no judgement rather than as a pass, which
 	// is the only direction it is safe to be wrong in.
-	result.Verdict = devcouncil.ParseVerdict(req.Verdict, summary)
+	result.Verdict = devcouncil.ParseVerdict(child.verdictMarker, summary)
 	if evidence == "" && req.Verdict != "" && !result.Verdict.Judged {
 		evidence = "no verdict reached when one was asked for"
 	}
@@ -597,8 +611,18 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 	// the judgement has to arrive in. The instruction and the reader are
 	// written together in verdict.go for the reason every parse-the-prose
 	// scheme fails: a contract only one side knows about is not a contract.
+	//
+	// The marker is minted for this dispatch. A constant marker is spelled in
+	// this file and in every document the child may quote back, and a line of
+	// quoted file text that starts with it was a verdict.
+	verdictMarker := ""
 	if strings.TrimSpace(req.Verdict) != "" {
-		systemPrompt = strings.TrimRight(systemPrompt, "\n") + "\n\n" + devcouncil.VerdictInstruction()
+		nonce := cfg.verdictNonce
+		if nonce == nil {
+			nonce = newVerdictNonce
+		}
+		verdictMarker = devcouncil.DispatchVerdictMarker(req.Verdict, nonce())
+		systemPrompt = strings.TrimRight(systemPrompt, "\n") + "\n\n" + devcouncil.VerdictInstruction(verdictMarker)
 	}
 
 	loop, err := newTurnLoop(turnFace{
@@ -636,7 +660,7 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 	}
 	return childTurn{
 		loop: loop, provider: placed.provider, model: placed.model,
-		notes: placed.notes, cleanup: cleanup,
+		notes: placed.notes, cleanup: cleanup, verdictMarker: verdictMarker,
 	}, nil
 }
 
