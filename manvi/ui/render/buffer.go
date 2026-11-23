@@ -1,6 +1,7 @@
 package render
 
 import (
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -16,8 +17,9 @@ type Cell struct {
 	// sequence. Kept as a string because it is empty for essentially every
 	// cell, and an empty string costs no allocation, whereas a []rune field
 	// would put a slice header in every cell of every frame.
-	Comb  string
-	Style Style
+	Comb   string
+	Style  Style
+	LinkID uint16
 }
 
 // MaxCombPerCell is how many combining marks one cell keeps; a mark past it is
@@ -139,6 +141,9 @@ func (r Rect) SplitRight(n int) (Rect, Rect) {
 	return Rect{r.X, r.Y, r.W - n, r.H}, Rect{r.X + r.W - n, r.Y, n, r.H}
 }
 
+// MaxLinksPerFrame caps how many distinct OSC 8 hyperlinks one frame may intern.
+const MaxLinksPerFrame = 2048
+
 // Buffer is a grid of cells: one frame's worth of screen.
 //
 // Every write is clipped to the buffer's bounds rather than panicking. A TUI
@@ -146,8 +151,10 @@ func (r Rect) SplitRight(n int) (Rect, Rect) {
 // pass and the draw pass, and a renderer that panics on an off-by-one during a
 // window resize is a renderer that takes the user's session with it.
 type Buffer struct {
-	W, H  int
-	cells []Cell
+	W, H      int
+	cells     []Cell
+	links     []string
+	linkIndex map[string]uint16
 }
 
 // NewBuffer allocates a blank buffer.
@@ -190,12 +197,76 @@ func (b *Buffer) Resize(w, h int) {
 	b.Clear(Plain)
 }
 
-// Clear fills the whole buffer with blanks in the given style.
+// Clear fills the whole buffer with blanks in the given style and clears the
+// per-frame hyperlink table while retaining its backing capacity.
 func (b *Buffer) Clear(s Style) {
 	c := blank(s)
 	for i := range b.cells {
 		b.cells[i] = c
 	}
+	b.links = b.links[:0]
+	clear(b.linkIndex)
+}
+
+// RegisterLink validates and interns url for the current frame, returning its
+// 1-based LinkID, or 0 if url contains control characters, uses a disallowed
+// scheme (only file, http, and https are permitted), is empty, or
+// MaxLinksPerFrame is reached.
+func (b *Buffer) RegisterLink(url string) uint16 {
+	if !isPlainLink(url) || !hasAllowedScheme(url) {
+		return 0
+	}
+	if b.linkIndex != nil {
+		if id, ok := b.linkIndex[url]; ok {
+			return id
+		}
+	}
+	if len(b.links) >= MaxLinksPerFrame {
+		return 0
+	}
+	if b.linkIndex == nil {
+		b.linkIndex = make(map[string]uint16, 16)
+	}
+	b.links = append(b.links, url)
+	id := uint16(len(b.links))
+	b.linkIndex[url] = id
+	return id
+}
+
+// LinkURL resolves a 1-based LinkID registered in the current frame.
+func (b *Buffer) LinkURL(id uint16) string {
+	if id == 0 || int(id) > len(b.links) {
+		return ""
+	}
+	return b.links[id-1]
+}
+
+func hasAllowedScheme(u string) bool {
+	return hasPrefixFold(u, "https://") || hasPrefixFold(u, "http://") || hasPrefixFold(u, "file://")
+}
+
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+func isPlainLink(url string) bool {
+	if url == "" {
+		return false
+	}
+	for i := 0; i < len(url); i++ {
+		c := url[i]
+		if c < 0x20 || c == 0x7f {
+			return false
+		}
+		if c >= utf8.RuneSelf {
+			r, size := utf8.DecodeRuneInString(url[i:])
+			if r == utf8.RuneError || unicode.IsControl(r) || (r >= 0x7f && r <= 0x9f) {
+				return false
+			}
+			i += size - 1
+		}
+	}
+	return true
 }
 
 // Cell returns the cell at x,y, or a blank if out of bounds.
@@ -221,6 +292,11 @@ func (b *Buffer) SetCell(x, y int, c Cell) {
 // is replaced by a space: the terminal's own behaviour there is undefined and
 // varies between wrapping, clipping, and corrupting the line.
 func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
+	return b.SetRuneLinked(x, y, r, s, 0)
+}
+
+// SetRuneLinked writes a single rune carrying linkID and returns the columns it consumed.
+func (b *Buffer) SetRuneLinked(x, y int, r rune, s Style, linkID uint16) int {
 	if y < 0 || y >= b.H || x >= b.W {
 		return 0
 	}
@@ -251,25 +327,30 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 	}
 	if w == 2 {
 		if x+1 >= b.W {
-			b.cells[y*b.W+x] = Cell{R: ' ', Style: s}
+			b.cells[y*b.W+x] = Cell{R: ' ', Style: s, LinkID: linkID}
 			return 1
 		}
-		b.cells[y*b.W+x] = Cell{R: r, Style: s}
-		b.cells[y*b.W+x+1] = Cell{R: 0, Style: s}
+		b.cells[y*b.W+x] = Cell{R: r, Style: s, LinkID: linkID}
+		b.cells[y*b.W+x+1] = Cell{R: 0, Style: s, LinkID: linkID}
 		return 2
 	}
-	b.cells[y*b.W+x] = Cell{R: r, Style: s}
+	b.cells[y*b.W+x] = Cell{R: r, Style: s, LinkID: linkID}
 	return 1
 }
 
 // SetString writes a string left to right and returns the columns consumed.
 func (b *Buffer) SetString(x, y int, text string, s Style) int {
+	return b.SetStringLinked(x, y, text, s, 0)
+}
+
+// SetStringLinked writes a string carrying linkID left to right and returns the columns consumed.
+func (b *Buffer) SetStringLinked(x, y int, text string, s Style, linkID uint16) int {
 	used := 0
 	for _, r := range text {
 		if x+used >= b.W {
 			break
 		}
-		used += b.SetRune(x+used, y, r, s)
+		used += b.SetRuneLinked(x+used, y, r, s, linkID)
 	}
 	return used
 }

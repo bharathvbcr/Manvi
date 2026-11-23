@@ -2,8 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
@@ -43,15 +47,19 @@ type Inspector struct {
 	diffIdx int
 	// scroll is the vertical row scroll offset inside the active tab body.
 	scroll int
+	// collapsedAgents tracks which sub-agent sections are collapsed in TabSteps.
+	collapsedAgents map[string]bool
 
 	// Recorded geometry from the last Draw pass for mouse hit-testing.
-	rect      render.Rect
-	tabRects  [inspectorTabCount]render.Rect
-	prevBtn   render.Rect
-	nextBtn   render.Rect
-	copyBtn   render.Rect
-	closeBtn  render.Rect
-	fileRects []inspectorItemRect
+	rect       render.Rect
+	tabRects   [inspectorTabCount]render.Rect
+	prevBtn    render.Rect
+	nextBtn    render.Rect
+	copyBtn    render.Rect
+	closeBtn   render.Rect
+	fileRects  []inspectorItemRect
+	agentRects []inspectorAgentRect
+	cache      inspectorCache
 }
 
 type inspectorItemRect struct {
@@ -59,9 +67,42 @@ type inspectorItemRect struct {
 	rect render.Rect
 }
 
+type inspectorAgentRect struct {
+	agent string
+	rect  render.Rect
+}
+
+type inspectorEdit struct {
+	edit    fileEdit
+	pending bool
+	status  StatusKind
+}
+
+type inspectorCache struct {
+	view        *AgentView
+	entryCount  int
+	dropped     int
+	lastEntry   *Entry
+	lastTextLen int
+	lastLive    bool
+	lastResult  *Entry
+	thoughts    []*Entry
+	edits       []inspectorEdit
+
+	diffIdx     int
+	diffWidth   int
+	diffTheme   string
+	diffUnicode bool
+	diffLines   []render.Line
+}
+
 // NewInspector creates a closed inspector following the latest thought/diff.
 func NewInspector() *Inspector {
-	return &Inspector{thoughtIdx: -1, diffIdx: -1}
+	return &Inspector{
+		thoughtIdx:      -1,
+		diffIdx:         -1,
+		collapsedAgents: map[string]bool{},
+	}
 }
 
 // Toggle opens or closes the drawer.
@@ -131,14 +172,13 @@ func thoughtsOf(entries []*Entry) []*Entry {
 	return out
 }
 
-// editsOf collects every successful file edit from the transcript.
+// editsOf collects every succeeded file edit from the transcript.
+// Calls with no result yet (pending approval/blocked) are excluded so callers
+// never treat an unapplied edit as applied.
 func editsOf(entries []*Entry) []fileEdit {
 	var out []fileEdit
 	for i, e := range entries {
-		if e.Event.Kind != ui.KindToolStart {
-			continue
-		}
-		if e.result != nil && e.result.Event.IsError {
+		if e.Event.Kind != ui.KindToolStart || e.result == nil || e.result.Event.IsError {
 			continue
 		}
 		if ed, ok := extractFileEdit(e.Event, i); ok {
@@ -146,6 +186,70 @@ func editsOf(entries []*Entry) []fileEdit {
 		}
 	}
 	return out
+}
+
+func inspectorEditsOf(entries []*Entry) []inspectorEdit {
+	var out []inspectorEdit
+	for i, e := range entries {
+		if e.Event.Kind != ui.KindToolStart {
+			continue
+		}
+		if e.result != nil && e.result.Event.IsError {
+			continue
+		}
+		ed, ok := extractFileEdit(e.Event, i)
+		if !ok {
+			continue
+		}
+		ie := inspectorEdit{edit: ed}
+		if e.result == nil {
+			ie.pending = true
+			ie.status = StatusWarn
+		} else {
+			ie.status = e.result.Status()
+		}
+		out = append(out, ie)
+	}
+	return out
+}
+
+func (ins *Inspector) cachedData(v *AgentView, entries []*Entry) ([]*Entry, []inspectorEdit) {
+	var last *Entry
+	var lastTextLen int
+	var lastLive bool
+	var lastResult *Entry
+	if n := len(entries); n > 0 {
+		last = entries[n-1]
+		lastTextLen = last.Body.Len()
+		lastLive = last.live
+		lastResult = last.result
+	}
+	dropped := 0
+	if v != nil && v.Scroll != nil {
+		dropped = v.Scroll.Dropped()
+	}
+	c := &ins.cache
+	if c.view == v &&
+		c.entryCount == len(entries) &&
+		c.dropped == dropped &&
+		c.lastEntry == last &&
+		c.lastTextLen == lastTextLen &&
+		c.lastLive == lastLive &&
+		c.lastResult == lastResult {
+		return c.thoughts, c.edits
+	}
+	c.view = v
+	c.entryCount = len(entries)
+	c.dropped = dropped
+	c.lastEntry = last
+	c.lastTextLen = lastTextLen
+	c.lastLive = lastLive
+	c.lastResult = lastResult
+	c.thoughts = thoughtsOf(entries)
+	c.edits = inspectorEditsOf(entries)
+	c.diffWidth = -1
+	c.diffLines = nil
+	return c.thoughts, c.edits
 }
 
 // CopyContent returns the copyable text for the inspector's current tab.
@@ -166,7 +270,7 @@ func (ins *Inspector) CopyContent(v *AgentView) (label, text string) {
 		}
 		return "thinking step", ts[idx].text()
 	case TabDiffs:
-		eds := editsOf(entries)
+		eds := inspectorEditsOf(entries)
 		if len(eds) == 0 {
 			return "", ""
 		}
@@ -174,7 +278,12 @@ func (ins *Inspector) CopyContent(v *AgentView) (label, text string) {
 		if idx < 0 || idx >= len(eds) {
 			idx = len(eds) - 1
 		}
-		return "diff " + eds[idx].Path, formatUnifiedDiffText(eds[idx])
+		ie := eds[idx]
+		prefix := "diff "
+		if ie.pending {
+			prefix = "proposed diff "
+		}
+		return prefix + sanitizeHeaderPath(ie.edit.Path), formatUnifiedDiffText(ie.edit)
 	case TabSteps:
 		var lines []string
 		for _, e := range entries {
@@ -191,6 +300,17 @@ func (ins *Inspector) CopyContent(v *AgentView) (label, text string) {
 		return "session info", b.String()
 	}
 	return "", ""
+}
+
+// ToggleAgent collapses or expands a sub-agent section in the Steps tab.
+func (ins *Inspector) ToggleAgent(agent string) {
+	if agent == "" {
+		return
+	}
+	if ins.collapsedAgents == nil {
+		ins.collapsedAgents = map[string]bool{}
+	}
+	ins.collapsedAgents[agent] = !ins.collapsedAgents[agent]
 }
 
 // Click handles a left click inside the drawer and returns any copy text if
@@ -227,6 +347,12 @@ func (ins *Inspector) Click(x, y int, v *AgentView) (copiedLabel, copiedText str
 			return "", ""
 		}
 	}
+	for _, ar := range ins.agentRects {
+		if ar.rect.Contains(x, y) {
+			ins.ToggleAgent(ar.agent)
+			return "", ""
+		}
+	}
 	return "", ""
 }
 
@@ -238,6 +364,7 @@ func (ins *Inspector) Draw(b *render.Buffer, r render.Rect, th Theme, v *AgentVi
 	ins.copyBtn = render.Rect{}
 	ins.closeBtn = render.Rect{}
 	ins.fileRects = ins.fileRects[:0]
+	ins.agentRects = ins.agentRects[:0]
 	for i := range ins.tabRects {
 		ins.tabRects[i] = render.Rect{}
 	}
@@ -268,8 +395,7 @@ func (ins *Inspector) Draw(b *render.Buffer, r render.Rect, th Theme, v *AgentVi
 	}
 
 	entries := v.Scroll.Entries()
-	thoughts := thoughtsOf(entries)
-	edits := editsOf(entries)
+	thoughts, edits := ins.cachedData(v, entries)
 
 	// Tab strip at top of drawer.
 	tabRow, body := inner.SplitTop(1)
@@ -451,18 +577,61 @@ func (ins *Inspector) drawStepsTab(b *render.Buffer, r render.Rect, th Theme, en
 		lines = append(lines, render.Styled(mark+" ", th.Status(e.Status())).Concat(row).Truncate(r.W))
 	}
 
+	agentLines := make(map[int]string, len(subOrder))
 	if len(subOrder) > 0 {
 		lines = append(lines, render.Line{})
 		lines = append(lines, render.Styled("Subagents", th.Strong()))
 		g := th.Glyphs()
 		for _, ag := range subOrder {
 			list := subagents[ag]
-			hdr := render.Styled(g.Expanded+" ["+ag+"] ", th.Status(StatusInfo)).
-				Append(fmt.Sprintf("%d events", len(list)), th.Subtle())
-			lines = append(lines, hdr.Truncate(r.W))
+			collapsed := ins.collapsedAgents != nil && ins.collapsedAgents[ag]
+			chev := g.Expanded
+			if collapsed {
+				chev = g.Collapsed
+			}
+			var blocks, grants, degraded, warns int
+			var pinned []*Entry
 			for _, ce := range list {
+				st := ce.Status()
+				if isSafetyPinnedStatus(st) {
+					pinned = append(pinned, ce)
+				}
+				switch st {
+				case StatusBlock:
+					blocks++
+				case StatusGranted:
+					grants++
+				case StatusDegraded:
+					degraded++
+				case StatusWarn:
+					warns++
+				}
+			}
+			hdr := render.Styled(chev+" ["+ag+"] ", th.Status(StatusInfo)).
+				Append(fmt.Sprintf("%d events", len(list)), th.Subtle())
+			if blocks > 0 {
+				hdr = hdr.Append(fmt.Sprintf(" · %d failed", blocks), th.Status(StatusBlock))
+			}
+			if grants > 0 {
+				hdr = hdr.Append(fmt.Sprintf(" · %d granted", grants), th.Status(StatusGranted))
+			}
+			if degraded > 0 {
+				hdr = hdr.Append(fmt.Sprintf(" · %d unrun", degraded), th.Status(StatusDegraded))
+			}
+			if warns > 0 {
+				hdr = hdr.Append(fmt.Sprintf(" · %d warn", warns), th.Status(StatusWarn))
+			}
+			agentLines[len(lines)] = ag
+			lines = append(lines, hdr.Truncate(r.W))
+			visible := list
+			if collapsed {
+				// Policy-honesty invariant: a collapsed sub-agent section must
+				// never hide a block, failure, grant, or degraded row.
+				visible = pinned
+			}
+			for _, ce := range visible {
 				sub := ce.Summary(th, r.W-4)
-				lines = append(lines, render.Styled("  "+g.Bullet+" ", th.Subtle()).Concat(sub).Truncate(r.W))
+				lines = append(lines, render.Styled("  "+ce.marker(g)+" ", th.Status(ce.Status())).Concat(sub).Truncate(r.W))
 			}
 		}
 	}
@@ -471,10 +640,57 @@ func (ins *Inspector) drawStepsTab(b *render.Buffer, r render.Rect, th Theme, en
 		render.Styled("No tool steps recorded yet.", th.Subtle()).Truncate(r.W).Draw(b, r.X, r.Y+1)
 		return
 	}
-	ins.drawLines(b, r, lines, ins.scroll)
+	start := ins.drawLines(b, r, lines, ins.scroll)
+	for row := 0; row < r.H && start+row < len(lines); row++ {
+		if ag, ok := agentLines[start+row]; ok {
+			ins.agentRects = append(ins.agentRects, inspectorAgentRect{
+				agent: ag,
+				rect:  render.Rect{X: r.X, Y: r.Y + row, W: r.W, H: 1},
+			})
+		}
+	}
 }
 
-func (ins *Inspector) drawDiffsTab(b *render.Buffer, r render.Rect, th Theme, edits []fileEdit) {
+func hasControlOrInvalidUTF8(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) || unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeHeaderPath(s string) string {
+	clean := ui.Sanitize(s)
+	clean = strings.ReplaceAll(clean, "\n", " ")
+	clean = strings.ReplaceAll(clean, "\r", " ")
+	clean = strings.ReplaceAll(clean, "\t", " ")
+	return clean
+}
+
+func fileLinkURL(path string) string {
+	if path == "" || hasControlOrInvalidUTF8(path) {
+		return ""
+	}
+	if strings.HasPrefix(path, "file://") {
+		return path
+	}
+	abs := path
+	if !filepath.IsAbs(path) {
+		if resolved, err := filepath.Abs(path); err == nil {
+			abs = resolved
+		}
+	}
+	if hasControlOrInvalidUTF8(abs) {
+		return ""
+	}
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Clean(abs))}).String()
+}
+
+func (ins *Inspector) drawDiffsTab(b *render.Buffer, r render.Rect, th Theme, edits []inspectorEdit) {
 	if len(edits) == 0 {
 		render.Styled("No file edits in this session yet.", th.Subtle()).Truncate(r.W).Draw(b, r.X, r.Y+1)
 		return
@@ -493,21 +709,51 @@ func (ins *Inspector) drawDiffsTab(b *render.Buffer, r render.Rect, th Theme, ed
 	if idx >= listMax {
 		startIdx = idx - listMax + 1
 	}
+	g := th.Glyphs()
 	y := r.Y
 	for k := startIdx; k < startIdx+listMax && k < len(edits) && y < r.Bottom(); k++ {
-		ed := edits[k]
+		ie := edits[k]
+		ed := ie.edit
 		sel := k == idx
 		bg := th.Bg
 		if sel {
 			bg = th.Selection
 			b.Fill(render.Rect{X: r.X, Y: y, W: r.W, H: 1}, ' ', render.Style{Bg: bg})
 		}
-		prefix := "  M "
+		caret := "  "
 		if sel {
-			prefix = th.Glyphs().Caret + " M "
+			caret = g.Caret + " "
 		}
-		line := render.Styled(prefix, render.Style{Fg: th.Accent, Bg: bg}).
-			Append(ed.Path, render.Style{Fg: th.Info, Bg: bg})
+		var line render.Line
+		cleanPath := sanitizeHeaderPath(ed.Path)
+		linkURL := fileLinkURL(ed.Path)
+		pathStyle := render.Style{Fg: th.Info, Bg: bg}
+		switch {
+		case ie.pending:
+			warnSt := th.Status(StatusWarn).With(render.Bold).Background(bg)
+			line = render.Styled(caret+g.Tool+" ", warnSt).
+				AppendLink(cleanPath, linkURL, pathStyle).
+				Append(" (pending)", warnSt)
+		case ie.status == StatusGranted || ie.status == StatusDegraded || ie.status == StatusWarn:
+			st := th.Status(ie.status)
+			st.Bg = bg
+			glyph := g.Granted
+			tag := " [granted]"
+			switch ie.status {
+			case StatusDegraded:
+				glyph = g.Degraded
+				tag = " [unrun]"
+			case StatusWarn:
+				glyph = g.Warn
+				tag = " [warn]"
+			}
+			line = render.Styled(caret+glyph+" M ", st).
+				AppendLink(cleanPath, linkURL, pathStyle).
+				Append(tag, st)
+		default:
+			line = render.Styled(caret+"M ", render.Style{Fg: th.Accent, Bg: bg}).
+				AppendLink(cleanPath, linkURL, pathStyle)
+		}
 		if ed.Added > 0 {
 			line = line.Append(" +"+groupDigits(ed.Added), render.Style{Fg: th.Success, Bg: bg})
 		}
@@ -526,6 +772,9 @@ func (ins *Inspector) drawDiffsTab(b *render.Buffer, r render.Rect, th Theme, ed
 		return
 	}
 	// Copy diff button row.
+	if edits[idx].edit.Tool == "patch_file" {
+		render.Styled("snippet lines", th.Subtle()).Draw(b, r.X, y)
+	}
 	copyLbl := "[y] copy diff"
 	cw := render.StringWidth(copyLbl)
 	if r.W > cw {
@@ -535,8 +784,28 @@ func (ins *Inspector) drawDiffsTab(b *render.Buffer, r render.Rect, th Theme, ed
 	y++
 
 	diffRect := render.Rect{X: r.X, Y: y, W: r.W, H: r.Bottom() - y}
-	diffLines := renderEditDiff(edits[idx], th, diffRect.W, 0)
+	diffLines := ins.cachedDiffLines(edits[idx], idx, th, diffRect.W)
 	ins.drawLines(b, diffRect, diffLines, ins.scroll)
+}
+
+func (ins *Inspector) cachedDiffLines(ie inspectorEdit, idx int, th Theme, width int) []render.Line {
+	c := &ins.cache
+	if c.diffIdx == idx && c.diffWidth == width && c.diffTheme == th.Name && c.diffUnicode == th.Unicode && c.diffLines != nil {
+		return c.diffLines
+	}
+	ed := ie.edit
+	ed.Path = sanitizeHeaderPath(ed.Path)
+	var lines []render.Line
+	if ie.pending {
+		lines = append(lines, render.Styled("Pending approval — proposed diff (not yet applied)", th.Status(StatusWarn)))
+	}
+	lines = append(lines, renderEditDiff(ed, th, width, 0)...)
+	c.diffIdx = idx
+	c.diffWidth = width
+	c.diffTheme = th.Name
+	c.diffUnicode = th.Unicode
+	c.diffLines = lines
+	return lines
 }
 
 func (ins *Inspector) drawInfoTab(b *render.Buffer, r render.Rect, th Theme, v *AgentView, entries []*Entry) {
@@ -606,9 +875,9 @@ func (ins *Inspector) drawInfoTab(b *render.Buffer, r render.Rect, th Theme, v *
 	ins.drawLines(b, r, lines, ins.scroll)
 }
 
-func (ins *Inspector) drawLines(b *render.Buffer, r render.Rect, lines []render.Line, start int) {
+func (ins *Inspector) drawLines(b *render.Buffer, r render.Rect, lines []render.Line, start int) int {
 	if r.Empty() || len(lines) == 0 {
-		return
+		return 0
 	}
 	maxOff := len(lines) - r.H
 	if maxOff < 0 {
@@ -625,4 +894,5 @@ func (ins *Inspector) drawLines(b *render.Buffer, r render.Rect, lines []render.
 	for row := 0; row < r.H && start+row < len(lines); row++ {
 		lines[start+row].Truncate(r.W).Draw(b, r.X, r.Y+row)
 	}
+	return start
 }

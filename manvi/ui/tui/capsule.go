@@ -40,6 +40,10 @@ type workCapsule struct {
 	pinned []int
 }
 
+func isSafetyPinnedStatus(st StatusKind) bool {
+	return st == StatusBlock || st == StatusGranted || st == StatusDegraded || st == StatusWarn
+}
+
 func isWorkEntry(k ui.Kind) bool {
 	switch k {
 	case ui.KindReasoning, ui.KindToolStart, ui.KindToolResult,
@@ -78,11 +82,8 @@ func buildWorkCapsule(entries []*Entry, start, end int) workCapsule {
 
 		// Pin any entry with a non-routine safety/error outcome so collapsing
 		// can never hide a block, failure, grant, demotion, or unrun check.
-		if !e.absorbed {
-			st := e.Status()
-			if st == StatusBlock || st == StatusGranted || st == StatusDegraded || st == StatusWarn {
-				cap.pinned = append(cap.pinned, i)
-			}
+		if !e.absorbed && isSafetyPinnedStatus(e.Status()) {
+			cap.pinned = append(cap.pinned, i)
 		}
 
 		switch ev.Kind {

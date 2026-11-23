@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -326,5 +327,228 @@ func TestTerminalThemeBlendsBackgroundAndPreservesStatusContrast(t *testing.T) {
 			t.Fatalf("terminal theme ANSI-16 clash between %s and %s: %q", prev, name, seq)
 		}
 		seen[seq] = name
+	}
+}
+
+func rectString(b *render.Buffer, r render.Rect) string {
+	var out []string
+	for y := r.Y; y < r.Bottom(); y++ {
+		var row strings.Builder
+		for x := r.X; x < r.Right(); x++ {
+			c := b.Cell(x, y)
+			if c.R == 0 {
+				continue
+			}
+			row.WriteRune(c.R)
+		}
+		out = append(out, row.String())
+	}
+	return strings.Join(out, "\n")
+}
+
+func TestInspectorDiffsLinksHonestyAndSanitization(t *testing.T) {
+	a, _ := newTestApp()
+	// 1. Granted edit: must carry granted glyph + [granted].
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolStart, Tool: "patch_file",
+		Arguments: []byte(`{"path":"granted.go","target_content":"a := 1","replacement_content":"a := 2"}`),
+	}})
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolResult, Tool: "patch_file", Text: "patched granted.go",
+		GrantID: "G-42", GrantedBy: "human",
+	}})
+	// 2. Clean edit with hostile control char in path: must strip controls and refuse OSC 8 link.
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolStart, Tool: "write_file",
+		Arguments: []byte(`{"path":"evil\u001b]52;c;YQ==\u0007.go","content":"package main\n"}`),
+	}})
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolResult, Tool: "write_file", Text: "wrote file",
+	}})
+	// 3. Pending edit (no ToolResult yet): must NOT show as applied "M".
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolStart, Tool: "patch_file",
+		Arguments: []byte(`{"path":"pending.go","target_content":"old","replacement_content":"new"}`),
+	}})
+
+	// editsOf (used by CopyOverlay/keys) must exclude the pending edit.
+	applied := editsOf(a.Current().Scroll.Entries())
+	if len(applied) != 2 {
+		t.Fatalf("editsOf returned %d edits, want 2 (excluding pending)", len(applied))
+	}
+
+	a.Current().Inspector.Toggle()
+	a.Current().Inspector.SetTab(TabDiffs)
+	p := render.NewPainter(160, 32, render.TrueColor)
+	a.Draw(p.Buffer())
+	var wire bytes.Buffer
+	if err := p.Flush(&wire, render.Cursor{}); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	wireStr := wire.String()
+	frame := rectString(p.Buffer(), a.Current().Inspector.rect)
+
+	if !strings.Contains(frame, "pending.go (pending)") {
+		t.Fatalf("pending edit not marked as pending:\n%s", frame)
+	}
+	if strings.Contains(frame, "M pending.go") {
+		t.Fatalf("pending edit must never be labeled as applied M:\n%s", frame)
+	}
+	if !strings.Contains(frame, "[granted]") {
+		t.Fatalf("granted edit missing [granted] qualifier:\n%s", frame)
+	}
+	// Valid path must emit OSC 8 file:// link.
+	if !strings.Contains(wireStr, "\x1b]8;;file://") || !strings.Contains(wireStr, "granted.go\x1b\\") {
+		t.Fatalf("Diffs tab did not emit OSC 8 file:// link for granted.go:\n%q", wireStr)
+	}
+	// Hostile path must NOT inject OSC 52 or emit an OSC 8 link for that path.
+	if strings.Contains(wireStr, "\x1b]52;") {
+		t.Fatalf("hostile path injected OSC 52 into painter output: %q", wireStr)
+	}
+	if got := fileLinkURL("bad\x1bpath.go"); got != "" {
+		t.Fatalf("fileLinkURL accepted path with ESC: %q", got)
+	}
+}
+
+func TestInspectorStepsCollapsibleSubagentsPreservePinnedOutcomes(t *testing.T) {
+	a, _ := newTestApp()
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{Kind: ui.KindTurnStart, Text: "inspect subagents"}})
+	// Subagent "reader": 1 routine read + 1 failed/error tool result.
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolStart, Agent: "reader", Tool: "read_file",
+		Arguments: []byte(`{"path":"alpha.go"}`),
+	}})
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolResult, Agent: "reader", Tool: "read_file", Text: "alpha-ok",
+	}})
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolStart, Agent: "reader", Tool: "read_file",
+		Arguments: []byte(`{"path":"missing.go"}`),
+	}})
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolResult, Agent: "reader", Tool: "read_file", IsError: true, Text: "not found",
+	}})
+	// Subagent "builder": 1 clean edit.
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolStart, Agent: "builder", Tool: "write_file",
+		Arguments: []byte(`{"path":"beta.go","content":"ok\n"}`),
+	}})
+	a.Dispatch(ActionEvent{SessionID: "S1", Event: ui.Event{
+		Kind: ui.KindToolResult, Agent: "builder", Tool: "write_file", Text: "wrote beta.go",
+	}})
+
+	ins := a.Current().Inspector
+	ins.Toggle()
+	ins.SetTab(TabSteps)
+	buf := drawAt(a, 160, 32)
+	frame := rectString(buf, ins.rect)
+
+	if !strings.Contains(frame, "[reader]") || !strings.Contains(frame, "alpha-ok") || !strings.Contains(frame, "not found") {
+		t.Fatalf("expanded Steps tab missing reader events:\n%s", frame)
+	}
+	if !strings.Contains(frame, "[builder]") || !strings.Contains(frame, "wrote beta.go") {
+		t.Fatalf("expanded Steps tab missing builder events:\n%s", frame)
+	}
+	if !strings.Contains(frame, "1 failed") {
+		t.Fatalf("subagent header missing failure count:\n%s", frame)
+	}
+
+	// Find recorded hit rect for [reader] and click it via App dispatch.
+	var readerRect render.Rect
+	for _, ar := range ins.agentRects {
+		if ar.agent == "reader" {
+			readerRect = ar.rect
+			break
+		}
+	}
+	if readerRect.Empty() {
+		t.Fatalf("no hit rect recorded for [reader] subagent header: %+v", ins.agentRects)
+	}
+	a.Dispatch(ActionClick{X: readerRect.X + 1, Y: readerRect.Y, Button: 1})
+	collapsed := rectString(drawAt(a, 160, 32), ins.rect)
+
+	// Routine read alpha-ok should now be hidden in the Inspector, while builder
+	// remains expanded, AND the failed "not found" row MUST remain pinned visibly.
+	if strings.Contains(collapsed, "alpha-ok") {
+		t.Fatalf("collapsed [reader] section still showed routine alpha-ok:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "not found") {
+		t.Fatalf("collapsed [reader] section hid failed row:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "wrote beta.go") {
+		t.Fatalf("collapsing [reader] affected [builder] section:\n%s", collapsed)
+	}
+
+	// Click again to re-expand [reader].
+	a.Dispatch(ActionClick{X: readerRect.X + 1, Y: readerRect.Y, Button: 1})
+	reexpanded := rectString(drawAt(a, 160, 32), ins.rect)
+	if !strings.Contains(reexpanded, "alpha-ok") {
+		t.Fatalf("second click did not re-expand [reader]:\n%s", reexpanded)
+	}
+}
+
+func TestWideDashboardShowsSplitLivePreviewPaneAndFallsBackNarrow(t *testing.T) {
+	a := NewApp(unicodeDark(), &stubHost{})
+	a.AddSession("S1", "session one")
+	v1 := a.Current()
+	v1.Title = "alpha-session"
+	v1.Status.Posture = "strict"
+	v1.Status.Model = "claude-sonnet-4"
+	v1.Status.TaskID = "T-101"
+	v1.Status.LeaseExpiry = time.Now().Add(15 * time.Minute)
+	v1.Status.Grants = 2
+	for i := 1; i <= 12; i++ {
+		v1.Apply(ui.Event{Kind: ui.KindNotice, Text: "transcript row " + itoa(i)})
+	}
+
+	a.AddSession("S2", "blocked-session")
+	v2 := a.views[1]
+	v2.Status.Posture = "dev"
+	v2.Status.Model = "gpt-5"
+	a.Dispatch(ActionApprovalRequest{
+		SessionID: "S2",
+		Request: ui.Request{
+			ID:       "REQ-9",
+			Rule:     "policy.shell.exec",
+			Severity: "soft",
+			Subject:  "command",
+			Path:     "rm -rf build/",
+			Reason:   "clean build directory",
+		},
+		Reply: make(chan ui.Decision, 1),
+	})
+	// Switch back to S1 (unblocked) so Ctrl+G is not gated by S2's modal approval card.
+	a.setActive(0)
+
+	key(a, "ctrl+g")
+	if a.mode != ModeDashboard {
+		t.Fatal("ctrl+g did not open dashboard")
+	}
+
+	// Highlight session 0 (unblocked, 12 transcript rows -> last 8 shown).
+	a.dashboard.Select(0)
+	wideFrame := bufferString(drawAt(a, 132, 36))
+	for _, want := range []string{"│", "Posture", "strict", "claude-sonnet-4", "T-101", "2 grant(s)", "Recent Transcript", "transcript row 12", "transcript row 5"} {
+		if !strings.Contains(wideFrame, want) {
+			t.Fatalf("wide dashboard missing %q:\n%s", want, wideFrame)
+		}
+	}
+	if strings.Contains(wideFrame, "transcript row 1\n") || strings.Contains(wideFrame, "transcript row 4") {
+		t.Fatalf("wide dashboard preview showed more than last 8 transcript rows:\n%s", wideFrame)
+	}
+
+	// Highlight session 1 (blocked -> pending approval details shown).
+	a.dashboard.Select(1)
+	blockedFrame := bufferString(drawAt(a, 132, 36))
+	for _, want := range []string{"Pending Approval", "policy.shell.exec", "Command", "rm -rf build/", "clean build directory"} {
+		if !strings.Contains(blockedFrame, want) {
+			t.Fatalf("wide dashboard blocked preview missing %q:\n%s", want, blockedFrame)
+		}
+	}
+
+	// Narrow width (< 116) falls back to single column without preview pane.
+	narrowFrame := bufferString(drawAt(a, 100, 30))
+	if strings.Contains(narrowFrame, "Recent Transcript") || strings.Contains(narrowFrame, "Pending Approval") {
+		t.Fatalf("narrow dashboard (<116) should not render split preview pane:\n%s", narrowFrame)
 	}
 }
