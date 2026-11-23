@@ -210,11 +210,18 @@ func (b *Buffer) Cell(x, y int) Cell {
 // SetCell writes one cell, clipped, holding it to the format rule SetRune
 // applies: the painter writes a cell's rune and Comb to the tty verbatim, so a
 // caller that builds a Cell must not be able to carry what SetRune refuses.
-// A base rune that is a control or format rune is stored as a space, and Comb
-// is reduced by cleanComb to zero-width marks the format rule allows. The painter's own bookkeeping copies cells that
-// SetRune already filtered and uses storeCell.
+// A base rune that is a control, format or other zero-width rune is stored as a
+// space (the column the painter counts for it), and Comb is reduced by
+// cleanComb to zero-width marks the format rule allows. The painter's own
+// bookkeeping copies cells that SetRune already filtered and uses storeCell.
 func (b *Buffer) SetCell(x, y int, c Cell) {
-	b.storeCell(x, y, cleanCell(c))
+	c = cleanCell(c)
+	// A wide rune in the last column would hang half a glyph off the row;
+	// SetRune stores a bare space there, and so does SetCell, Comb included.
+	if RuneWidth(c.R) == 2 && x+1 >= b.W {
+		c = Cell{R: ' ', Style: c.Style}
+	}
+	b.storeCell(x, y, c)
 }
 
 // storeCell writes a cell that is already known to satisfy the format rule.
@@ -225,10 +232,15 @@ func (b *Buffer) storeCell(x, y int, c Cell) {
 	b.cells[y*b.W+x] = c
 }
 
-// cleanCell returns c with a control or format base rune replaced by a space
+// cleanCell returns c with a control, format or zero-width base rune replaced by a space
 // and its Comb reduced to what SetRune would have kept.
 func cleanCell(c Cell) Cell {
-	if c.R != 0 && (c.R < 0x20 || unicode.IsControl(c.R) || unicode.Is(unicode.Cf, c.R)) {
+	// R == 0 is the continuation marker and stays. Any other base that is zero
+	// columns wide would be attached to the previous glyph by the terminal while
+	// the painter counted a column for it; SetRune would have made it a mark of
+	// the left cell or dropped it, and a cell write cannot reach its neighbour,
+	// so the faithful equivalent is a space.
+	if c.R != 0 && (c.R < 0x20 || unicode.IsControl(c.R) || unicode.Is(unicode.Cf, c.R) || RuneWidth(c.R) == 0) {
 		c.R = ' '
 	}
 	if c.Comb != "" {
