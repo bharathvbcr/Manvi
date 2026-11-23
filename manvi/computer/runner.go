@@ -109,14 +109,7 @@ func StartRun(ctx context.Context, opts RunOptions) (*Run, error) {
 		inputCopy[k] = v
 	}
 	opts.Inputs = inputCopy
-	opts.Privacy.Watched = append([]string(nil), opts.Privacy.Watched...)
-	capability := opts.Program.Capability()
-	opts.Privacy.SensitiveTargets = append(ownedSelectors(opts.Privacy.SensitiveTargets), sensitiveInputTargets(capability)...)
-	for _, parameter := range capability.Parameters {
-		if parameter.Sensitive {
-			opts.Privacy.Watched = append(opts.Privacy.Watched, opts.Inputs[parameter.Name].Display())
-		}
-	}
+	opts.Privacy = EffectivePolicy(opts.Program, opts.Privacy, opts.Inputs)
 	opts.Privacy.PID = opts.Session.Window.PID
 	opts.Privacy.WindowID = opts.Session.Window.ID
 	r := &Run{control: make(chan Control, 16), done: make(chan struct{}), state: initial, controller: ControllerAutomation}
@@ -311,6 +304,10 @@ type workResult struct {
 	receipt             *Receipt
 	fingerprint         [32]byte
 	takeoverFingerprint [32]byte
+	// semantic is the semantic digest of the latest capture, bound to its mask
+	// placement. fingerprinted says fingerprint was computed from a captured frame.
+	semantic      [32]byte
+	fingerprinted bool
 	// retain is set by a successful observe or observe_after so the next step may
 	// resolve against it instead of capturing the same screen again.
 	retain *retainedObservation
@@ -599,7 +596,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				}
 			}
 			if result.observation != nil {
-				reviewed = result.fingerprint
+				reviewed = result.nextReviewed(reviewed)
 				reviewedTakeover = result.takeoverFingerprint
 				safe := ownedObservation(*result.observation)
 				r.mu.Lock()
@@ -831,9 +828,11 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 						}
 					}
 					raw, err := opts.Desktop.Observe(workCtx, capturedSession)
-					result := workResult{epoch: capturedSession.Epoch, err: err, resume: resume, human: !resume, command: workflow.Command{Kind: "refresh"}, fingerprint: semanticFingerprint(raw)}
+					result := workResult{epoch: capturedSession.Epoch, err: err, resume: resume, human: !resume, command: workflow.Command{Kind: "refresh"}}
 					if err == nil {
-						result.err = result.capture(raw, opts.Privacy)
+						if result.err = result.capture(raw, opts.Privacy); result.err == nil {
+							result.fingerprint, result.fingerprinted = result.semantic, true
+						}
 					}
 					if handback && err == nil {
 						r.finishIntervention(InterventionReturned)
@@ -926,7 +925,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 						raw, observeErr := opts.Desktop.Observe(workCtx, capturedSession)
 						if observeErr == nil {
 							if safeErr := result.capture(raw, opts.Privacy); safeErr == nil {
-								result.fingerprint = semanticFingerprint(raw)
+								result.fingerprint, result.fingerprinted = result.semantic, true
 							} else {
 								observeErr = safeErr
 							}
@@ -1039,7 +1038,7 @@ func performResolve(ctx context.Context, opts RunOptions, session Session, outpu
 	}
 	safe := ownedObservation(kept.safe)
 	r.observation = &safe
-	r.fingerprint, r.takeoverFingerprint = kept.semantic, kept.takeover
+	r.fingerprint, r.takeoverFingerprint, r.semantic, r.fingerprinted = kept.semantic, kept.takeover, kept.semantic, true
 	o := workflow.Observation{ID: safe.ID, Complete: true, Target: command.Step.Target}
 	target, index, err := resolveLadder(ctx, opts.Desktop, session, safe.ID, command.Selector)
 	if err != nil {
@@ -1302,7 +1301,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 	// Offered to the run loop, which keeps it only if it is not the first frame
 	// taken since the last dispatch (see the result handler).
 	if raw.Complete {
-		r.retain = &retainedObservation{safe: ownedObservation(safe), semantic: semanticFingerprint(raw), takeover: r.takeoverFingerprint, at: capturedAt}
+		r.retain = &retainedObservation{safe: ownedObservation(safe), semantic: r.semantic, takeover: r.takeoverFingerprint, at: capturedAt}
 	}
 	return r
 }

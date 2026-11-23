@@ -10,12 +10,13 @@ import (
 )
 
 func (r *workResult) capture(raw Observation, privacy PrivacyPolicy) error {
-	safe, fingerprint, err := sanitizeFrame(raw, privacy, true)
+	safe, digests, err := sanitizeFrame(raw, privacy, true)
 	if err != nil {
 		return err
 	}
 	r.observation = &safe
-	r.takeoverFingerprint = fingerprint
+	r.takeoverFingerprint = digests.frame
+	r.semantic = digests.semantic
 	return nil
 }
 
@@ -29,10 +30,23 @@ func (r *workResult) approval(raw Observation, privacy PrivacyPolicy, s workflow
 	if err := r.capture(raw, privacy); err != nil {
 		return [32]byte{}, err
 	}
+	r.fingerprinted = true
 	if s.Visual != nil {
 		return r.takeoverFingerprint, nil
 	}
-	return semanticFingerprint(raw), nil
+	return r.semantic, nil
+}
+
+// nextReviewed is the digest a run holds as "reviewed" after result: the
+// result's own when it carries a digest of a frame it captured, else the last
+// good one. A result that captured a frame but failed before it was digested
+// (a recovery capture followed by a failed approval capture) has no digest, and
+// its zero value must not replace a real one.
+func (r *workResult) nextReviewed(last [32]byte) [32]byte {
+	if r.fingerprinted {
+		return r.fingerprint
+	}
+	return last
 }
 
 // A review is captured before focus invalidates the native observation and HID

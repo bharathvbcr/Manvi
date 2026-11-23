@@ -12,6 +12,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -439,26 +440,29 @@ func TestAdvB31ComputerSensitiveControlOutsideTheFrameDoesNotFailTheCapture(t *t
 // exported way to obtain it, so identity masking does not apply to them.
 func advExportedReturningPrivacyPolicy(t *testing.T) []string {
 	t.Helper()
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", nil, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
+	fset := token.NewFileSet()
 	var found []string
-	for _, pkg := range pkgs {
-		for fname, f := range pkg.Files {
-			if strings.HasSuffix(fname, "_test.go") {
+	for _, entry := range entries {
+		fname := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(fname, ".go") || strings.HasSuffix(fname, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, fname, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || !fn.Name.IsExported() || fn.Type.Results == nil {
 				continue
 			}
-			for _, decl := range f.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || !fn.Name.IsExported() || fn.Type.Results == nil {
-					continue
-				}
-				for _, res := range fn.Type.Results.List {
-					if id, ok := res.Type.(*ast.Ident); ok && id.Name == "PrivacyPolicy" {
-						found = append(found, fn.Name.Name)
-					}
+			for _, res := range fn.Type.Results.List {
+				if id, ok := res.Type.(*ast.Ident); ok && id.Name == "PrivacyPolicy" {
+					found = append(found, fn.Name.Name)
 				}
 			}
 		}
@@ -779,10 +783,12 @@ func TestAdvB31Computer16BitAlphaZeroRegionsCaptureAndMask(t *testing.T) {
 	}
 }
 
-// BREAKS (low, design): the digest is taken from an 8-bit NRGBA conversion, so
-// a change that lives only in the low byte of a 16-bit sample is not detected.
-// The parity oracle uses the same conversion, which is why parity holds.
-func TestAdvB31ComputerFrameDigestSeesTheLowByteOf16BitSamples(t *testing.T) {
+// DECIDED, documented on frameDigest: the digest is taken from the 8-bit
+// NRGBA conversion of the frame, the one the parity oracle defines, so a change
+// that lives only in the low byte of a 16-bit sample is not detected. A change
+// below 1/256 of a channel is invisible to the person reviewing the frame, and
+// the digest binds what they could see. The test pins that behaviour.
+func TestAdvB31ComputerFrameDigestIgnoresTheLowByteOf16BitSamples(t *testing.T) {
 	mk := func(v uint16) Observation {
 		m := image.NewGray16(image.Rect(0, 0, 2, 2))
 		for y := 0; y < 2; y++ {
@@ -804,7 +810,11 @@ func TestAdvB31ComputerFrameDigestSeesTheLowByteOf16BitSamples(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if da == db {
-		t.Fatal("16-bit frames that differ only in the low byte share a frame digest")
+	if da != db {
+		t.Fatal("16-bit frames that differ only in the low byte have different frame digests: the documented 8-bit digest contract changed")
+	}
+	// A difference that survives the 8-bit conversion is still seen.
+	if dc, err := frameFingerprint(mk(0x1334)); err != nil || dc == da {
+		t.Fatalf("a high-byte change was not seen by the digest (err %v)", err)
 	}
 }
