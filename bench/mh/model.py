@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
+from . import keystore
 from .runtime import api_model_id, api_provider
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
@@ -291,7 +292,10 @@ def _credential(*names):
     provider and endpoint are recorded, never the key.
     """
     for name in names:
-        val = os.environ.get(name)
+        # The runner's keys live in the key store (mh.keystore), not in its
+        # environment; a process that was never sealed still has them in
+        # os.environ.
+        val = keystore.get(name) or os.environ.get(name)
         if val:
             return val.strip()
     wanted = tuple(f"{n}=" for n in names)

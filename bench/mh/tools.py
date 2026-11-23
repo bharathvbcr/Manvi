@@ -33,6 +33,8 @@ import tempfile
 import time
 import weakref
 
+from . import procscan
+
 MAX_OUTPUT_BYTES = 30_000       # Terminus-KIRA's cap, inherited by the paper's harness
 SHELL_TIMEOUT_S = 120
 DIR_LIST_LIMIT = 200            # entries shown for a directory listing
@@ -410,15 +412,21 @@ def _checkout_top(start):
 
 
 def _walk_env_files(top):
-    """(guard paths, stats) for every `.env*` file or symlink under top.
+    """(guard paths, stats) for every `.env*` file, symlink or directory under top.
 
-    Bounded: .git, node_modules, target, virtualenvs and nested checkouts are
-    not entered, and at most ENV_GUARD_MAX_DIRS directories are visited. Hitting
-    that cap is recorded in the stats (and in every episode's containment
-    event), never presented as a complete scan. A symlink named .env* is
+    Bounded: .git, node_modules, target and virtualenvs are not entered, and at
+    most ENV_GUARD_MAX_DIRS directories are visited. Nested checkouts (a
+    directory holding its own .git) ARE entered, under the same cap: an .env in
+    a vendored or nested checkout is as readable as any other, and
+    git_guard_roots names only registered worktrees. A directory named .env* is
+    one guard root as a whole (its files are not .env files by name) and is not
+    entered. Hitting
+    that cap raises GitGuardError: a partial guard set leaves the .env files past
+    the cap readable, and an episode run on it would look the same as one run on
+    a complete scan. A symlink named .env* is
     included without being followed; the profile resolves it to its target.
     """
-    found, dirs, capped = set(), 0, False
+    found, dirs = set(), 0
 
     def onerror(e):
         raise GitGuardError(getattr(e, "filename", top) or top,
@@ -427,20 +435,20 @@ def _walk_env_files(top):
     for dp, dns, fns in os.walk(top, followlinks=False, onerror=onerror):
         dirs += 1
         if dirs > ENV_GUARD_MAX_DIRS:
-            capped = True
-            break
+            raise GitGuardError(
+                top, f"the .env* scan reached its cap of {ENV_GUARD_MAX_DIRS} "
+                     f"directories ({dirs} directories visited, more remain), so "
+                     f"the .env files past it would be unguarded")
         for n in fns:
             if n.startswith(".env"):
                 found.add(os.path.join(dp, n))
         for n in dns:
-            full = os.path.join(dp, n)
-            if n.startswith(".env") and os.path.islink(full):
-                found.add(full)
+            if n.startswith(".env"):
+                found.add(os.path.join(dp, n))
         dns[:] = [n for n in dns if n not in ENV_GUARD_PRUNE
-                  and not os.path.islink(os.path.join(dp, n))
-                  and not os.path.lexists(os.path.join(dp, n, ".git"))]
-    return tuple(sorted(found)), {"dirs": dirs, "cap": ENV_GUARD_MAX_DIRS,
-                                  "capped": capped}
+                  and not n.startswith(".env")
+                  and not os.path.islink(os.path.join(dp, n))]
+    return tuple(sorted(found)), {"dirs": dirs, "cap": ENV_GUARD_MAX_DIRS}
 
 
 def env_file_guards(*starts):
@@ -468,16 +476,51 @@ def env_file_guards(*starts):
 
 
 def env_guard_stats():
-    """How far the .env* scans got: directories visited, the cap, and whether it bit."""
+    """How far the .env* scans got: directories visited, and the cap they ran under.
+
+    A scan that reached the cap raised instead of being cached, so every scan
+    counted here is a complete one.
+    """
     runs = [s for _, s in _ENV_GUARD_CACHE.values()]
-    return {"dirs": sum(s["dirs"] for s in runs), "cap": ENV_GUARD_MAX_DIRS,
-            "capped": any(s["capped"] for s in runs)}
+    return {"dirs": sum(s["dirs"] for s in runs), "cap": ENV_GUARD_MAX_DIRS}
 
 
 def default_protected_roots():
     """What a shell must not touch when the caller names nothing narrower."""
     return ((BENCH_ROOT,) + git_guard_roots(BENCH_ROOT)
             + env_file_guards(BENCH_ROOT))
+
+
+class WorkspaceLayoutError(ContainmentUnavailable):
+    """The workspace root sits where concurrent episodes can read each other."""
+
+
+def require_protected_workspace_root(workspace_root, protected_roots=None):
+    """Refuse a workspace root that no protected root contains.
+
+    Reads outside the protected roots are left open (a compiler that cannot read
+    /usr is not a harness). What keeps one concurrent episode out of another's
+    workspace is therefore the deny on the protected root ABOVE both, with each
+    sandbox re-allowed only its own directory. A workspace root outside every
+    protected root has no such deny over it, so every episode's solution files
+    are readable to every other episode's shell. The supported layout is
+    bench/.work inside BENCH_ROOT; anything else is refused, not stamped.
+    Returns the protected root that contains workspace_root.
+    """
+    if protected_roots is None:
+        protected_roots = default_protected_roots()
+    real = os.path.realpath(workspace_root)
+    for p in protected_roots:
+        if not p:
+            continue
+        q = os.path.realpath(p)
+        if real == q or real.startswith(q + os.sep):
+            return q
+    raise WorkspaceLayoutError(
+        f"workspace root {real} is outside every protected root "
+        f"({', '.join(sorted(os.path.realpath(p) for p in protected_roots if p))}). "
+        f"Concurrent episodes there can read each other's workspaces. Use the "
+        f"supported layout, a directory inside {BENCH_ROOT}.")
 
 
 # --- one owner for a child's environment, temp directory and write roots -----
@@ -665,6 +708,15 @@ class ChildScope:
         self.root = os.path.realpath(tempfile.mkdtemp(
             prefix=prefix, dir=parent or runner_parent()))
         self._final = weakref.finalize(self, remove_tree, self.root)
+        # Unique per scope and carried in every child's environment, so close()
+        # can find what the children left behind (see mh.procscan).
+        self.marker = os.urandom(16).hex()
+        self._marker_issued = False
+        self._reaped = False
+        self.started = time.time()  # processes older than this are not this scope's
+        self.survivors = []       # pids still alive after close() tried to kill them
+        self.reap_error = None    # why the scan could not run, when it could not
+        self.unverified = []      # processes that cannot be attributed (see procscan)
 
     def private_dir(self, name):
         path = os.path.join(self.root, name)
@@ -674,6 +726,8 @@ class ChildScope:
     def env(self, private_dir):
         """The scrubbed environment for a child whose HOME/TMPDIR is `private_dir`."""
         env = scrubbed_env(private_dir)
+        env[procscan.MARKER_VAR] = self.marker
+        self._marker_issued = True
         if sys.platform == "darwin":
             # macOS mktemp ignores TMPDIR for a bare `mktemp -d` and for -t, and
             # writes under the per-user temp directory, which a child may not
@@ -694,8 +748,49 @@ class ChildScope:
                 f.write(f'PATH={shlex.quote(bindir)}:"$PATH"\nexport PATH\n')
         return env
 
+    def reap(self):
+        """Kill every process the scope's children started, whatever they did.
+
+        The process-group kill after each command cannot reach a child that
+        setsid()ed away, so those are found by the environment marker and killed
+        here, before the temp they may be using is removed. Survivors, and a scan
+        that could not run, are recorded and printed, never swallowed.
+        """
+        if self._reaped or not self._marker_issued:
+            return
+        self._reaped = True
+        try:
+            self.survivors = procscan.reap_marked(self.marker)
+            # What the marker cannot find (a hardened system binary hides its
+            # environment) is listed, not killed: nobody can say whose it is.
+            if containment_backend() == "sandbox-exec":
+                self.unverified = procscan.unverified_since(self.started)
+        except OSError as e:
+            self.reap_error = f"{type(e).__name__}: {e}"
+            print(f"[mh] WARNING: could not scan for processes left by {self.root}: "
+                  f"{self.reap_error}", file=sys.stderr, flush=True)
+            return
+        if self.survivors:
+            print(f"[mh] WARNING: processes {self.survivors} started under "
+                  f"{self.root} survived SIGKILL for {procscan.REAP_DEADLINE_S}s "
+                  f"after the episode ended", file=sys.stderr, flush=True)
+        if self.unverified:
+            listing = ", ".join(f"{u['pid']} ({u['path'] or '?'})" for u in self.unverified)
+            print(f"[mh] WARNING: {len(self.unverified)} process(es) started during the episode "
+                  f"under {self.root} could not be attributed to it and were NOT killed: "
+                  f"{listing}; {procscan.UNVERIFIED_REASON}", file=sys.stderr, flush=True)
+
+    @property
+    def clean_close(self):
+        """True only when the reap ran, found nothing left, and nothing is unverified."""
+        return (self._reaped and not self.survivors and self.reap_error is None
+                and not self.unverified)
+
     def close(self):
-        self._final()
+        try:
+            self.reap()
+        finally:
+            self._final()
 
     def stamp(self):
         """The provenance record of what this scope enforces."""
@@ -749,6 +844,21 @@ def sbpl_metadata_chain(allowed, protected):
     return lines
 
 
+# Mach services through which a shell could leave data for a LATER episode
+# without touching the filesystem the profile governs: cfprefsd holds
+# `defaults write` values in its own memory and flushes them for any process of
+# the same user, and the pasteboard server keeps the clipboard. `(allow default)`
+# leaves mach-lookup open, so both are denied by name. The names are the ones
+# `launchctl print gui/<uid>` lists on the host.
+# notifyd (com.apple.system.notification_center) keeps notify_set_state values for
+# any same-user process, and distnoted (com.apple.distributed_notifications@<variant>,
+# matched by prefix because the suffix names the session type) delivers
+# NSDistributedNotificationCenter posts to listeners outside the episode.
+DENIED_MACH_SERVICES = ("com.apple.cfprefsd.agent", "com.apple.cfprefsd.daemon",
+                        "com.apple.pasteboard.1", "com.apple.system.notification_center")
+DENIED_MACH_SERVICE_PREFIXES = ("com.apple.distributed_notifications",)
+
+
 def _seatbelt_profile(allow_write, protected_roots):
     """Deny writes everywhere, deny the benchmark tree outright, then re-allow.
 
@@ -756,7 +866,11 @@ def _seatbelt_profile(allow_write, protected_roots):
     sandbox's own allow must come after both denies, which keeps a workspace
     that lives inside a protected root usable.
     """
-    lines = ["(version 1)", "(allow default)", '(deny file-write* (subpath "/"))']
+    lines = ["(version 1)", "(allow default)",
+             "(deny mach-lookup "
+             + " ".join(f'(global-name "{n}")' for n in DENIED_MACH_SERVICES)
+             + " " + " ".join(f'(global-name-prefix "{p}")' for p in DENIED_MACH_SERVICE_PREFIXES) + ")",
+             '(deny file-write* (subpath "/"))']
     for p in _writable_system_roots():
         if os.path.exists(p):
             lines.append(f'(allow file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
@@ -1060,7 +1174,8 @@ def run_bounded_capture(argv, cwd=None, env=None, input_text=None, timeout=None,
       A `nohup sleep 300 &` used to outlive the command and the episode on
       macOS, because the group was killed only on a timeout. (bwrap's
       --unshare-pid already took descendants down with the namespace.) A
-      process that setsid()s itself out of the group is not reached on macOS.
+      process that setsid()s itself out of the group is not reached here; it is
+      found by ChildScope.reap() through its environment marker at episode end.
     * A timeout kills the group and raises subprocess.TimeoutExpired, like
       subprocess.run.
     * Output is held as a StreamCapture of `limit` (<= 0: keep everything).
@@ -1169,6 +1284,9 @@ class Sandbox:
         self._containment_checked = False
         self.last_shell_stats = None  # byte counts of the latest run_shell
         self._scope = None           # the shell's ChildScope, made on first use
+        self.survivors = []          # set by close(): pids that outlived the episode
+        self.reap_error = None       # set by close(): why the process scan could not run
+        self.unverified = []         # set by close(): processes that cannot be attributed
 
     @property
     def scope(self):
@@ -1181,11 +1299,21 @@ class Sandbox:
         """The environment every child of this sandbox's shell starts with."""
         return self.scope.env(self.scope.private_dir("shell"))
 
+    @property
+    def clean_close(self):
+        """False whenever close() left a survivor, could not scan, or found an unattributed process."""
+        return not (self.survivors or self.reap_error or self.unverified)
+
     def close(self):
         """End of the episode: remove its private temp. Idempotent."""
         if self._scope is not None:
-            self._scope.close()
-            self._scope = None
+            scope, self._scope = self._scope, None
+            try:
+                scope.close()
+            finally:
+                self.survivors = list(scope.survivors)
+                self.reap_error = scope.reap_error
+                self.unverified = list(scope.unverified)
 
     def resolve(self, path):
         """Resolve a model-supplied path inside the sandbox, or refuse."""

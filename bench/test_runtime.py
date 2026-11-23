@@ -1,4 +1,5 @@
 """Residency policy. No ollama required."""
+import atexit
 import contextlib
 import io
 import os
@@ -1027,13 +1028,21 @@ runner.ensure_sole_tenant = (lambda model, evict=True, share_gpu=False,
 runner.protocol_block = lambda **kw: _rt.protocol_block(env=ENV, **kw)
 
 
-def run_main(argv, results, tasks=("alpha",), plan=None):
+# The runner refuses a workspace root outside the protected benchmark tree, so the
+# default WORK for these in-process runs is a private directory under bench/.work
+# (gitignored), removed at exit. The refusal itself is driven with `work=`.
+_UNIT_WORK = os.path.join(runner.HERE, ".work", f"unittest-runtime-{os.getpid()}")
+os.makedirs(_UNIT_WORK, exist_ok=True)
+atexit.register(shutil.rmtree, _UNIT_WORK, ignore_errors=True)
+
+
+def run_main(argv, results, tasks=("alpha",), plan=None, work=None):
     """Drive run.main(). Returns (exit code or 0, stdout)."""
     FakeHarness.plan = dict(plan or {})
     FakeHarness.ran = []
     del EVICTED[:]
     runner.RESULTS = results
-    runner.WORK = os.path.join(results, ".work")
+    runner.WORK = work or tempfile.mkdtemp(prefix="w-", dir=_UNIT_WORK)
     runner.load_tasks = lambda names: [FakeTask(n) for n in (names or tasks)]
     out = io.StringIO()
     saved = sys.argv
@@ -1068,6 +1077,19 @@ with tempfile.TemporaryDirectory() as tmp:
           not os.path.exists(os.path.join(tmp, "m__full__bad")))
     code, _ = run_main(["--model", "m", "--tag", "bad", "--repeat", "-2"], tmp)
     check("negative --repeat is refused", isinstance(code, str), str(code))
+    # A workspace root outside every protected root has no deny over it, so
+    # concurrent episodes there can read each other's solutions.
+    outside = os.path.join(tmp, "open-layout")
+    code, _ = run_main(["--model", "m", "--tag", "open-layout"], tmp, work=outside)
+    check("a workspace root outside the protected tree is refused",
+          isinstance(code, str) and "outside every protected root" in code, str(code))
+    check("a refused workspace layout runs no episode", FakeHarness.ran == [],
+          str(FakeHarness.ran))
+    check("a refused workspace layout creates no workspace directory",
+          not os.path.exists(outside))
+    code, _ = run_main(["--model", "m", "--tag", "ok-layout"], tmp)
+    check("the supported layout (a directory inside the benchmark tree) is accepted",
+          code == 0 and FakeHarness.ran != [], f"{code!r} ran={FakeHarness.ran}")
     code, _ = run_main(["--model", "m", "--tag", "bad", "--starve-abort", "-1"], tmp)
     check("negative --starve-abort is refused",
           isinstance(code, str) and "--starve-abort" in code, str(code))

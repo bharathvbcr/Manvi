@@ -5,9 +5,10 @@ holds; a FAIL is a break. Nothing here fixes the implementation. Probes that onl
 observe a behaviour the brief says to report rather than judge print INFO and are
 not counted.
 
-Checks named test_open_b25_* are KNOWN-OPEN (out of this card's scope, filed as
-their own cards): they still run and still FAIL when the break is present, but the
-suite's exit status ignores them, and the summary line counts them separately.
+Checks named test_open_b25_* would be KNOWN-OPEN (a break found but not yet fixed):
+they still run and still FAIL when the break is present, but the suite's exit
+status ignores them, and the summary line counts them separately. None is open
+now; every former one gates as test_adv_b25_*.
 
 Run from bench/ with Python >= 3.11:  python3.14 test_adv_b25.py
 """
@@ -266,8 +267,8 @@ def p_defaults_pasteboard():
         sbs.append(sb2)
         r1 = sb2.run_shell(cmd=f"defaults read {key} marker 2>&1")
         r2 = sb2.run_shell(cmd="pbpaste 2>&1")
-        check("test_open_b25_cfprefsd_is_not_a_cross_episode_channel", "DEFAULTS-SENTINEL" not in r1, r1[:200])
-        check("test_open_b25_pasteboard_is_not_a_cross_episode_channel", "PASTE-SENTINEL" not in r2, r2[:200])
+        check("test_adv_b25_cfprefsd_is_not_a_cross_episode_channel", "DEFAULTS-SENTINEL" not in r1, r1[:200])
+        check("test_adv_b25_pasteboard_is_not_a_cross_episode_channel", "PASTE-SENTINEL" not in r2, r2[:200])
     finally:
         subprocess.run(["/usr/bin/defaults", "delete", key], capture_output=True)
         subprocess.run(["/usr/bin/pbcopy"], input=saved, capture_output=True)
@@ -345,6 +346,45 @@ def p_env_guard_shapes():
 
 guarded("test_adv_b25_env_guard_shapes", p_env_guard_shapes)
 
+
+def p_env_guard_cap_refuses():
+    """A .env* scan that hits its directory cap refuses; it never runs with a partial guard set."""
+    repo = os.path.realpath(tempfile.mkdtemp(prefix="repo-cap-", dir=ADV))
+    os.makedirs(os.path.join(repo, ".git"))
+    bench = os.path.join(repo, "bench")
+    os.makedirs(bench)
+    for i in range(8):
+        os.makedirs(os.path.join(repo, f"pkg{i}"))
+    open(os.path.join(repo, "pkg7", ".env"), "w").write("PAST-THE-CAP-SENTINEL")
+    saved_cap, saved_cache = toolmod.ENV_GUARD_MAX_DIRS, dict(toolmod._ENV_GUARD_CACHE)
+    err, guards = None, None
+    try:
+        toolmod.ENV_GUARD_MAX_DIRS = 4
+        toolmod._ENV_GUARD_CACHE.clear()
+        try:
+            guards = env_file_guards(bench)
+        except toolmod.GitGuardError as e:
+            err = e
+        check("test_adv_b25_capped_env_guard_scan_refuses_the_episode",
+              err is not None, f"no refusal; the scan returned {guards!r} with the cap hit")
+        text = str(err)
+        check("test_adv_b25_capped_env_guard_refusal_names_the_cap_and_the_directory_count",
+              err is not None and "cap of 4 directories" in text and "5 directories" in text, text[:300])
+        check("test_adv_b25_capped_scan_is_not_cached_as_a_complete_one",
+              not toolmod._ENV_GUARD_CACHE, str(toolmod._ENV_GUARD_CACHE)[:200])
+        toolmod.ENV_GUARD_MAX_DIRS = 50
+        found = env_file_guards(bench)
+        check("test_adv_b25_scan_under_its_cap_still_finds_every_env_file",
+              found == (os.path.join(repo, "pkg7", ".env"),), repr(found))
+    finally:
+        toolmod.ENV_GUARD_MAX_DIRS = saved_cap
+        toolmod._ENV_GUARD_CACHE.clear()
+        toolmod._ENV_GUARD_CACHE.update(saved_cache)
+        shutil.rmtree(repo, ignore_errors=True)
+
+
+guarded("test_adv_b25_env_guard_cap", p_env_guard_cap_refuses)
+
 # ---------------------------------------------------------------------------
 print("environment leakage")
 
@@ -402,42 +442,162 @@ def p_ps_env():
 guarded("test_adv_b25_ps_env", p_ps_env)
 
 
-def p_procargs_env():
-    """ps is blocked in the sandbox; sysctl(KERN_PROCARGS2) on the parent is not a binary."""
-    if sys.platform != "darwin":
-        return
+def procargs_reader_path():
     reader = os.path.join(ADV, "procargs_reader.py")
     open(reader, "w").write(textwrap.dedent('''
         import ctypes, sys
         libc = ctypes.CDLL(None)
-        mib = (ctypes.c_int * 3)(1, 49, int(sys.argv[1]))
-        size = ctypes.c_size_t(0)
-        libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0)
-        buf = ctypes.create_string_buffer(size.value)
-        rc = libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0)
-        print("SYSCTL_RC", rc, size.value)
-        print(buf.raw[:size.value].replace(b"\\0", b" ").decode("utf-8", "replace"))
+        for pid in sys.argv[1:]:
+            mib = (ctypes.c_int * 3)(1, 49, int(pid))
+            size = ctypes.c_size_t(0)
+            libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0)
+            buf = ctypes.create_string_buffer(size.value)
+            rc = libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0)
+            print("SYSCTL_RC", rc, size.value, "pid", pid)
+            print(buf.raw[:size.value].replace(b"\\0", b" ").decode("utf-8", "replace"))
     '''))
-    script = textwrap.dedent(f'''
+    return reader
+
+
+def sandboxed_shell_script(shell_cmd, seal, extra=""):
+    """A throwaway runner: optionally sealed first, then an episode shell running shell_cmd."""
+    return textwrap.dedent(f'''
         import os, sys, tempfile
         sys.path.insert(0, {HERE!r})
+        {"from mh import keystore; keystore.seal_environment()" if seal else ""}
         tempfile.tempdir = {ADV!r}
         from mh.tools import Sandbox
         from mh.bench import load_tasks
+        {extra}
         t = {{x.name: x for x in load_tasks()}}["cryptic"]
         d = tempfile.mkdtemp(prefix="ws-", dir={ADV!r}); s = os.path.join(d, "s"); t.materialise(s)
         sb = Sandbox(s, protected_roots=t.guard_roots)
-        print(sb.run_shell(cmd="python3 " + {reader!r} + " " + str(os.getpid()) + " 2>&1 | tail -c 6000"))
+        print(sb.run_shell(cmd={shell_cmd}))
         sb.close()
     ''')
+
+
+def run_py(script, env, timeout=90):
+    return subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True,
+                          timeout=timeout, env=env)
+
+
+def p_procargs_env():
+    """ps is blocked in the sandbox; sysctl(KERN_PROCARGS2) on the parent is not a binary.
+
+    No SBPL rule closes it (a same-uid process can read its parent's exec-time
+    environment), so the runner removes its keys from the environment it is
+    exec'd with: mh.keystore.seal_environment() re-execs it clean and hands the
+    keys over an inherited pipe.
+    """
+    if sys.platform != "darwin":
+        return
+    reader = procargs_reader_path()
+    read_self = '"python3 " + ' + repr(reader) + ' + " " + str(os.getpid()) + " 2>&1 | tail -c 6000"'
     env = {**os.environ, "CEREBRAS_API_KEY": "PROCARGS-SENTINEL-KEY"}
-    p = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True, timeout=60, env=env)
+    # Negative control: the same probe against a runner that did NOT seal reads the key,
+    # so a clean result below is the seal's doing and not a probe that cannot see.
+    p0 = run_py(sandboxed_shell_script(read_self, seal=False), env)
+    check("test_adv_b25_procargs_probe_detects_an_unsealed_runner", "PROCARGS-SENTINEL-KEY" in p0.stdout,
+          (p0.stdout + p0.stderr)[:300])
+    p = run_py(sandboxed_shell_script(read_self, seal=True), env)
     check("test_adv_b25_procargs_probe_ran", "SYSCTL_RC" in p.stdout, (p.stdout + p.stderr)[:300])
-    check("test_open_b25_model_shell_cannot_read_the_runners_environment_via_sysctl_procargs",
+    check("test_adv_b25_model_shell_cannot_read_the_runners_environment_via_sysctl_procargs",
           "PROCARGS-SENTINEL-KEY" not in p.stdout, p.stdout[:400])
+    # The runner still has its key: it is in memory, which is what Client() reads.
+    p2 = run_py(sandboxed_shell_script("'true'", seal=True,
+                                       extra="from mh import model; print('KEY', model._credential('CEREBRAS_API_KEY'), "
+                                             "'ENV', os.environ.get('CEREBRAS_API_KEY'))"), env)
+    check("test_adv_b25_sealed_runner_still_reads_its_key_from_the_key_store",
+          "KEY PROCARGS-SENTINEL-KEY ENV None" in p2.stdout, (p2.stdout + p2.stderr)[:300])
+    # Every ancestor of the shell: grid.py (outer) -> run.py (inner) -> shell. The shell reads
+    # the exec-time environment of both. The outer hands the key to the inner over keystore.handoff.
+    inner = sandboxed_shell_script(
+        '"python3 " + ' + repr(reader) + ' + " " + str(os.getpid()) + " " + str(os.getppid()) + " 2>&1 | tail -c 12000"',
+        seal=True, extra="from mh import model; print('INNER-KEY', model._credential('CEREBRAS_API_KEY'))")
+    outer = textwrap.dedent(f'''
+        import os, subprocess, sys
+        sys.path.insert(0, {HERE!r})
+        from mh import keystore
+        keystore.seal_environment()
+        env, fds, done = keystore.handoff(dict(os.environ))
+        try:
+            p = subprocess.run([sys.executable, "-I", "-c", {inner!r}], env=env, pass_fds=fds,
+                               capture_output=True, text=True, timeout=80)
+        finally:
+            done()
+        sys.stdout.write(p.stdout); sys.stderr.write(p.stderr)
+    ''')
+    p3 = run_py(outer, env, timeout=120)
+    both = p3.stdout.count("SYSCTL_RC")
+    check("test_adv_b25_shell_read_both_ancestors_exec_environments", both == 2, (p3.stdout + p3.stderr)[:400])
+    check("test_adv_b25_no_ancestor_of_the_shell_holds_a_key_in_its_exec_environment",
+          "PROCARGS-SENTINEL-KEY" not in p3.stdout.replace("INNER-KEY PROCARGS-SENTINEL-KEY", ""), p3.stdout[:600])
+    check("test_adv_b25_runner_launched_through_handoff_still_has_its_key",
+          "INNER-KEY PROCARGS-SENTINEL-KEY" in p3.stdout, (p3.stdout + p3.stderr)[:300])
 
 
 guarded("test_adv_b25_procargs_env", p_procargs_env)
+
+
+def p_keystore():
+    """The key hand-off fails closed, is bounded, and sits first in every entry point."""
+    import ast
+    base_env = {k: v for k, v in os.environ.items() if not k.upper().endswith(keystore_suffixes)}
+
+    def ks(code, extra_env=None, pass_fds=()):
+        return subprocess.run([sys.executable, "-I", "-c",
+                               f"import sys; sys.path.insert(0, {HERE!r})\nfrom mh import keystore\n" + code],
+                              capture_output=True, text=True, timeout=60, pass_fds=pass_fds,
+                              env={**base_env, **(extra_env or {})})
+    r = ks("print('SEAL', keystore.seal_environment())")
+    check("test_adv_b25_keystore_seal_with_nothing_to_hide_returns_without_re_exec",
+          "SEAL none" in r.stdout, (r.stdout + r.stderr)[:200])
+    r = ks("keystore.seal_environment()", {"MH_KEYSTORE_FD": "abc"})
+    check("test_adv_b25_keystore_refuses_a_non_numeric_descriptor", r.returncode != 0 and "KeystoreError" in r.stderr, r.stderr[-200:])
+    r = ks("keystore.seal_environment()", {"MH_KEYSTORE_FD": "1"})
+    check("test_adv_b25_keystore_refuses_a_standard_stream_as_the_pipe", r.returncode != 0 and "standard stream" in r.stderr, r.stderr[-200:])
+    rf = os.open(os.path.join(HERE, "run.py"), os.O_RDONLY)
+    os.set_inheritable(rf, True)
+    try:
+        r = ks("keystore.seal_environment()", {"MH_KEYSTORE_FD": str(rf)}, pass_fds=(rf,))
+    finally:
+        os.close(rf)
+    check("test_adv_b25_keystore_refuses_a_descriptor_that_is_not_a_pipe", r.returncode != 0 and "not a pipe" in r.stderr, r.stderr[-200:])
+    for label, data, want in (("not_json", b"nope", "not JSON"), ("not_a_name_value_object", b"[1,2]", "name -> value"),
+                              ("oversized", b'{"A_API_KEY":"' + b"x" * 9000 + b'"}', "exceeds its bound")):
+        rr, ww = os.pipe()
+        os.write(ww, data)
+        os.close(ww)
+        os.set_inheritable(rr, True)
+        try:
+            r = ks("keystore.seal_environment()", {"MH_KEYSTORE_FD": str(rr)}, pass_fds=(rr,))
+        finally:
+            os.close(rr)
+        check(f"test_adv_b25_keystore_refuses_a_payload_that_is_{label}", r.returncode != 0 and want in r.stderr, r.stderr[-200:])
+    r = ks("keystore.seal_environment()", {"BIG_API_KEY": "k" * 9000})
+    check("test_adv_b25_keystore_refuses_keys_over_the_hand_off_bound_rather_than_keep_them_in_the_environment",
+          r.returncode != 0 and "hand-off bound" in r.stderr, r.stderr[-200:])
+    r = ks("keystore.seal_environment(); import os; print('LEFT', sorted(k for k in os.environ if k.endswith('_TOKEN') or k.endswith('_API_KEY') or k == 'MH_KEYSTORE_FD'), "
+           "keystore.names())", {"A_API_KEY": "1", "B_TOKEN": "2", "HOME_NOT_A_KEY": "3"})
+    check("test_adv_b25_keystore_moves_every_secret_named_variable_out_of_the_environment",
+          "LEFT [] ['A_API_KEY', 'B_TOKEN']" in r.stdout, (r.stdout + r.stderr)[:300])
+    r = ks("keystore.seal_environment(); import os, urllib.request as u; print('PX', u.getproxies().get('https'), keystore.names())",
+           {"HTTPS_PROXY": "http://user:pw@127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9"})
+    check("test_adv_b25_sealed_runner_keeps_a_credentialed_proxy_for_urllib_in_process",
+          "PX http://user:pw@127.0.0.1:9 ['HTTPS_PROXY']" in r.stdout, (r.stdout + r.stderr)[-300:])
+    # Each entry point seals before it does anything else, or its exec-time environment is exposed.
+    for entry in ("run.py", "grid.py"):
+        tree = ast.parse(open(os.path.join(HERE, entry)).read())
+        main_block = next(n for n in tree.body if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                          and getattr(n.test.left, "id", "") == "__name__")
+        first = ast.unparse(main_block.body[0])
+        check(f"test_adv_b25_{entry.replace('.', '_')}_seals_its_environment_first_in_its_entry_point",
+              first == "keystore.seal_environment()", first)
+
+
+keystore_suffixes = ("_API_KEY", "_TOKEN", "_SECRET", "_SECRET_KEY", "_PASSWORD")
+guarded("test_adv_b25_keystore", p_keystore)
 
 # ---------------------------------------------------------------------------
 print("odd and hostile paths")
@@ -530,14 +690,61 @@ def p_concurrent():
     r = sb1.run_shell(cmd=f"cat '{sh2}/note' 2>&1")
     check("test_adv_b25_parallel_episode_cannot_read_the_other_episodes_shell_temp",
           "A-SOLUTION" not in r, r[:160])
-    r = sb1.run_shell(cmd=f"cat '{s2}/app/invoice.py' 2>&1 | head -c 200")
-    check("test_open_b25_parallel_episode_cannot_read_the_other_episodes_workspace",
-          "def " not in r and "import" not in r, r[:160])
     sb1.close()
     sb2.close()
 
 
 guarded("test_adv_b25_concurrent", p_concurrent)
+
+
+def p_workspace_layout():
+    """Concurrent episodes cannot read each other's workspaces in the layout the runner supports.
+
+    Outside the protected tree nothing denies a sibling's workspace (reads are
+    open elsewhere), so the runner refuses that layout (see test_runtime) and
+    require_protected_workspace_root is its one check. Inside BENCH_ROOT the
+    protected root above both workspaces is what closes the cross-read.
+    """
+    outside = os.path.join(ADV, "open-layout")
+    try:
+        toolmod.require_protected_workspace_root(outside, CRYPTIC.guard_roots)
+        refused = False
+    except toolmod.WorkspaceLayoutError:
+        refused = True
+    check("test_adv_b25_workspace_root_outside_the_protected_tree_is_refused", refused,
+          f"{outside} was accepted")
+    link = os.path.join(ADV, "link-into-bench")
+    os.symlink(os.path.join(HERE, ".work"), link)
+    try:
+        inside = toolmod.require_protected_workspace_root(os.path.join(link, "w"), CRYPTIC.guard_roots)
+    finally:
+        os.unlink(link)
+    check("test_adv_b25_workspace_root_is_judged_by_its_realpath", inside == os.path.realpath(HERE), inside)
+    work = os.path.join(HERE, ".work")
+    os.makedirs(work, exist_ok=True)
+    parent = os.path.realpath(tempfile.mkdtemp(prefix="adv-b26-", dir=work))
+    try:
+        toolmod.require_protected_workspace_root(parent, CRYPTIC.guard_roots)
+        s1 = os.path.join(parent, "e1")
+        s2 = os.path.join(parent, "e2")
+        CRYPTIC.materialise(s1)
+        CRYPTIC.materialise(s2)
+        sb1 = Sandbox(s1, protected_roots=CRYPTIC.guard_roots)
+        sb2 = Sandbox(s2, protected_roots=CRYPTIC.guard_roots)
+        sb2.run_shell(cmd="echo OTHER-EPISODE-SENTINEL > app/note.txt")
+        own = sb1.run_shell(cmd="cat app/invoice.py 2>&1 | head -c 100")
+        r = sb1.run_shell(cmd=f"cat '{s2}/app/invoice.py' '{s2}/app/note.txt' 2>&1 | head -c 300")
+        check("test_adv_b25_supported_layout_episode_still_reads_its_own_workspace",
+              "def " in own or "import" in own, own[:160])
+        check("test_adv_b25_supported_layout_episode_cannot_read_the_other_episodes_workspace",
+              "def " not in r and "import" not in r and "OTHER-EPISODE-SENTINEL" not in r, r[:200])
+        sb1.close()
+        sb2.close()
+    finally:
+        unlock(parent)
+
+
+guarded("test_adv_b25_workspace_layout", p_workspace_layout)
 
 
 def p_concurrent_verify_window():
@@ -620,7 +827,7 @@ def _survivor():
             alive = True
         except OSError:
             alive = False
-    check("test_open_b25_no_process_survives_its_episode", not alive, f"daemon pid {alive_pid} alive={alive}; run_shell said {r[:120]!r}")
+    check("test_adv_b25_no_process_survives_its_episode", not alive, f"daemon pid {alive_pid} alive={alive}; run_shell said {r[:120]!r}")
     # End to end: the survivor copies the next verification's scope and episode two reads it back.
     sbV, sV = sandbox_for(CRYPTIC)
     put_payload(sV, 'import os, tempfile, time\nopen(os.path.join(tempfile.gettempdir(), "args.txt"), "w").write("SURVIVOR-HIDDEN-ARGS")\ntime.sleep(1)\n')
@@ -633,12 +840,154 @@ def _survivor():
                 got = c.recv(1 << 20).decode()
         except OSError as e:
             got = f"connect failed: {e}"
-    check("test_open_b25_survivor_cannot_carry_verifier_scope_contents_to_a_later_episode",
+    check("test_adv_b25_survivor_cannot_carry_verifier_scope_contents_to_a_later_episode",
           "SURVIVOR-HIDDEN-ARGS" not in got, got[:200])
     sbV.close()
 
 
 guarded("test_adv_b25_survivor", p_survivor)
+
+
+DAEMON = textwrap.dedent('''
+    import os, sys, time
+    if os.fork(): os._exit(0)
+    os.setsid()
+    if os.fork(): os._exit(0)
+    open(sys.argv[1], "w").write(str(os.getpid()))
+    time.sleep(120)
+''')
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _start_daemon(sb, name):
+    """Run a double-forked, setsid'd python daemon in sb's shell; return its pid (or 0)."""
+    sb.run_shell(cmd="cat > $TMPDIR/d.py <<'EOF'\n" + DAEMON + "\nEOF\n")
+    pidfile = os.path.join(sb.root, name)
+    sb.run_shell(cmd=f"python3 $TMPDIR/d.py '{pidfile}' </dev/null >/dev/null 2>&1; sleep 0.5")
+    try:
+        pid = int(open(pidfile).read())
+    except (OSError, ValueError):
+        return 0
+    PIDS.append(pid)
+    return pid
+
+
+def p_procscan_units():
+    """Pure checks of the KERN_PROCARGS2 parse and the scan bounds."""
+    import struct
+    from mh import procscan
+
+    def block(argv, env, path=b"/bin/x"):
+        return struct.pack("=i", len(argv)) + path + b"\0\0\0" + b"".join(a + b"\0" for a in argv) + \
+            b"".join(e + b"\0" for e in env)
+    needle = b"MH_EPISODE=abc"
+    env = procscan._parse_procargs(block([b"x", needle], [b"PATH=/bin", needle]))
+    check("test_adv_b25_procargs_parse_returns_only_the_environment_entries",
+          env == b"\0PATH=/bin\0MH_EPISODE=abc\0", repr(env))
+    env = procscan._parse_procargs(block([b"x", needle], [b"PATH=/bin"]))
+    check("test_adv_b25_a_marker_only_in_argv_is_not_in_the_environment", (b"\0" + needle + b"\0") not in env, repr(env))
+    check("test_adv_b25_a_hardened_binarys_missing_environment_parses_to_empty_not_none",
+          procscan._parse_procargs(block([b"/bin/sleep", b"5"], [])) == b"", "")
+    check("test_adv_b25_a_truncated_procargs_block_is_unreadable",
+          procscan._parse_procargs(b"\x05\0\0\0/bin/x\0\0a\0") is None, "")
+    old = procscan.MAX_PIDS
+    procscan.MAX_PIDS = 4
+    try:
+        try:
+            procscan.marked_pids("abc")
+            capped = False
+        except procscan.ScanIncomplete:
+            capped = True
+    finally:
+        procscan.MAX_PIDS = old
+    check("test_adv_b25_a_capped_process_list_raises_instead_of_reporting_nothing_found", capped or sys.platform != "darwin", "")
+    old = procscan.SCAN_BUDGET_S
+    procscan.SCAN_BUDGET_S = 0.0
+    try:
+        try:
+            procscan.marked_pids("abc")
+            slow = False
+        except procscan.ScanIncomplete:
+            slow = True
+    finally:
+        procscan.SCAN_BUDGET_S = old
+    check("test_adv_b25_a_scan_over_its_time_budget_raises_instead_of_reporting_nothing_found", slow, "")
+
+
+guarded("test_adv_b25_procscan_units", p_procscan_units)
+
+
+def p_reap():
+    """Episode end kills what setsid'd away, only that episode's, and says so when it cannot."""
+    try:
+        sb1, _ = sandbox_for(CRYPTIC)
+        sb2, _ = sandbox_for(CRYPTIC)
+        d1, d2 = _start_daemon(sb1, "d1.pid"), _start_daemon(sb2, "d2.pid")
+        check("test_adv_b25_reap_probe_started_two_setsid_daemons", bool(d1 and d2 and _alive(d1) and _alive(d2)),
+              f"d1={d1} d2={d2}")
+        sb1.close()
+        time.sleep(0.3)
+        check("test_adv_b25_closing_an_episode_kills_its_setsid_daemon", not _alive(d1), f"pid {d1} alive")
+        check("test_adv_b25_closing_an_episode_leaves_a_concurrent_episodes_daemon_alone", _alive(d2),
+              f"pid {d2} was killed by the other episode's close")
+        check("test_adv_b25_clean_close_reports_no_survivors", sb1.survivors == [] and sb1.reap_error is None,
+              f"{sb1.survivors} {sb1.reap_error}")
+        sb2.close()
+        time.sleep(0.3)
+        check("test_adv_b25_the_second_episodes_close_kills_its_daemon_too", not _alive(d2), f"pid {d2} alive")
+        # A process that cannot be killed within the deadline is REPORTED, never read as a clean close.
+        sb3, _ = sandbox_for(CRYPTIC)
+        d3 = _start_daemon(sb3, "d3.pid")
+        from mh import procscan
+        real_kill = procscan.os.kill
+        procscan.os.kill = lambda pid, sig: None        # a process that will not die
+        try:
+            left = procscan.reap_marked(sb3.scope.marker, deadline_s=0.0)
+        finally:
+            procscan.os.kill = real_kill
+        check("test_adv_b25_a_process_that_survives_the_kill_pass_is_returned_as_a_survivor", d3 in left, f"d3={d3} left={left}")
+        left = procscan.reap_marked(sb3.scope.marker, deadline_s=0.0)
+        time.sleep(0.2)
+        check("test_adv_b25_a_deadline_of_zero_still_gets_one_full_kill_pass", not _alive(d3) and d3 not in left, f"d3={d3} left={left}")
+        sb3.close()
+        time.sleep(0.3)
+        check("test_adv_b25_close_after_a_timed_out_scan_still_kills_it", not _alive(d3), f"pid {d3} alive")
+        # What the marker cannot see: a hardened system binary hides its environment from the sysctl.
+        if sys.platform == "darwin" and os.path.exists("/usr/bin/perl"):
+            sb4, _ = sandbox_for(CRYPTIC)
+            pf = os.path.join(sb4.root, "perl.pid")
+            sb4.run_shell(cmd="/usr/bin/perl -e 'use POSIX; exit 0 if fork; POSIX::setsid(); exit 0 if fork; "
+                              f"open F, \">{pf}\"; print F $$; close F; sleep 120' </dev/null >/dev/null 2>&1; sleep 0.5")
+            try:
+                pp = int(open(pf).read())
+                PIDS.append(pp)
+            except (OSError, ValueError):
+                pp = 0
+            sb4.close()
+            time.sleep(0.3)
+            # Not killable (unattributable), so it must be REPORTED on the episode, never read as a clean close.
+            listed = {u["pid"]: u for u in sb4.unverified}
+            check("test_adv_b25_a_setsid_hardened_binary_daemon_is_reported_unverified_not_silently_left",
+                  bool(pp) and _alive(pp) and pp in listed and "/perl" in listed[pp]["path"]
+                  and "cannot attribute" in listed[pp]["reason"], f"pid {pp} unverified={sorted(listed)}")
+            check("test_adv_b25_a_close_that_left_an_unattributed_process_is_not_a_clean_close",
+                  not sb4.clean_close, f"survivors={sb4.survivors} unverified={sorted(listed)}")
+    finally:
+        for p in PIDS:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+guarded("test_adv_b25_reap", p_reap)
 
 # ---------------------------------------------------------------------------
 print("logging")
