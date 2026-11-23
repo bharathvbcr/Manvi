@@ -110,6 +110,14 @@ func reportsIn(t *testing.T, log *session.Log) []session.VerifyReportData {
 
 func checkedReplayLoop(t *testing.T, turns []replay.Turn, maxSteps int, v *fakeVerifier) (*agent.Loop, *session.Log) {
 	t.Helper()
+	return checkedReplayLoopWith(t, turns, maxSteps, v, registerFakeWrite)
+}
+
+// checkedReplayLoopWith is checkedReplayLoop with the write tool supplied by the
+// caller. It arms the loop the way production does: EndOfTurnCheck on the config
+// and the sensor attached through OnCheck, both.
+func checkedReplayLoopWith(t *testing.T, turns []replay.Turn, maxSteps int, v *fakeVerifier, register func(*testing.T, *tools.Registry)) (*agent.Loop, *session.Log) {
+	t.Helper()
 	b := bus.New()
 	log := session.NewLog()
 	registry := tools.NewRegistry(b)
@@ -130,11 +138,52 @@ func checkedReplayLoop(t *testing.T, turns []replay.Turn, maxSteps int, v *fakeV
 	if err != nil {
 		t.Fatal(err)
 	}
-	registerFakeWrite(t, registry)
+	register(t, registry)
 	if err := attachSensor(b, &sensor{native: v, log: log}); err != nil {
 		t.Fatal(err)
 	}
 	return loop, log
+}
+
+// Production arms both declarations (EndOfTurnCheck and OnCheck). A turn
+// cancelled after a write is marked interrupted by the loop's cancel path, and
+// that record must be the only one: the deferred seal for "owed and did not run"
+// would otherwise write a degraded report over it.
+func TestCancelledCheckedTurnIsInterruptedWithOneReport(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	v := &fakeVerifier{report: devcouncil.PathReport{Verdict: devcouncil.VerdictPassed}}
+	loop, log := checkedReplayLoopWith(t, []replay.Turn{
+		replayToolCall("c1", "write", `{"path":"a.go"}`),
+		replayToolCall("c2", "write", `{"path":"b.go"}`),
+	}, 8, v, func(t *testing.T, registry *tools.Registry) {
+		t.Helper()
+		if err := registry.Register(tools.Tool{
+			Schema: llm.ToolSchema{Name: "write", Description: "write a file"},
+			Handler: func(context.Context, tools.Call) tools.Result {
+				cancel()
+				return tools.Result{Text: "wrote a.go", Wrote: []string{"a.go"}}
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	out, err := loop.Run(ctx, llm.Message{
+		Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "fix a.go"}},
+	})
+	if err == nil {
+		t.Fatal("fixture: the cancelled turn was meant to return its error")
+	}
+	if out.Sensor != agent.SensorInterrupted {
+		t.Fatalf("sensor = %q, want interrupted", out.Sensor)
+	}
+	got := reportsIn(t, log)
+	if len(got) != 1 || got[0].Verdict != string(agent.SensorInterrupted) {
+		t.Fatalf("reports = %+v, want exactly one, interrupted", got)
+	}
+	if v.calls != 0 {
+		t.Fatal("a verifier was started for a cancelled turn")
+	}
 }
 
 // The declaration that arms the loop is made in newTurnLoop, from whether the

@@ -259,6 +259,18 @@ func TestZadv_w24vb_CriticCannotReadOutsideItsWorktree(t *testing.T) {
 			if len(provider.results) != 6 || !strings.Contains(provider.results[5], "parent baseline content") {
 				t.Fatalf("the control read of an in-tree file did not come back, so the escapes above prove nothing: %v", provider.results)
 			}
+			// The batching rule must not pre-empt containment: none of the four
+			// escape reads may have been refused by it, so each was answered by
+			// the path check. The fifth lookup is either that rule's one refusal
+			// or the baseline content.
+			for i, result := range provider.results[:4] {
+				if strings.Contains(result, "refused, not run") {
+					t.Fatalf("escape read %d was refused by the batching rule, not judged by containment: %s", i, result)
+				}
+			}
+			if r := provider.results[4]; !strings.Contains(r, "refused, not run") && !strings.Contains(r, "parent baseline content") {
+				t.Fatalf("the fifth lookup is neither the batching refusal nor the baseline content: %s", r)
+			}
 			leaked := 0
 			for _, result := range provider.results {
 				if strings.Contains(result, "SECRET-OUTSIDE-THE-WORKTREE") {
