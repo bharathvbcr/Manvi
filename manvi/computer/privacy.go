@@ -10,6 +10,8 @@ import (
 	"image/png"
 	"math"
 	"strings"
+
+	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
 
 // PrivacyPolicy is supplied by the host, never by model tool arguments.
@@ -18,6 +20,37 @@ type PrivacyPolicy struct {
 	WindowID         uint64
 	SensitiveTargets []Selector
 	Watched          []string
+}
+
+// sensitiveInputTargets names, by node identity and role, the controls a
+// program writes a sensitive parameter into. Those nodes are masked whatever
+// the application echoes back into them, because an application may reformat a
+// secret ("4111 1111 1111 1111") so that the literal-string Scrub no longer
+// recognises it. Every ladder rung of the step's target is included, so
+// whichever rung resolves is covered. A rung with no role, name or identifier
+// (a purely visual anchor) is skipped: an empty selector matches every node,
+// and a visual rung has no semantic node to name. Such a target stays covered
+// by the string match only.
+func sensitiveInputTargets(c workflow.Capability) []Selector {
+	sensitive := make(map[string]bool, len(c.Parameters))
+	for _, p := range c.Parameters {
+		if p.Sensitive {
+			sensitive[p.Name] = true
+		}
+	}
+	var out []Selector
+	for _, step := range c.Steps {
+		if step.Input.Source != "input" || !sensitive[step.Input.Key] || (step.Kind != "set_value" && step.Kind != "type_text") {
+			continue
+		}
+		for _, rung := range c.Targets[step.Target].Ladder() {
+			if s := selectorFrom(rung); s.Role != "" || s.Name != "" || s.Identifier != "" {
+				s.Visual = nil
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 func (p PrivacyPolicy) Scrub(s string) string {

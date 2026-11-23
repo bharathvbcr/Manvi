@@ -170,7 +170,9 @@ func bankRun(t *testing.T, mutate func(*brokerDesktop)) (RunResult, *brokerDeskt
 	o := observationFixture(t)
 	status, balance, member := "Member found", "$1,250.00", ""
 	o.Nodes = []Node{
-		{ID: "member", Role: "text_field", Name: "Member ID", Value: &member, Enabled: true, Editable: true, Actions: []string{"set_value"}},
+		// The member field carries the sensitive parameter, so it is masked by
+		// identity and must have the geometry a mask needs.
+		{ID: "member", Role: "text_field", Name: "Member ID", Value: &member, Enabled: true, Editable: true, Actions: []string{"set_value"}, Bounds: &Bounds{10, 10, 40, 20}},
 		{ID: "search", Role: "button", Name: "Search", Enabled: true, Actions: []string{"press"}},
 		{ID: "status", Role: "text_field", Name: "Status", Value: &status, Enabled: true},
 		{ID: "balance", Role: "text_field", Name: "Balance", Value: &balance, Enabled: true},

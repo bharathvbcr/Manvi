@@ -19,14 +19,20 @@ func (r *workResult) capture(raw Observation, privacy PrivacyPolicy) error {
 	return nil
 }
 
-// approval is approvalFingerprint of the frame capture just took. The frame
-// digest of a visual step is the takeover fingerprint capture already holds, so
-// that step does not decode the same frame a further time.
-func (r *workResult) approval(raw Observation, s workflow.Selector) [32]byte {
-	if s.Visual != nil {
-		return r.takeoverFingerprint
+// approval captures raw and returns the fingerprint a person's review of that
+// frame is bound to. It takes the capture itself, so the digest can never come
+// from a frame other than raw (or from no frame, which would be the zero digest
+// and match a review that never happened). The frame digest of a visual step is
+// the takeover fingerprint that same capture produced, so the step does not
+// decode the frame a further time. On error nothing is returned to compare.
+func (r *workResult) approval(raw Observation, privacy PrivacyPolicy, s workflow.Selector) ([32]byte, error) {
+	if err := r.capture(raw, privacy); err != nil {
+		return [32]byte{}, err
 	}
-	return semanticFingerprint(raw)
+	if s.Visual != nil {
+		return r.takeoverFingerprint, nil
+	}
+	return semanticFingerprint(raw), nil
 }
 
 // A review is captured before focus invalidates the native observation and HID

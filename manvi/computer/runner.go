@@ -110,8 +110,9 @@ func StartRun(ctx context.Context, opts RunOptions) (*Run, error) {
 	}
 	opts.Inputs = inputCopy
 	opts.Privacy.Watched = append([]string(nil), opts.Privacy.Watched...)
-	opts.Privacy.SensitiveTargets = ownedSelectors(opts.Privacy.SensitiveTargets)
-	for _, parameter := range opts.Program.Capability().Parameters {
+	capability := opts.Program.Capability()
+	opts.Privacy.SensitiveTargets = append(ownedSelectors(opts.Privacy.SensitiveTargets), sensitiveInputTargets(capability)...)
+	for _, parameter := range capability.Parameters {
 		if parameter.Sensitive {
 			opts.Privacy.Watched = append(opts.Privacy.Watched, opts.Inputs[parameter.Name].Display())
 		}
@@ -1188,11 +1189,10 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 				r.err = err
 				return r
 			}
-			if err := r.capture(raw, opts.Privacy); err != nil {
+			if r.fingerprint, err = r.approval(raw, opts.Privacy, command.Selector.Primary()); err != nil {
 				r.err = err
 				return r
 			}
-			r.fingerprint = r.approval(raw, command.Selector.Primary())
 			if r.fingerprint != reviewed {
 				r.err = &approvalChanged{}
 				return r
@@ -1251,12 +1251,11 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		r.err = err
 		return r
 	}
-	if err := r.capture(raw, opts.Privacy); err != nil {
+	if r.fingerprint, err = r.approval(raw, opts.Privacy, command.Selector.Primary()); err != nil {
 		r.err = err
 		return r
 	}
 	safe := *r.observation
-	r.fingerprint = r.approval(raw, command.Selector.Primary())
 	o := workflow.Observation{ID: raw.ID, Complete: raw.Complete, Reason: raw.TruncatedReason, Target: command.Step.Target}
 	if command.Kind != "observe_after" {
 		if err := validateVisualPrivacy(raw, opts.Privacy, command.Selector.Primary().Visual); err != nil {
