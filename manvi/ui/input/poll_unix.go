@@ -16,11 +16,6 @@ type fdSource interface {
 	Fd() uintptr
 }
 
-type inputPoller interface {
-	waitReadable(done <-chan struct{}) bool
-	close()
-}
-
 type wakeCloser struct {
 	once sync.Once
 	w    *os.File
@@ -56,6 +51,22 @@ func newInputPoller(src io.Reader) (inputPoller, io.Closer, error) {
 	if rawFd > math.MaxInt32 {
 		return nil, nil, nil
 	}
+	fd := int32(rawFd)
+
+	// Probe with zero timeout first: devices such as /dev/tty on macOS return
+	// POLLNVAL from poll(2). Fall back to non-cancellable reads in that case.
+	probe := []unix.PollFd{{Fd: fd, Events: unix.POLLIN}}
+	for {
+		_, err := unix.Poll(probe, 0)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil || probe[0].Revents&(unix.POLLNVAL|unix.POLLERR) != 0 {
+			return nil, nil, nil
+		}
+		break
+	}
+
 	wakeR, wakeW, err := os.Pipe()
 	if err != nil {
 		return nil, nil, err
@@ -68,14 +79,14 @@ func newInputPoller(src io.Reader) (inputPoller, io.Closer, error) {
 	}
 	wc := &wakeCloser{w: wakeW}
 	return &unixPoller{
-		fd:     int32(rawFd),
+		fd:     fd,
 		wakeFd: int32(rawWakeFd),
 		wakeR:  wakeR,
 		wake:   wc,
 	}, wc, nil
 }
 
-func (p *unixPoller) waitReadable(done <-chan struct{}) bool {
+func (p *unixPoller) waitReadable(done <-chan struct{}) pollResult {
 	fds := []unix.PollFd{
 		{Fd: p.fd, Events: unix.POLLIN},
 		{Fd: p.wakeFd, Events: unix.POLLIN},
@@ -83,7 +94,7 @@ func (p *unixPoller) waitReadable(done <-chan struct{}) bool {
 	for {
 		select {
 		case <-done:
-			return false
+			return pollStopped
 		default:
 		}
 		fds[0].Revents = 0
@@ -93,21 +104,24 @@ func (p *unixPoller) waitReadable(done <-chan struct{}) bool {
 			if errors.Is(err, unix.EINTR) {
 				continue
 			}
-			return false
+			return pollFallback
 		}
 		if n == 0 {
 			continue
 		}
 		if fds[1].Revents != 0 {
-			return false
+			return pollStopped
 		}
 		select {
 		case <-done:
-			return false
+			return pollStopped
 		default:
 		}
+		if fds[0].Revents&(unix.POLLNVAL|unix.POLLERR) != 0 {
+			return pollFallback
+		}
 		if fds[0].Revents != 0 {
-			return true
+			return pollReady
 		}
 	}
 }

@@ -75,6 +75,23 @@ func (s *timerSlot) stop() {
 	}
 }
 
+// closeWaitTimeout bounds CloseAndWait so a non-cancellable or wedged input
+// descriptor never stalls the UI loop.
+const closeWaitTimeout = 500 * time.Millisecond
+
+type pollResult int
+
+const (
+	pollStopped pollResult = iota
+	pollReady
+	pollFallback
+)
+
+type inputPoller interface {
+	waitReadable(done <-chan struct{}) pollResult
+	close()
+}
+
 // Reader turns a byte stream into a channel of events.
 type Reader struct {
 	src           io.Reader
@@ -83,6 +100,7 @@ type Reader struct {
 	closeOnce     sync.Once
 	mu            sync.Mutex
 	wake          io.Closer
+	pollerFactory func(io.Reader) (inputPoller, io.Closer, error)
 	cancellable   bool
 	readWG        sync.WaitGroup
 	runWG         sync.WaitGroup
@@ -145,16 +163,33 @@ func (r *Reader) Close() {
 	})
 }
 
-// CloseAndWait stops delivery and, when the source supports cancellable polling
-// (Unix file descriptors), waits for the reading goroutine and Run to exit so
-// a subsequent child process can read from the same descriptor without racing.
-func (r *Reader) CloseAndWait() {
+// CloseAndWait stops delivery and waits up to 500ms for a cancellable reader
+// to exit so a child process can read from the same descriptor without racing.
+// It returns false when the source is non-cancellable or the wait timed out.
+func (r *Reader) CloseAndWait() bool {
+	return r.closeAndWait(closeWaitTimeout)
+}
+
+func (r *Reader) closeAndWait(timeout time.Duration) bool {
 	r.Close()
 	r.mu.Lock()
 	canWait := r.cancellable
 	r.mu.Unlock()
-	if canWait {
+	if !canWait {
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
 		r.runWG.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -191,7 +226,11 @@ func (r *Reader) Run() {
 		return
 	default:
 	}
-	poller, wake, err := newInputPoller(r.src)
+	factory := r.pollerFactory
+	if factory == nil {
+		factory = newInputPoller
+	}
+	poller, wake, err := factory(r.src)
 	if err == nil && poller != nil {
 		r.wake = wake
 		r.cancellable = true
@@ -211,8 +250,17 @@ func (r *Reader) Run() {
 		// escape timeout has to arbitrate.
 		buf := make([]byte, 8192)
 		for {
-			if poller != nil && !poller.waitReadable(r.done) {
-				return
+			if poller != nil {
+				switch poller.waitReadable(r.done) {
+				case pollStopped:
+					return
+				case pollFallback:
+					r.mu.Lock()
+					r.cancellable = false
+					r.mu.Unlock()
+					poller = nil
+				case pollReady:
+				}
 			}
 			select {
 			case <-r.done:

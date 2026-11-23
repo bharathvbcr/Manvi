@@ -838,8 +838,11 @@ func (r *Runner) runEffect(ctx context.Context, e Effect) {
 			r.loopPost(ActionNotice{Text: "external editor unavailable: " + err.Error(), Status: StatusWarn})
 			return
 		}
-		if r.reader != nil {
-			r.reader.CloseAndWait()
+		if r.reader != nil && !r.reader.CloseAndWait() {
+			r.loopPost(ActionNotice{
+				Text:   "input reader could not be paused — the first keystroke may be lost",
+				Status: StatusWarn,
+			})
 		}
 		r.ttyPaused = true
 		r.editors.Add(1)

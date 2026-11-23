@@ -3,7 +3,9 @@
 package input
 
 import (
+	"io"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,7 +38,9 @@ func TestReaderCloseAndWaitYieldsPipeWithoutStealingNextWrite(t *testing.T) {
 	}
 
 	// Stop the reader and wait for its read goroutine to exit poll(2).
-	r.CloseAndWait()
+	if !r.CloseAndWait() {
+		t.Fatal("CloseAndWait returned false on a pollable pipe")
+	}
 
 	// The next write to the pipe must remain intact for a subsequent reader
 	// (such as an external editor child process), never stolen by the closed Reader.
@@ -59,5 +63,89 @@ func TestReaderCloseAndWaitYieldsPipeWithoutStealingNextWrite(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("subsequent reader timed out: closed Reader stole or blocked pipe input")
+	}
+}
+
+type fakePollNVAL struct{}
+
+func (fakePollNVAL) waitReadable(<-chan struct{}) pollResult { return pollFallback }
+func (fakePollNVAL) close()                                {}
+
+type blockingSource struct {
+	unblock chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingSource) Read([]byte) (int, error) {
+	<-b.unblock
+	return 0, io.EOF
+}
+
+func (b *blockingSource) release() {
+	b.once.Do(func() { close(b.unblock) })
+}
+
+func TestReaderFallsBackOnPOLLNVALAndCloseAndWaitDoesNotHang(t *testing.T) {
+	bs := &blockingSource{unblock: make(chan struct{})}
+	t.Cleanup(bs.release)
+
+	r := NewReader(bs)
+	r.pollerFactory = func(io.Reader) (inputPoller, io.Closer, error) {
+		return fakePollNVAL{}, nil, nil
+	}
+	go r.Run()
+
+	// Give the read goroutine a moment to hit pollFallback and enter bs.Read.
+	time.Sleep(20 * time.Millisecond)
+
+	start := time.Now()
+	if r.CloseAndWait() {
+		t.Fatal("CloseAndWait returned true after pollFallback")
+	}
+	if waited := time.Since(start); waited > 250*time.Millisecond {
+		t.Fatalf("CloseAndWait blocked for %v after pollFallback", waited)
+	}
+}
+
+type stuckPoller struct {
+	gate chan struct{}
+	once sync.Once
+}
+
+func (s *stuckPoller) waitReadable(<-chan struct{}) pollResult {
+	<-s.gate
+	return pollStopped
+}
+
+func (s *stuckPoller) close() {
+	s.once.Do(func() { close(s.gate) })
+}
+
+func TestReaderCloseAndWaitTimesOutBounded(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+
+	sp := &stuckPoller{gate: make(chan struct{})}
+	t.Cleanup(sp.close)
+
+	r := NewReader(pr)
+	r.pollerFactory = func(io.Reader) (inputPoller, io.Closer, error) {
+		return sp, nil, nil
+	}
+	go r.Run()
+
+	// Ensure Run has registered cancellable=true before calling closeAndWait.
+	time.Sleep(20 * time.Millisecond)
+
+	start := time.Now()
+	if r.closeAndWait(25 * time.Millisecond) {
+		t.Fatal("closeAndWait returned true while poller was still stuck")
+	}
+	if waited := time.Since(start); waited > 250*time.Millisecond {
+		t.Fatalf("closeAndWait took %v, exceeded bound", waited)
 	}
 }
