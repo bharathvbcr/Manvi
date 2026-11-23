@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -100,8 +101,14 @@ func TestUseCloudWritesTheProviderAndTheMainTierAndTheLoaderReadsThemBack(t *tes
 		t.Fatalf("main tier = %q", got)
 	}
 	info, err := os.Stat(h.config)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("config mode = %v, %v; want 0600", info, err)
+	if err != nil {
+		t.Fatalf("config = %v, %v", info, err)
+	}
+	// Permission bits exist only where the file system has them; on Windows
+	// Perm() reports 0666 or 0444 whatever the file's access list says, so the
+	// 0600 contract is asserted on the platforms that can express it.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode = %v; want 0600", info.Mode())
 	}
 }
 
@@ -252,7 +259,13 @@ func TestUseJSONShapeIsTheHostContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := strings.ReplaceAll(out, h.config, "<CONFIG>")
+	// The path appears in the JSON as a string literal, where a Windows path's
+	// backslashes are doubled.
+	quoted, err := json.Marshal(h.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.ReplaceAll(out, strings.Trim(string(quoted), `"`), "<CONFIG>")
 	want := `{"mode":"cloud","provider":"anthropic","provider_from":"config","user_config":"<CONFIG>","shadowed_by":[],` +
 		`"model":"claude-opus-5-5","model_from":"config",` +
 		`"local":{"base_url":"http://127.0.0.1:8000/v1","base_url_from":"default","model":"","model_from":"default"},` +

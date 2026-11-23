@@ -24,6 +24,9 @@ func TestProxyRecordsBodyAndHeaderNamesWithoutHeaderValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Closed before the temp directory goes: Windows will not remove a file
+	// that is still open.
+	t.Cleanup(func() { _ = capture.Close() })
 	p := &proxy{capture: capture, upstream: upstream.URL, client: upstream.Client()}
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1beta/interactions?alt=sse", strings.NewReader(`{"model":"gemini-3.7-flash"}`))
@@ -62,6 +65,9 @@ func TestProxyReportsUpstreamTransportFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Closed before the temp directory goes: Windows will not remove a file
+	// that is still open.
+	t.Cleanup(func() { _ = capture.Close() })
 	p := &proxy{capture: capture, upstream: upstream.URL, client: &http.Client{}}
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1beta/interactions", strings.NewReader("{}")))

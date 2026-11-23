@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -258,6 +259,9 @@ func TestEnsureHonoursAnAbsoluteStateDir(t *testing.T) {
 // TestEnsurePreservesTheFileMode: the append must not widen permissions on a
 // file the operator deliberately restricted.
 func TestEnsurePreservesTheFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports every file as 0666 or 0444, so a 0600 mode cannot be set or read back; access is an ACL there")
+	}
 	root := gitRepo(t)
 	path := filepath.Join(root, ".gitignore")
 	if err := os.WriteFile(path, []byte("build/\n"), 0o600); err != nil {

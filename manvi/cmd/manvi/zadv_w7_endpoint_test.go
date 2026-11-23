@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -144,6 +145,11 @@ func TestZAdvUserConfigViaHomeAtRepoRoot(t *testing.T) {
 	t.Setenv(envUserConfig, "")
 	t.Setenv("HOME", repo)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	if runtime.GOOS == "windows" {
+		// The user config directory is %AppData% there, not anything under HOME,
+		// so "the home directory is the repository" means this one is.
+		t.Setenv("APPDATA", filepath.Join(repo, "AppData", "Roaming"))
+	}
 	path, err := userConfigPath()
 	if err != nil {
 		t.Skipf("no user config dir: %v", err)

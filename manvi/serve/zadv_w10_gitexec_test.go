@@ -71,8 +71,11 @@ func zadvNew(t *testing.T) zadvRepo {
 func (r zadvRepo) script(t *testing.T, name string) (path, marker string) {
 	t.Helper()
 	marker = filepath.Join(r.markers, name+".marker")
-	path = filepath.Join(r.markers, name+".sh")
-	body := "#!/bin/sh\ntouch '" + marker + "'\nexit 0\n"
+	// Slash form: the path goes into git configuration, and a Windows path with
+	// backslashes is read there as escape sequences ("bad config line") or, run
+	// through sh -c, loses every backslash.
+	path = filepath.ToSlash(filepath.Join(r.markers, name+".sh"))
+	body := "#!/bin/sh\ntouch '" + filepath.ToSlash(marker) + "'\nexit 0\n"
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // a program git runs has to be executable
 		t.Fatal(err)
 	}
@@ -85,7 +88,7 @@ func (r zadvRepo) hooksDir(t *testing.T, dir, marker string) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "fsmonitor-watchman", "reference-transaction", "pre-auto-gc"} {
-		body := "#!/bin/sh\ntouch '" + marker + "'\nexit 0\n"
+		body := "#!/bin/sh\ntouch '" + filepath.ToSlash(marker) + "'\nexit 0\n"
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil { //nolint:gosec // a hook has to be executable
 			t.Fatal(err)
 		}
@@ -118,9 +121,9 @@ var zadvCommit = []string{"-c", "user.name=t", "-c", "user.email=t@example.inval
 func zadvIncludeCase(t *testing.T, run zadvRun, cond string) {
 	r := zadvNew(t)
 	_, mon := r.script(t, "mon")
-	monPath := filepath.Join(r.markers, "mon.sh")
+	monPath := filepath.ToSlash(filepath.Join(r.markers, "mon.sh"))
 	hookMarker := filepath.Join(r.markers, "hook")
-	hooks := filepath.Join(r.markers, "hooks")
+	hooks := filepath.ToSlash(filepath.Join(r.markers, "hooks"))
 	r.hooksDir(t, hooks, hookMarker)
 	inc := filepath.Join(r.markers, "inc.cfg")
 	body := "[core]\n\thooksPath = " + hooks + "\n\tfsmonitor = " + monPath + "\n"
@@ -171,7 +174,7 @@ func zadvWorktreeConfigCase(t *testing.T, run zadvRun) {
 	zadvSh(t, r.root, "worktree", "add", "-q", "--detach", wt)
 	zadvSh(t, r.root, "config", "extensions.worktreeConfig", "true")
 	hookMarker := filepath.Join(r.markers, "hook")
-	hooks := filepath.Join(r.markers, "hooks")
+	hooks := filepath.ToSlash(filepath.Join(r.markers, "hooks"))
 	r.hooksDir(t, hooks, hookMarker)
 	monPath, mon := r.script(t, "mon")
 	zadvSh(t, wt, "config", "--worktree", "core.hooksPath", hooks)
@@ -232,7 +235,7 @@ func TestAdvDotGitFileRedirectRunsNothing(t *testing.T) { zadvGitFileCase(t, zad
 func zadvEnvCase(t *testing.T, run zadvRun) {
 	r := zadvNew(t)
 	hookMarker := filepath.Join(r.markers, "hook")
-	hooks := filepath.Join(r.markers, "hooks")
+	hooks := filepath.ToSlash(filepath.Join(r.markers, "hooks"))
 	r.hooksDir(t, hooks, hookMarker)
 	monPath, mon := r.script(t, "mon")
 	t.Setenv("GIT_CONFIG_PARAMETERS", "'core.hooksPath'='"+hooks+"' 'core.fsmonitor'='"+monPath+"'")
@@ -258,7 +261,7 @@ func TestAdvEnvConfigInjectionCannotReachGit(t *testing.T) { zadvEnvCase(t, zadv
 func zadvGlobalFileCase(t *testing.T, run zadvRun) {
 	r := zadvNew(t)
 	hookMarker := filepath.Join(r.markers, "hook")
-	hooks := filepath.Join(r.markers, "hooks")
+	hooks := filepath.ToSlash(filepath.Join(r.markers, "hooks"))
 	r.hooksDir(t, hooks, hookMarker)
 	monPath, mon := r.script(t, "mon")
 	global := filepath.Join(r.markers, "global.cfg")

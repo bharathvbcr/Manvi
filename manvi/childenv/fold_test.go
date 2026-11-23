@@ -70,8 +70,17 @@ func TestUnicodeFoldingDoesNotJoinNamesWindowsKeepsApart(t *testing.T) {
 
 func TestGitExtraReplacesAllowlistedNameOnWindowsRegardlessOfCase(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin")
-	joined := strings.Join(gitEnv(true, []string{"path=/scratch"}), "\n")
-	if strings.Count(strings.ToUpper(joined), "PATH=") != 1 || !strings.Contains(joined, "path=/scratch") {
+	env := gitEnv(true, []string{"path=/scratch"})
+	joined := strings.Join(env, "\n")
+	// Entries are counted by name. A substring count of "PATH=" also finds
+	// HOMEPATH=, which a Windows environment has and a unix one does not.
+	named := 0
+	for _, entry := range env {
+		if strings.EqualFold(entryName(entry), "PATH") {
+			named++
+		}
+	}
+	if named != 1 || !strings.Contains(joined, "path=/scratch") {
 		t.Fatalf("fold=true: extra did not replace PATH:\n%s", joined)
 	}
 	joined = strings.Join(gitEnv(false, []string{"path=/scratch"}), "\n")
