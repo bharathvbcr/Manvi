@@ -226,7 +226,8 @@ or `chore/<topic>`. Branch from `main`.
 **Sign off every commit** (`git commit -s`). The `Signed-off-by` line certifies
 the [Developer Certificate of Origin](https://developercertificate.org/): that you
 wrote the change or have the right to submit it under this repository's
-[MIT license](LICENSE). It is required, and a pull request with an unsigned
+[MIT license](LICENSE). It is required by policy and checked in review (GitHub enforces
+sign-off itself only for web-UI commits); a pull request with an unsigned
 commit will be asked to add the sign-off (`git rebase --signoff main`, then push).
 
 **Commit messages** are imperative, sentence case, no prefix, no trailing
@@ -256,8 +257,7 @@ the second.
 
 ## Pull requests and review
 
-1. Open a pull request against `main` from a branch in your fork (or, for the
-   maintainer, a branch in this repository). The
+1. Open a pull request against `main` from a branch in your fork. The
    [pull request template](.github/PULL_REQUEST_TEMPLATE.md) asks for the
    `./verify.sh` evidence, the linked issue and the DCO sign-off; fill it in
    rather than deleting it.
@@ -265,9 +265,13 @@ the second.
    [Discussions](https://github.com/bharathvbcr/Manvi/discussions) or an issue so
    the shape is agreed first. [GOVERNANCE.md](GOVERNANCE.md) says how decisions
    are made.
-3. `main` is protected. A pull request needs the required status checks passing,
-   one approving review from a code owner ([`.github/CODEOWNERS`](.github/CODEOWNERS)),
-   and every review conversation resolved. Force-pushes to `main` are not allowed.
+3. `main` is protected by a ruleset. A contributor's pull request needs one
+   approving review, a review from a code owner
+   ([`.github/CODEOWNERS`](.github/CODEOWNERS)), every review conversation
+   resolved, and the required checks passing (`checks` and `bench`, on Ubuntu and
+   macOS). New commits dismiss earlier approvals. Force-pushes to `main` are
+   blocked. The maintainer, as repository admin, can bypass the ruleset;
+   contributors land through pull requests.
 4. Dependency changes are checked by the dependency-review workflow, and pull
    requests are labelled by the paths they touch. Neither replaces `./verify.sh`.
 5. Reviews are by one maintainer, so allow time. A pull request with no

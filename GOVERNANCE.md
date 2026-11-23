@@ -70,21 +70,28 @@ same way.
 
 ## Branches and merging
 
-- **`main` is the only long-lived branch**, and it is protected. Contributors
-  change it only by pull request. A pull request needs one approving review from
-  a code owner, all conversations resolved, and the required status checks
-  passing. Force-pushes to `main` and deletion of `main`
-  are not allowed.
-- **Release tags (`v*`) are protected**: they cannot be moved or deleted once
-  published, short of the documented rollback below.
+- **`main` is the only long-lived branch**, and it is protected by a repository
+  ruleset. Contributors change it only by pull request. A pull request needs one
+  approving review, a review from a code owner, every conversation resolved, and
+  these required status checks passing: `checks (ubuntu-latest)`,
+  `checks (macos-latest)`, `bench (ubuntu-latest)` and `bench (macos-latest)`.
+  Approvals are dismissed when new commits are pushed. Merge, squash and rebase
+  merges are all allowed. Force-pushes to `main` and deletion of `main` are
+  blocked.
+- **The maintainer can bypass the ruleset.** As repository admin, the maintainer
+  may push to `main` directly. Contributors cannot; their changes land through
+  pull requests. The maintainer uses the pull request path for anything that
+  deserves review or a CI run first, and nothing is merged with `./verify.sh` red.
+- **Release tags (`v*`) are protected** against being moved or force-updated.
+  Deleting a tag is not blocked, so the `delete_tag` option of the documented
+  rollback below keeps working.
 - **Branches** are named by intent: `feat/`, `fix/`, `docs/`, `chore/`.
 - **Every commit is signed off** (`git commit -s`), certifying the
-  [Developer Certificate of Origin](https://developercertificate.org/).
+  [Developer Certificate of Origin](https://developercertificate.org/). This is
+  required by policy and checked in review; GitHub itself enforces sign-off only
+  for commits made in the web UI.
 - **Commit messages carry the reasoning.** The history keeps it in commit bodies,
   so a merge keeps the commits' messages rather than replacing them with a summary.
-- **Nothing is merged with `./verify.sh` red.** The maintainer is one person, so
-  the review rule is a second pair of eyes only when there is one; the checks are
-  not optional either way.
 
 ## Releases
 
