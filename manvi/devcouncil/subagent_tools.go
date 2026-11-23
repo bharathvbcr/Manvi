@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -239,7 +241,15 @@ func (a *authoredRole) decode(call tools.Call) *tools.Result {
 	}
 	dec := json.NewDecoder(bytes.NewReader(call.Arguments))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(a); err != nil {
+	err := dec.Decode(a)
+	if err == nil {
+		// One JSON value and nothing after it: a second object or stray bytes
+		// would otherwise be ignored here yet read by whatever sees the raw text.
+		if _, more := dec.Token(); !errors.Is(more, io.EOF) {
+			err = errors.New("unexpected data after the arguments object")
+		}
+	}
+	if err != nil {
 		res := tools.Errorf("bad arguments: %v. A model may declare only name, role, description, "+
 			"system_prompt, model, tier, enable_mcp_tools, enable_write_tools and allowed_tools; "+
 			"anything else, write_exceptions included, is the operator's to grant. Nothing was registered", err)
