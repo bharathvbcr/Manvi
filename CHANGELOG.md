@@ -137,9 +137,10 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
-- DevCouncil pin moved from `d938f7f8` to `6c2a71fa` (origin/main; 236
-  commits, 89 files changed under linked paths). Schema constants are unchanged
-  (devmap-store 29, dc-store 11, workbench 17), so no cross-app schema carry is
+- DevCouncil pin moved from `d938f7f8` to `8286e445` (origin/main; 241
+  commits, including the rustfmt fix for two schema-manifest tests that Manvi's
+  verify checks). Schema constants are unchanged (devmap-store 29, dc-store 11,
+  workbench 17), so no cross-app schema carry is
   needed, and the docs schema re-read gate is re-read at the new pin. No
   vendored contract or linked crate manifest changed. The pin carries the
   dc-redact scaling check that judges cost per byte instead of a 5x wall-clock
