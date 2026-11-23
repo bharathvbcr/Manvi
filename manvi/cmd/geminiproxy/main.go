@@ -12,15 +12,18 @@
 // It forwards the request verbatim, including the caller's own API key header,
 // and adds nothing. It listens on loopback only. The key is passed through
 // untouched and is never written to the capture: only response bodies and
-// request shapes are recorded, and the request capture omits headers entirely.
+// request shapes are recorded, and the request capture omits header values and
+// query values entirely.
 package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -43,7 +46,7 @@ func main() {
 	addr := envOr("PROXY_ADDR", "127.0.0.1:8899")
 	capturePath := envOr("PROXY_CAPTURE", "gemini-wire.log")
 
-	capture, err := os.Create(capturePath)
+	capture, err := openCapture(capturePath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -53,6 +56,31 @@ func main() {
 	p := &proxy{capture: capture, upstream: upstream, client: &http.Client{Timeout: 10 * time.Minute}}
 	log.Printf("geminiproxy on %s -> %s, capturing to %s", addr, upstream, capturePath)
 	log.Fatal(http.ListenAndServe(addr, p))
+}
+
+// openCapture creates the capture file readable by its owner alone. The capture
+// holds request bodies, which carry the caller's prompts, so a file left
+// group- or world-readable by the umask (or by an earlier run) is tightened too.
+func openCapture(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- the operator's own PROXY_CAPTURE path
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// transportReason is why a request to the upstream failed, without the URL
+// net/http puts in its error: that URL carries the query, and with it the key.
+func transportReason(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Op + ": " + ue.Err.Error()
+	}
+	return err.Error()
 }
 
 func envOr(k, d string) string {
@@ -97,14 +125,15 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The request is recorded as its shape and its body. Header *names* are
 	// recorded because a wrong header is a real failure mode and the names are
 	// not secret; no header value is ever written, because one of them is the
-	// caller's API key.
+	// caller's API key. The query is dropped whole, since the API also takes the
+	// key as a `key` parameter and a query has no part that is safe to keep.
 	names := make([]string, 0, len(r.Header))
 	for k := range r.Header {
 		names = append(names, k)
 	}
 	sort.Strings(names)
 	p.note("\n===== REQUEST %d %s %s (%d bytes) headers=%v =====\n%s\n",
-		n, r.Method, r.URL.RawPath+r.URL.Path+"?"+r.URL.RawQuery, len(body), names, string(body))
+		n, r.Method, r.URL.EscapedPath(), len(body), names, string(body))
 
 	out, err := http.NewRequestWithContext(r.Context(), r.Method,
 		p.upstream+r.URL.Path+"?"+r.URL.RawQuery, bytes.NewReader(body))
@@ -123,8 +152,9 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(out)
 	if err != nil {
-		p.note("===== RESPONSE %d TRANSPORT ERROR: %v =====\n", n, err)
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		reason := transportReason(err)
+		p.note("===== RESPONSE %d TRANSPORT ERROR: %s =====\n", n, reason)
+		http.Error(w, reason, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
