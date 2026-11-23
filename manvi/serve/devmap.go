@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	mapclient "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
@@ -23,19 +24,26 @@ const (
 	// a long-lived sidecar that saw a root once kept its process for good.
 	warmDevmapIdleTTL = 10 * time.Minute
 	// maxWarmDevmapEvictErrors bounds the close errors the pool remembers for
-	// Close to report.
+	// Close to report; further ones are counted, not kept.
 	maxWarmDevmapEvictErrors = 8
 )
+
+// errDevmapPoolClosed is what a call through a handle answers once the pool is
+// closed. A closed pool must not start another child, and the only client it
+// could hand out then is one nothing would ever close.
+var errDevmapPoolClosed = errors.New("the devmap pool is closed")
 
 // WarmDevmapPool maintains a bounded per-root pool of warm `devmap mcp` stdio
 // clients (`P0.3`) as an LRU with idle expiry.
 //
-// At most maxWarmDevmapPoolEntries canonical roots hold a warm session. A new
-// root arriving at a full pool evicts the least recently used client that has
-// no call in flight; when every client is mid-call it receives an unpooled CLI
+// At most maxWarmDevmapPoolEntries roots hold a warm session, keyed by the
+// directory's identity (rootIdent) rather than its spelling. A new root
+// arriving at a full pool evicts the least recently used client that has no
+// call in flight; when every client is mid-call it receives an unpooled CLI
 // client instead, so a session with an RPC in flight is never closed under it.
-// A client idle for warmDevmapIdleTTL, or whose root no longer exists, is
-// dropped. Every dropped client is Closed, so no `devmap` child is left behind.
+// A client idle for warmDevmapIdleTTL, or whose root is gone, is no longer a
+// directory or is now a different directory, is dropped. Every dropped client
+// is Closed before the call that dropped it returns.
 type WarmDevmapPool struct {
 	binary string
 	// now is the pool's clock and closeClient how it retires a client; both are
@@ -45,12 +53,13 @@ type WarmDevmapPool struct {
 
 	mu      sync.Mutex
 	closed  bool
-	clients map[string]*PooledDevmap
+	clients map[rootIdent]*PooledDevmap
 	reaper  *time.Timer
 	// pendingClose holds clients already removed from clients whose child has
 	// not been closed yet, so a close happens outside the lock but never gets lost.
 	pendingClose []*PooledDevmap
 	evictErrs    []error
+	evictDropped int
 }
 
 // PooledDevmap is the handle ForRoot returns: a client for one root whose every
@@ -59,9 +68,10 @@ type WarmDevmapPool struct {
 type PooledDevmap struct {
 	pool   *WarmDevmapPool
 	root   string
+	id     rootIdent
 	client *mapclient.Client
-	// pooled is false for the unpooled CLI client an overflowing or closed
-	// pool hands out; such a handle owns no child and is never counted.
+	// pooled is false for the unpooled CLI client an overflowing pool or an
+	// unusable root gets; such a handle owns no child and is never counted.
 	pooled bool
 
 	// The fields below are guarded by pool.mu.
@@ -76,33 +86,112 @@ func NewWarmDevmapPool(binary string) *WarmDevmapPool {
 		binary:      binary,
 		now:         time.Now,
 		closeClient: (*mapclient.Client).Close,
-		clients:     make(map[string]*PooledDevmap),
+		clients:     make(map[rootIdent]*PooledDevmap),
 	}
+}
+
+// resolveRoot canonicalizes root and reads its identity. usable is false when
+// root is not an existing directory, and such a root is never pooled. The
+// filesystem is touched here, outside p.mu, so a slow disk stalls the caller
+// and never the pool.
+func resolveRoot(root string) (canon string, id rootIdent, usable bool) {
+	canon = root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != "" {
+		canon = resolved
+	}
+	info, err := os.Stat(canon)
+	if err != nil || !info.IsDir() {
+		return canon, rootIdent{}, false
+	}
+	return canon, identOf(info, canon), true
+}
+
+// staleEntries stats, without holding p.mu, every idle pooled root and returns
+// those that are gone, no longer a directory, or no longer the directory the
+// client was started in. dropStaleLocked confirms each under the lock.
+func (p *WarmDevmapPool) staleEntries() []*PooledDevmap {
+	p.mu.Lock()
+	snapshot := make([]*PooledDevmap, 0, len(p.clients))
+	for _, w := range p.clients {
+		if w.inflight == 0 {
+			snapshot = append(snapshot, w)
+		}
+	}
+	p.mu.Unlock()
+	var stale []*PooledDevmap
+	for _, w := range snapshot {
+		info, err := os.Stat(w.root)
+		switch {
+		case err == nil && info.IsDir() && identOf(info, w.root) == w.id:
+		case err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR):
+			// An unreadable root is not evidence it is gone.
+		default:
+			stale = append(stale, w)
+		}
+	}
+	return stale
+}
+
+// dropStaleLocked evicts the entries staleEntries named that are still pooled
+// and still idle, and every idle one past the TTL. The caller holds p.mu.
+func (p *WarmDevmapPool) dropStaleLocked(stale []*PooledDevmap) {
+	if p.closed {
+		return
+	}
+	for _, w := range stale {
+		if p.clients[w.id] == w && w.inflight == 0 {
+			p.evictLocked(w)
+		}
+	}
+	now := p.now()
+	for _, w := range p.clients {
+		// A clock that stepped backwards must not make a client look newer than
+		// now forever.
+		if w.lastUsed.After(now) {
+			w.lastUsed = now
+		}
+		if w.inflight == 0 && now.Sub(w.lastUsed) >= warmDevmapIdleTTL {
+			p.evictLocked(w)
+		}
+	}
+}
+
+func (p *WarmDevmapPool) evictLocked(w *PooledDevmap) {
+	delete(p.clients, w.id)
+	w.evicted = true
+	p.pendingClose = append(p.pendingClose, w)
+}
+
+// takePendingLocked returns every client awaiting a close. The caller holds
+// p.mu and passes the result to retire after unlocking.
+func (p *WarmDevmapPool) takePendingLocked() []*PooledDevmap {
+	dropped := p.pendingClose
+	p.pendingClose = nil
+	return dropped
 }
 
 // ForRoot returns a warm `devmap` client scoped to root (canonicalized when
 // resolvable).
 func (p *WarmDevmapPool) ForRoot(root string) *PooledDevmap {
-	canon := root
-	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != "" {
-		canon = resolved
-	}
+	canon, id, usable := resolveRoot(root)
+	stale := p.staleEntries()
 	p.mu.Lock()
-	dropped := p.sweepLocked()
-	w := p.entryLocked(canon)
+	p.dropStaleLocked(stale)
+	w := p.entryLocked(canon, id, usable)
+	dropped := p.takePendingLocked()
 	p.armReaperLocked()
 	p.mu.Unlock()
 	p.retire(dropped)
 	return w
 }
 
-// entryLocked is the pooled handle for canon, evicting the least recently used
-// idle one to make room. The caller holds p.mu.
-func (p *WarmDevmapPool) entryLocked(canon string) *PooledDevmap {
-	if p.closed {
+// entryLocked is the pooled handle for the root, evicting the least recently
+// used idle one to make room. The caller holds p.mu.
+func (p *WarmDevmapPool) entryLocked(canon string, id rootIdent, usable bool) *PooledDevmap {
+	if p.closed || !usable {
 		return p.unpooled(canon)
 	}
-	if existing, ok := p.clients[canon]; ok {
+	if existing, ok := p.clients[id]; ok {
 		return existing
 	}
 	if len(p.clients) >= maxWarmDevmapPoolEntries && !p.evictOldestIdleLocked() {
@@ -110,8 +199,8 @@ func (p *WarmDevmapPool) entryLocked(canon string) *PooledDevmap {
 	}
 	c := mapclient.New(p.binary, canon)
 	c.EnableWarmMCP()
-	w := &PooledDevmap{pool: p, root: canon, client: c, pooled: true, lastUsed: p.now()}
-	p.clients[canon] = w
+	w := &PooledDevmap{pool: p, root: canon, id: id, client: c, pooled: true, lastUsed: p.now()}
+	p.clients[id] = w
 	return w
 }
 
@@ -119,9 +208,8 @@ func (p *WarmDevmapPool) unpooled(canon string) *PooledDevmap {
 	return &PooledDevmap{pool: p, root: canon, client: mapclient.New(p.binary, canon)}
 }
 
-// evictOldestIdleLocked removes the least recently used client with no call in
-// flight and reports whether it made room. The evicted client is closed by the
-// caller of retire, so it is parked in pendingClose until then.
+// evictOldestIdleLocked evicts the least recently used client with no call in
+// flight and reports whether it made room.
 func (p *WarmDevmapPool) evictOldestIdleLocked() bool {
 	var oldest *PooledDevmap
 	for _, w := range p.clients {
@@ -132,39 +220,8 @@ func (p *WarmDevmapPool) evictOldestIdleLocked() bool {
 	if oldest == nil {
 		return false
 	}
-	delete(p.clients, oldest.root)
-	oldest.evicted = true
-	p.pendingClose = append(p.pendingClose, oldest)
+	p.evictLocked(oldest)
 	return true
-}
-
-// sweepLocked drops every idle client that has expired or whose root is gone
-// and returns everything awaiting a close. The caller holds p.mu and passes the
-// result to retire after unlocking.
-func (p *WarmDevmapPool) sweepLocked() []*PooledDevmap {
-	if !p.closed {
-		now := p.now()
-		for root, w := range p.clients {
-			if w.inflight > 0 {
-				continue
-			}
-			if now.Sub(w.lastUsed) >= warmDevmapIdleTTL || rootGone(root) {
-				delete(p.clients, root)
-				w.evicted = true
-				p.pendingClose = append(p.pendingClose, w)
-			}
-		}
-	}
-	dropped := p.pendingClose
-	p.pendingClose = nil
-	return dropped
-}
-
-// rootGone reports that root is known not to exist. An error other than
-// not-exist (a permissions failure, say) is not evidence the root is gone.
-func rootGone(root string) bool {
-	_, err := os.Stat(root)
-	return errors.Is(err, fs.ErrNotExist)
 }
 
 // retire closes dropped clients outside the lock, since closing waits on a
@@ -183,6 +240,8 @@ func (p *WarmDevmapPool) retire(dropped []*PooledDevmap) {
 	for _, err := range errs {
 		if len(p.evictErrs) < maxWarmDevmapEvictErrors {
 			p.evictErrs = append(p.evictErrs, err)
+		} else {
+			p.evictDropped++
 		}
 	}
 	p.mu.Unlock()
@@ -198,9 +257,11 @@ func (p *WarmDevmapPool) armReaperLocked() {
 }
 
 func (p *WarmDevmapPool) reap() {
+	stale := p.staleEntries()
 	p.mu.Lock()
 	p.reaper = nil
-	dropped := p.sweepLocked()
+	p.dropStaleLocked(stale)
+	dropped := p.takePendingLocked()
 	p.armReaperLocked()
 	p.mu.Unlock()
 	p.retire(dropped)
@@ -210,24 +271,43 @@ func (p *WarmDevmapPool) reap() {
 // with the function that ends the call. A handle the pool has since evicted
 // resolves to the root's current handle first, so a call never runs on a client
 // that was closed, which would restart its child with nothing left to close it.
+//
+// When the call ends on a client the pool has since been closed under, the
+// client is closed once more: a call that was in flight at Close may have made
+// mapclient start a replacement child, and nothing else would stop it.
 func (w *PooledDevmap) lease() (*mapclient.Client, func()) {
 	if !w.pooled {
 		return w.client, func() {}
 	}
 	p := w.pool
 	p.mu.Lock()
-	dropped := p.sweepLocked()
+	stale := w.evicted
+	p.mu.Unlock()
+	var canon string
+	var id rootIdent
+	var usable bool
+	if stale {
+		canon, id, usable = resolveRoot(w.root)
+	}
+	idle := p.staleEntries()
+	p.mu.Lock()
+	p.dropStaleLocked(idle)
 	target := w
-	if w.evicted || p.clients[w.root] != w {
-		target = p.entryLocked(w.root)
+	if w.evicted || p.clients[w.id] != w {
+		if !stale {
+			canon, id, usable = w.root, w.id, true
+		}
+		target = p.entryLocked(canon, id, usable)
 	}
 	if !target.pooled {
+		dropped := p.takePendingLocked()
 		p.mu.Unlock()
 		p.retire(dropped)
 		return target.client, func() {}
 	}
 	target.inflight++
 	target.lastUsed = p.now()
+	dropped := p.takePendingLocked()
 	p.armReaperLocked()
 	p.mu.Unlock()
 	p.retire(dropped)
@@ -235,27 +315,53 @@ func (w *PooledDevmap) lease() (*mapclient.Client, func()) {
 		p.mu.Lock()
 		target.inflight--
 		target.lastUsed = p.now()
+		reclose := target.evicted && target.inflight == 0 && p.closed
 		p.mu.Unlock()
+		if reclose {
+			// Idempotent, and deliberately not p.closeClient: the first close
+			// was already counted, and this one only stops a restarted child.
+			_ = target.client.Close()
+		}
 	}
+}
+
+func (w *PooledDevmap) open() (*mapclient.Client, func(), error) {
+	w.pool.mu.Lock()
+	closed := w.pool.closed
+	w.pool.mu.Unlock()
+	if closed {
+		return nil, nil, errDevmapPoolClosed
+	}
+	c, done := w.lease()
+	return c, done, nil
 }
 
 // Status is the DevmapClient and ScanDevmap status call, counted as in flight.
 func (w *PooledDevmap) Status(ctx context.Context) (*mapclient.Status, error) {
-	c, done := w.lease()
+	c, done, err := w.open()
+	if err != nil {
+		return nil, err
+	}
 	defer done()
 	return c.Status(ctx)
 }
 
 // Dead is the ScanDevmap dead-symbol call, counted as in flight.
 func (w *PooledDevmap) Dead(ctx context.Context) (mapclient.Result[mapclient.DeadSymbol], error) {
-	c, done := w.lease()
+	c, done, err := w.open()
+	if err != nil {
+		return mapclient.Result[mapclient.DeadSymbol]{}, err
+	}
 	defer done()
 	return c.Dead(ctx)
 }
 
 // Advanced is the DevmapClient and ScanDevmap advanced query, counted as in flight.
 func (w *PooledDevmap) Advanced(ctx context.Context, q mapclient.AdvancedQuery) (mapclient.AdvancedResult, error) {
-	c, done := w.lease()
+	c, done, err := w.open()
+	if err != nil {
+		return mapclient.AdvancedResult{}, err
+	}
 	defer done()
 	return c.Advanced(ctx, q)
 }
@@ -276,19 +382,19 @@ func (p *WarmDevmapPool) Close() error {
 		p.reaper.Stop()
 		p.reaper = nil
 	}
-	toClose := p.pendingClose
-	p.pendingClose = nil
+	toClose := p.takePendingLocked()
 	for _, w := range p.clients {
 		w.evicted = true
 		toClose = append(toClose, w)
 	}
 	p.clients = nil
+	joined := errors.Join(p.evictErrs...)
+	if p.evictDropped > 0 {
+		joined = errors.Join(joined, fmt.Errorf("and %d more devmap close errors", p.evictDropped))
+	}
+	p.evictErrs, p.evictDropped = nil, 0
 	p.mu.Unlock()
 
-	p.mu.Lock()
-	joined := errors.Join(p.evictErrs...)
-	p.evictErrs = nil
-	p.mu.Unlock()
 	for _, w := range toClose {
 		joined = errors.Join(joined, p.closeClient(w.client))
 	}

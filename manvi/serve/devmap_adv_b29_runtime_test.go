@@ -238,6 +238,9 @@ func TestAdvB29RuntimeCloseWhileCallsAreInFlight(t *testing.T) {
 	}
 	p.mu.Unlock()
 	// Status through a handle after Close must still answer (fails fast: no binary).
+	if len(hs) == 0 {
+		t.Fatal("setup: no handles")
+	}
 	_, _ = hs[0].h.Status(context.Background())
 }
 
@@ -333,7 +336,8 @@ func TestAdvB29RuntimeCloseDuringRealCallLeavesNoChildBehind(t *testing.T) {
 	}
 	_ = p.Close()
 	select {
-	case <-errc:
+	case err := <-errc:
+		t.Logf("the call returned: %v", err)
 	case <-time.After(40 * time.Second):
 		t.Error("the in-flight call never returned after Close")
 	}
@@ -494,7 +498,10 @@ func TestAdvB29RuntimeLeaseEvictionClosesTheChildBeforeLeaseReturns(t *testing.T
 	}
 	p.ForRoot(resolvedDir(t)) // evicts roots[0]
 	p.ForRoot(resolvedDir(t)) // evicts roots[1]; this lookup's sweep closes roots[0]
-	_, done := h0.lease()     // stale: re-resolves, evicting another idle client
+	if h0 == nil {
+		t.Fatal("setup: no first handle")
+	}
+	_, done := h0.lease() // stale: re-resolves, evicting another idle client
 	done()
 	p.mu.Lock()
 	pending := len(p.pendingClose)
@@ -614,7 +621,7 @@ func TestAdvB29RuntimeTTLBoundary(t *testing.T) {
 
 func TestAdvB29RuntimeProductionClockIsMonotonic(t *testing.T) {
 	p := NewWarmDevmapPool("devmap-nonexistent-binary")
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	if !strings.Contains(p.now().String(), "m=") {
 		t.Fatal("the pool's clock has no monotonic reading: a wall-clock step would corrupt idle expiry")
 	}
@@ -753,7 +760,8 @@ func TestAdvB29RuntimeCloseDuringAnInFlightWarmCallLeaksNoChild(t *testing.T) {
 	}
 	_ = p.Close()
 	select {
-	case <-errc:
+	case err := <-errc:
+		t.Logf("the call returned: %v", err)
 	case <-time.After(45 * time.Second):
 		t.Error("the call never returned after Close")
 	}

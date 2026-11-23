@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -191,7 +192,12 @@ func TestWarmDevmapPoolCallOnAnEvictedHandleUsesTheCurrentClient(t *testing.T) {
 	}
 	_, _ = old.Status(context.Background()) // fails fast: no such binary
 	f.pool.mu.Lock()
-	current := f.pool.clients[root]
+	var current *PooledDevmap
+	for _, w := range f.pool.clients {
+		if w.root == root {
+			current = w
+		}
+	}
 	inflight := 0
 	if current != nil {
 		inflight = current.inflight
@@ -208,5 +214,19 @@ func TestWarmDevmapPoolCallOnAnEvictedHandleUsesTheCurrentClient(t *testing.T) {
 	}
 	if f.closes(root) != 2 {
 		t.Fatalf("Close closed the root's clients %d times in total, want 2 (evicted + current)", f.closes(root))
+	}
+}
+
+// Close errors kept past the cap are counted, not silently lost.
+func TestWarmDevmapPoolCloseReportsHowManyEvictErrorsItDropped(t *testing.T) {
+	f := newPoolFixture(t)
+	f.pool.closeClient = func(*mapclient.Client) error { return os.ErrClosed }
+	for i := 0; i < maxWarmDevmapEvictErrors+3; i++ {
+		f.pool.retire([]*PooledDevmap{{client: mapclient.New("x", "y")}})
+	}
+	f.pool.closeClient = func(*mapclient.Client) error { return nil }
+	err := f.pool.Close()
+	if err == nil || !strings.Contains(err.Error(), "and 3 more") {
+		t.Fatalf("Close error = %v, want it to say 3 more were dropped", err)
 	}
 }
