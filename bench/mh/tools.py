@@ -411,7 +411,27 @@ def _checkout_top(start):
         cur = parent
 
 
-def _walk_env_files(top):
+def _model_writable_roots(*starts):
+    """Realpaths of the directories a model can write, which the .env* walk leaves out.
+
+    bench/.work is where episodes put their workspaces and is never cleaned: an
+    episode can plant `ln -s /opt/homebrew .env.x` there, a mode-000 directory,
+    or fifty thousand empty ones. Walking it would turn that into a guard on
+    /opt/homebrew for every later shell, or a refusal to start. Nothing a model
+    writes there is a provider key the harness holds, so it is not scanned. The
+    runner's private temp parents (mh-runner-*) are the other model-writable
+    tree; they are pruned by name in the walk, since they can sit anywhere the
+    host temp does.
+    """
+    roots = {os.path.realpath(os.path.join(BENCH_ROOT, ".work"))}
+    for start in starts:
+        if start:
+            roots.add(os.path.realpath(os.path.join(os.path.realpath(start), ".work")))
+    roots.update(_RUNNER_PARENTS.values())
+    return frozenset(roots)
+
+
+def _walk_env_files(top, skip=frozenset()):
     """(guard paths, stats) for every `.env*` file, symlink or directory under top.
 
     Bounded: .git, node_modules, target and virtualenvs are not entered, and at
@@ -424,9 +444,32 @@ def _walk_env_files(top):
     that cap raises GitGuardError: a partial guard set leaves the .env files past
     the cap readable, and an episode run on it would look the same as one run on
     a complete scan. A symlink named .env* is
-    included without being followed; the profile resolves it to its target.
+    included without being followed; the profile resolves it to its target. A
+    symlink whose target is an existing directory outside top is the exception:
+    it is not an .env file, and guarding it would deny that whole directory
+    (/opt/homebrew, /usr) to every shell, so it is left out. A link to a file
+    outside top (a real secret kept elsewhere) and a dangling link stay guarded.
+    Directories in `skip` (the model's workspace root, see
+    _model_writable_roots) and runner parents are neither entered nor counted.
     """
     found, dirs = set(), 0
+    top_prefix = top.rstrip(os.sep) + os.sep
+
+    def outside_directory_link(p):
+        if not os.path.islink(p):
+            return False
+        real = os.path.realpath(p)
+        return (os.path.isdir(real) and real != top
+                and not real.startswith(top_prefix))
+
+    skip_names = {os.path.basename(s) for s in skip}
+
+    def skipped(dp, n):
+        if n.startswith(RUNNER_PARENT_PREFIX):
+            return True
+        # realpath only for a name a skip root can have: one per directory
+        # would cost a stat chain for each of up to ENV_GUARD_MAX_DIRS.
+        return n in skip_names and os.path.realpath(os.path.join(dp, n)) in skip
 
     def onerror(e):
         raise GitGuardError(getattr(e, "filename", top) or top,
@@ -440,14 +483,15 @@ def _walk_env_files(top):
                      f"directories ({dirs} directories visited, more remain), so "
                      f"the .env files past it would be unguarded")
         for n in fns:
-            if n.startswith(".env"):
+            if n.startswith(".env") and not outside_directory_link(os.path.join(dp, n)):
                 found.add(os.path.join(dp, n))
         for n in dns:
-            if n.startswith(".env"):
+            if n.startswith(".env") and not outside_directory_link(os.path.join(dp, n)):
                 found.add(os.path.join(dp, n))
         dns[:] = [n for n in dns if n not in ENV_GUARD_PRUNE
                   and not n.startswith(".env")
-                  and not os.path.islink(os.path.join(dp, n))]
+                  and not os.path.islink(os.path.join(dp, n))
+                  and not skipped(dp, n)]
     return tuple(sorted(found)), {"dirs": dirs, "cap": ENV_GUARD_MAX_DIRS}
 
 
@@ -470,7 +514,7 @@ def env_file_guards(*starts):
             continue
         top = _checkout_top(os.path.realpath(start))
         if top not in _ENV_GUARD_CACHE:
-            _ENV_GUARD_CACHE[top] = _walk_env_files(top)
+            _ENV_GUARD_CACHE[top] = _walk_env_files(top, _model_writable_roots(*starts))
         found.update(_ENV_GUARD_CACHE[top][0])
     return tuple(sorted(found))
 

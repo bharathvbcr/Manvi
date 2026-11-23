@@ -998,6 +998,68 @@ def p_cap():
 
 guarded("test_adv_b26_cap", p_cap)
 
+
+def p_work_root():
+    # bench/.work is model-writable and never cleaned. What an episode leaves
+    # there must not become a guard, a refusal, or a cap hit for the next run.
+    cap = 20
+    repo = scan_repo("repo-work-", 1)
+    work = os.path.join(repo, "bench", ".work")
+    outside = os.path.realpath(tempfile.mkdtemp(prefix="outside-", dir=ADV))
+    os.makedirs(os.path.join(work, "ep0"))
+    os.symlink(outside, os.path.join(work, "ep0", ".env.x"))
+    locked = os.path.join(work, "ep1")
+    os.makedirs(os.path.join(locked, "inner"))
+    os.chmod(locked, 0)
+    try:
+        try:
+            got = with_cap(cap, lambda: env_file_guards(os.path.join(repo, "bench")))
+            err = None
+        except toolmod.GitGuardError as e:
+            got, err = (), e
+    finally:
+        os.chmod(locked, 0o700)
+    check("test_adv_b26_env_symlink_planted_under_work_does_not_guard_its_target",
+          outside not in got and not any(p.startswith(work) for p in got), repr(got))
+    check("test_adv_b26_unreadable_directory_under_work_does_not_make_the_scan_raise",
+          err is None, repr(err))
+    huge = scan_repo("repo-workhuge-", 0)
+    for i in range(cap + 5):
+        os.makedirs(os.path.join(huge, "bench", ".work", "ep", f"d{i}"))
+    try:
+        got = with_cap(cap, lambda: env_file_guards(os.path.join(huge, "bench")))
+        err = None
+    except toolmod.GitGuardError as e:
+        got, err = (), e
+    check("test_adv_b26_directories_under_work_do_not_count_toward_the_cap", err is None, repr(err))
+    # The same walk still guards a real .env elsewhere in the checkout.
+    open(os.path.join(repo, "pkg0", ".env"), "w").write("S")
+    got = with_cap(cap, lambda: env_file_guards(os.path.join(repo, "bench")))
+    check("test_adv_b26_env_files_outside_work_are_still_guarded",
+          got == (os.path.join(repo, "pkg0", ".env"),), repr(got))
+    # A .env* symlink to a directory outside the checkout is not an .env file and
+    # is not recorded; a link to an outside FILE (a secret kept elsewhere) and a
+    # dangling link still are.
+    secret = os.path.join(outside, "secret")
+    open(secret, "w").write("S")
+    os.symlink(outside, os.path.join(repo, "pkg0", ".env.dirlink"))
+    os.symlink(secret, os.path.join(repo, "pkg0", ".env.filelink"))
+    got = with_cap(cap, lambda: env_file_guards(os.path.join(repo, "bench")))
+    check("test_adv_b26_env_symlink_to_an_outside_directory_is_not_recorded",
+          os.path.join(repo, "pkg0", ".env.dirlink") not in got, repr(got))
+    check("test_adv_b26_env_symlink_to_an_outside_file_is_still_guarded",
+          os.path.join(repo, "pkg0", ".env.filelink") in got, repr(got))
+    # A runner's private temp parent under the checkout is not scanned either.
+    rp = os.path.join(repo, "pkg0", toolmod.RUNNER_PARENT_PREFIX + "1-x")
+    os.makedirs(os.path.join(rp, "scope"))
+    os.symlink(outside, os.path.join(rp, "scope", ".env.y"))
+    got = with_cap(cap, lambda: env_file_guards(os.path.join(repo, "bench")))
+    check("test_adv_b26_runner_parent_temp_tree_is_not_scanned",
+          not any(p.startswith(rp) for p in got), repr(got))
+
+
+guarded("test_adv_b26_work_root", p_work_root)
+
 # ---------------------------------------------------------------------------
 kill_recorded()
 for root, dirs, files in os.walk(ADV):
