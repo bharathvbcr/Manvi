@@ -1531,7 +1531,7 @@ step "Bench — instrument, statistics and cell assembly"
 # that did not was the number being discarded. It is read and totalled instead.
 bench_ran=0
 for t in test_stats.py test_pool.py test_runtime.py test_compute.py test_tools.py stress_test.py \
-         test_gemini_wire.py test_cerebras_wire.py test_audit.py selftest.py test_adv_b25.py paper/test_supplement.py \
+         test_gemini_wire.py test_cerebras_wire.py test_audit.py selftest.py test_adv_b25.py test_adv_b26.py paper/test_supplement.py \
          batching/test_batching.py batching2/test_batching2.py; do
   bench_out="$( (cd bench && python3 "$t") 2>&1 )" || { printf '%s\n' "$bench_out" >&2; fail "bench/$t"; }
   n="$(tail -1 <<<"$bench_out" | grep -oE '[0-9]+' | head -1 || true)"
