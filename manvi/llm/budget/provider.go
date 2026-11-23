@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -72,7 +73,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, err
 
 	rejector, _ := p.Inner.(UnbilledRejector)
 	var mu sync.Mutex
-	var last uint64
+	var admitted []uint64
 	gate := func(ctx context.Context, info transport.AttemptInfo) (func(transport.AttemptResult) error, error) {
 		amount, err := limits.reserve(info.RequestBytes)
 		if err != nil {
@@ -83,7 +84,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, err
 			return nil, err
 		}
 		mu.Lock()
-		last = id
+		admitted = append(admitted, id)
 		mu.Unlock()
 		// The ledger keeps ctx's values but not its cancellation when it records
 		// the result: see resolveContext.
@@ -91,18 +92,42 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, err
 			return p.Ledger.transportResult(ctx, id, r, r.State == transport.AttemptRejected && rejector != nil && rejector.RejectionUnbilled(r.Status))
 		}, nil
 	}
-	lastID := func() uint64 { mu.Lock(); defer mu.Unlock(); return last }
+	ids := func() []uint64 { mu.Lock(); defer mu.Unlock(); return slices.Clone(admitted) }
 
 	stream, err := p.Inner.Stream(transport.WithAttemptGate(ctx, gate), req)
-	if err != nil {
-		// An attempt the server accepted before the adapter gave up was still
-		// sent; it keeps its reservation.
-		if id := lastID(); id != 0 {
-			err = errors.Join(err, p.Ledger.retain(ctx, id))
+	if err != nil || stream == nil {
+		if err == nil {
+			err = fmt.Errorf("budget: provider %s returned neither a stream nor an error", p.Inner.Name())
 		}
-		return nil, err
+		// Every attempt the server accepted before the adapter gave up was
+		// still sent; each keeps its reservation. One that was already
+		// resolved is left alone.
+		return nil, errors.Join(err, p.retainAll(ctx, ids()))
 	}
-	return &budgetStream{ctx: ctx, inner: stream, prices: limits.prices, outputBound: limits.output, searches: limits.searches, ledger: p.Ledger, id: lastID()}, nil
+	// The attempt that answered is the last one admitted; it settles from the
+	// stream's usage. An earlier attempt the inner provider made before it
+	// (a retry that was accepted, a second request of one call) has no usage
+	// this wrapper can see, so it keeps its reservation now rather than staying
+	// in flight until a process exit reclaims it.
+	all := ids()
+	var id uint64
+	if n := len(all); n > 0 {
+		id = all[n-1]
+		if err := p.retainAll(ctx, all[:n-1]); err != nil {
+			return nil, errors.Join(err, stream.Close(), p.Ledger.retain(ctx, id))
+		}
+	}
+	return &budgetStream{ctx: ctx, inner: stream, prices: limits.prices, outputBound: limits.output, searches: limits.searches, ledger: p.Ledger, id: id}, nil
+}
+
+// retainAll keeps the reservation of every attempt in ids, and reports every
+// failure to do so.
+func (p *Provider) retainAll(ctx context.Context, ids []uint64) error {
+	var err error
+	for _, id := range ids {
+		err = errors.Join(err, p.Ledger.retain(ctx, id))
+	}
+	return err
 }
 
 // requestLimits is what a request to one model is priced at and bounded by.
