@@ -1055,6 +1055,11 @@ type TeamView interface {
 	// TierPlacement is where a tier runs, in the form Definition.Model uses,
 	// or "" when the profile does not hold it and the child inherits.
 	TierPlacement(t agents.Tier) string
+	// TierModel is the provider and model a child on tier t runs on: the
+	// parent's when the profile does not hold t. It answers "is this the same
+	// model" across the forms placements are written in (a bare id on the
+	// session's provider, provider/model, inherit), which strings cannot.
+	TierModel(t agents.Tier) (provider, model string)
 }
 
 // teamRoster is the runner's roster, or an empty one.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
@@ -79,6 +80,7 @@ func (r *subAgentRunner) failover(ctx context.Context, cfg *subAgentConfig, req 
 	rerun := req
 	rerun.Member = ""
 	rerun.ModelSpec = spec.Placement()
+	rerun.Prompt = failoverPrompt(req.Prompt, first)
 	second, err := r.attempt(ctx, cfg, rerun)
 	// Merged as an escalation's attempts are: both attempts' usage, and every
 	// path either one wrote, so a writer whose provider died part-way still
@@ -92,7 +94,21 @@ func (r *subAgentRunner) failover(ctx context.Context, cfg *subAgentConfig, req 
 		return merged, fmt.Errorf("sub-agent %q: %s (%s), and its tier %s fallback %s failed too: %w",
 			req.Label, what, firstErr.Error(), req.Tier, spec.Placement(), err)
 	}
-	merged.Summary += fmt.Sprintf("\n\n[this sub-agent: %s; re-ran once on the %s tier's fallback %s]",
-		what, req.Tier, spec.Placement())
+	merged.Summary = devcouncil.AppendSubAgentNote(merged.Summary,
+		fmt.Sprintf("%s; re-ran once on the %s tier's fallback %s", what, req.Tier, spec.Placement()))
 	return merged, nil
+}
+
+// failoverPrompt is the re-run's instruction: the original prompt and, when
+// the first attempt changed files before its provider went away, which ones.
+// Without that list a writer re-run on the fallback replays the task blind
+// over a half-edited tree and can apply the same change twice. Escalation
+// carries the same facts for the same reason (escalatedPrompt).
+func failoverPrompt(prompt string, first attemptResult) string {
+	if len(first.result.Wrote) == 0 {
+		return prompt
+	}
+	return strings.TrimRight(prompt, "\n") + "\n\nAn earlier attempt at this stopped part-way because its model " +
+		"became unavailable. It had already changed: " + strings.Join(first.result.Wrote, ", ") + ". " +
+		"Read those files as they are now before you edit them, and do not redo work that is already there."
 }

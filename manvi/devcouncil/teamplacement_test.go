@@ -17,6 +17,9 @@ type teamRunner struct {
 
 func (r *teamRunner) TeamRoster() agents.Roster          { return r.roster }
 func (r *teamRunner) TierPlacement(t agents.Tier) string { return r.tiers[t] }
+func (r *teamRunner) TierModel(t agents.Tier) (string, string) {
+	return placementModel(r.tiers[t], "anthropic/parent-model")
+}
 
 func newTeamRunner(t *testing.T, roster string) *teamRunner {
 	t.Helper()

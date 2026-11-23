@@ -681,7 +681,9 @@ func (t tierTable) Fallbacks() map[agents.Tier]agents.TierSpec {
 }
 
 // qualifyRow splits a "provider/model" tier value into its provider and model.
-// A bare value is left as it is and keeps running on the session's provider.
+// A bare value is left as it is and keeps running on the session's provider,
+// and so is a value whose prefix names no provider this harness has: that is a
+// model id containing a slash, not a provider.
 //
 // The main tier may not move the session: llm.default_provider is the one
 // owner of which provider the dispatching agent runs on, and a main tier that
@@ -699,8 +701,11 @@ func qualifyRow(row tierRow, session string) (tierRow, error) {
 			row.Tier, row.ModelKey, row.Model, row.ModelFrom)
 	}
 	if !knownProvider(provider) {
-		return row, fmt.Errorf("tier %s: %s=%q (%s) names provider %q, which this harness has no adapter for (%s)",
-			row.Tier, row.ModelKey, row.Model, row.ModelFrom, provider, strings.Join(providerNames(), ", "))
+		// Not a provider this harness has: the whole value is a model id
+		// that contains a slash, as many local and gateway ids do
+		// ("qwen/qwen3-coder"). It is read exactly as it was before tiers
+		// could name a provider, and the catalogue check judges it.
+		return row, nil
 	}
 	row.Model = model
 	if provider == session {

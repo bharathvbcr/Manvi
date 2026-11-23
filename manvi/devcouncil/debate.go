@@ -83,6 +83,19 @@ type debater struct {
 	Member    string `json:"member,omitempty"`
 	Placement string `json:"placement"`
 	tier      agents.Tier
+	// provider and model are what the placement resolves to, compared to
+	// refuse a debate between copies of one model however each was named.
+	provider, model string
+}
+
+// sameness is what two participants must differ in: the provider and model
+// they run on, compared case-insensitively. A runner that cannot say falls
+// back to the placement as written.
+func (d debater) sameness() string {
+	if strings.TrimSpace(d.model) == "" {
+		return strings.ToLower(d.Placement)
+	}
+	return strings.ToLower(strings.TrimSpace(d.provider)) + "/" + strings.ToLower(strings.TrimSpace(d.model))
 }
 
 // debateTurn is one participant's answer in one round.
@@ -92,6 +105,10 @@ type debateTurn struct {
 	Answer   string `json:"answer,omitempty"`
 	Error    string `json:"error,omitempty"`
 	Steps    int    `json:"steps,omitempty"`
+	// Notes are the harness's notes on how the participant ran (a failover,
+	// a step ceiling). They are reported to the caller and never shown to the
+	// other participants or the judge: they name tiers, members and providers.
+	Notes []string `json:"notes,omitempty"`
 }
 
 func (r *Registry) debate(ctx context.Context, call tools.Call) tools.Result {
@@ -149,10 +166,12 @@ func (r *Registry) debate(ctx context.Context, call tools.Call) tools.Result {
 		d := debater{Asked: strings.TrimSpace(spec), Tier: tier.String(), tier: tier, Placement: "inherit"}
 		if member != nil {
 			d.Member, d.Placement = member.Name, member.Placement()
+			d.provider, d.model = member.Spec.Provider, member.Spec.Model
 		} else if v, ok := runner.(TeamView); ok {
 			if p := v.TierPlacement(tier); p != "" {
 				d.Placement = p
 			}
+			d.provider, d.model = v.TierModel(tier)
 		}
 		return d, nil
 	}
@@ -164,7 +183,7 @@ func (r *Registry) debate(ctx context.Context, call tools.Call) tools.Result {
 			return tools.Errorf("%v. Nothing was run", err)
 		}
 		d.Label = debateLabels[i]
-		distinct[d.Placement] = true
+		distinct[d.sameness()] = true
 		debaters = append(debaters, d)
 	}
 	if len(distinct) < minDebaters {
@@ -190,6 +209,9 @@ func (r *Registry) debate(ctx context.Context, call tools.Call) tools.Result {
 
 	transcript := make([][]debateTurn, 0, rounds)
 	latest := make([]debateTurn, len(debaters))
+	// dropped marks a participant that failed a round. It sits out the rest,
+	// and its last good answer, if it had one, is still the one the judge weighs.
+	dropped := make([]bool, len(debaters))
 	for round := 1; round <= rounds; round++ {
 		if err := ctx.Err(); err != nil {
 			return tools.Errorf("the debate was cancelled in round %d: %v", round, err)
@@ -197,7 +219,7 @@ func (r *Registry) debate(ctx context.Context, call tools.Call) tools.Result {
 		reqs := make([]SubAgentRequest, len(debaters))
 		live := make([]bool, len(debaters))
 		for i, d := range debaters {
-			if round > 1 && latest[i].Error != "" {
+			if dropped[i] {
 				continue
 			}
 			live[i] = true
@@ -208,9 +230,16 @@ func (r *Registry) debate(ctx context.Context, call tools.Call) tools.Result {
 		}
 		turns := runDebateRound(ctx, runner, debaters, reqs, live, width)
 		for i := range turns {
-			if live[i] {
-				latest[i] = turns[i]
+			if !live[i] {
+				continue
 			}
+			if turns[i].Error != "" {
+				dropped[i] = true
+				if latest[i].Answer != "" {
+					continue
+				}
+			}
+			latest[i] = turns[i]
 		}
 		transcript = append(transcript, turns)
 		if answered := countAnswered(latest); answered < minDebaters {
@@ -322,6 +351,13 @@ func runDebateRound(ctx context.Context, runner SubAgentRunner, debaters []debat
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			// A panic in one participant fails that participant, as a
+			// fan-out's pool does, rather than the process.
+			defer func() {
+				if p := recover(); p != nil {
+					turns[i].Error = fmt.Sprintf("the participant's run panicked: %v", p)
+				}
+			}()
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -335,12 +371,14 @@ func runDebateRound(ctx context.Context, runner SubAgentRunner, debaters []debat
 				turns[i].Error = err.Error()
 				return
 			}
-			if strings.TrimSpace(res.Summary) == "" {
+			answer, notes := SplitSubAgentNotes(res.Summary)
+			turns[i].Notes = notes
+			if strings.TrimSpace(answer) == "" {
 				turns[i].Error = "finished with no answer"
 				return
 			}
-			turns[i].Answer = clip(res.Summary, maxCarriedAnswer)
-			turns[i].Position = lastTagged(res.Summary, "POSITION:")
+			turns[i].Answer = clip(answer, maxCarriedAnswer)
+			turns[i].Position = lastTagged(answer, "POSITION:")
 		}(i)
 	}
 	wg.Wait()

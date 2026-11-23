@@ -169,3 +169,16 @@ func TestATierFallbackMustNameItsProvider(t *testing.T) {
 		t.Fatalf("a fallback's provider must be built: %v", got)
 	}
 }
+
+// A writer re-run on the fallback is told what the first attempt had changed,
+// so it does not replay the task blind over a half-edited tree.
+func TestAFailoverReRunIsToldWhatTheFirstAttemptChanged(t *testing.T) {
+	first := attemptResult{result: devcouncil.SubAgentResult{Wrote: []string{"a.go", "b.go"}}}
+	got := failoverPrompt("fix it\n", first)
+	if !strings.HasPrefix(got, "fix it") || !strings.Contains(got, "a.go, b.go") {
+		t.Fatalf("prompt = %q", got)
+	}
+	if got := failoverPrompt("fix it", attemptResult{}); got != "fix it" {
+		t.Fatalf("a re-run with nothing written changed the prompt: %q", got)
+	}
+}

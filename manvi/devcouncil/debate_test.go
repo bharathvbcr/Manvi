@@ -34,6 +34,24 @@ func (r *debateRunner) RunSubAgent(_ context.Context, req SubAgentRequest) (SubA
 
 func (r *debateRunner) TeamRoster() agents.Roster          { return r.roster }
 func (r *debateRunner) TierPlacement(t agents.Tier) string { return r.tiers[t] }
+func (r *debateRunner) TierModel(t agents.Tier) (string, string) {
+	return placementModel(r.tiers[t], "anthropic/parent-model")
+}
+
+// placementModel resolves a placement as written in a test double's tier map
+// to provider and model, the way the harness runner's TierModel does: "" is the
+// parent's, a bare id runs on the parent's provider.
+func placementModel(placement, parent string) (string, string) {
+	pp, pm, _ := strings.Cut(parent, "/")
+	switch p, m, ok := strings.Cut(placement, "/"); {
+	case placement == "":
+		return pp, pm
+	case ok:
+		return p, m
+	default:
+		return pp, placement
+	}
+}
 
 func (r *debateRunner) requests() []SubAgentRequest {
 	r.mu.Lock()
@@ -221,5 +239,95 @@ func TestTheVerdictParserReadsOnlyItsContract(t *testing.T) {
 	}
 	if v := parseDebateVerdict("I decided: keep it"); v.Decided {
 		t.Fatalf("prose was read as a decision: %+v", v)
+	}
+}
+
+// The judge and the other participants never see the harness's notes on how a
+// participant ran: a failover note names the providers on both sides of it.
+func TestHarnessNotesNeverReachTheJudgeOrTheOtherParticipants(t *testing.T) {
+	runner := newDebateRunner(t, func(req SubAgentRequest) (SubAgentResult, error) {
+		res, err := debateAnswers(req)
+		res.Summary = AppendSubAgentNote(res.Summary,
+			"gemini was unavailable (http 503 after 4 attempt(s)); re-ran once on the advisor tier's fallback anthropic/claude-opus-5-5")
+		res.Summary = AppendSubAgentNote(res.Summary, "it runs on team member "+req.Member+", which the operator placed")
+		return res, err
+	})
+	f, _ := fixtureWithRoles(t, runner)
+	res := f.call(debateTool, map[string]any{
+		"question": "Where should the lock be released?", "participants": []string{"fable", "carbon"}, "rounds": 2,
+	})
+	if res.IsError {
+		t.Fatalf("debate failed: %s", res.Text)
+	}
+	seen := runner.requests()
+	if len(seen) != 5 {
+		t.Fatalf("ran %d children, want 5", len(seen))
+	}
+	for _, req := range seen[2:] {
+		for _, leak := range []string{"this sub-agent", "gemini", "claude-opus", "team member"} {
+			if strings.Contains(req.Prompt, leak) {
+				t.Errorf("%s was told %q:\n%s", req.Label, leak, req.Prompt)
+			}
+		}
+	}
+	if !strings.Contains(res.Text, "re-ran once") {
+		t.Fatalf("the notes were withheld from the caller too: %s", res.Text)
+	}
+}
+
+// Copies of one model are refused however each was named: a tier on the
+// session's provider is written as a bare id, a member as provider/model.
+func TestADebateBetweenOneModelNamedTwoWaysIsRefused(t *testing.T) {
+	runner := newDebateRunner(t, debateAnswers)
+	runner.tiers = map[agents.Tier]string{agents.TierAdvisor: "claude-fable-5-1"}
+	f, _ := fixtureWithRoles(t, runner)
+	res := f.call(debateTool, map[string]any{
+		"question": "q", "participants": []string{"advisor", "fable"},
+	})
+	if !res.IsError || !strings.Contains(res.Text, "copies of one model") {
+		t.Fatalf("one model under two names was allowed to debate itself: %s", res.Text)
+	}
+	if n := len(runner.requests()); n != 0 {
+		t.Fatalf("%d children ran before the refusal", n)
+	}
+}
+
+// A participant that fails a later round keeps its last good answer for the
+// judge, and sits out the rounds after.
+func TestAParticipantThatFailsALaterRoundKeepsItsEarlierAnswer(t *testing.T) {
+	runner := newDebateRunner(t, func(req SubAgentRequest) (SubAgentResult, error) {
+		if req.Member == "carbon" && strings.Contains(req.Prompt, "round 2 of 2") {
+			return SubAgentResult{}, errors.New("provider down")
+		}
+		return debateAnswers(req)
+	})
+	f, _ := fixtureWithRoles(t, runner)
+	res := f.call(debateTool, map[string]any{
+		"question": "q", "participants": []string{"fable", "carbon"}, "rounds": 2,
+	})
+	if res.IsError {
+		t.Fatalf("debate failed: %s", res.Text)
+	}
+	seen := runner.requests()
+	judge := seen[len(seen)-1]
+	if !strings.Contains(judge.Prompt, "carbon says defer the unlock") {
+		t.Fatalf("the judge lost carbon's round-one answer:\n%s", judge.Prompt)
+	}
+}
+
+// A panicking participant fails that participant, not the process.
+func TestAPanickingParticipantFailsOnlyItself(t *testing.T) {
+	runner := newDebateRunner(t, func(req SubAgentRequest) (SubAgentResult, error) {
+		if req.Member == "carbon" {
+			panic("boom")
+		}
+		return debateAnswers(req)
+	})
+	f, _ := fixtureWithRoles(t, runner)
+	res := f.call(debateTool, map[string]any{
+		"question": "q", "participants": []string{"fable", "carbon"}, "rounds": 1,
+	})
+	if !res.IsError || !strings.Contains(res.Text, "panicked") {
+		t.Fatalf("a panic was not reported as that participant's failure: %s", res.Text)
 	}
 }

@@ -79,10 +79,23 @@ func TestTheMainTierCannotMoveTheSession(t *testing.T) {
 	}
 }
 
-func TestATierOnAnUnknownProviderIsRefused(t *testing.T) {
+// A prefix that is not a provider this harness has is part of a model id, as
+// in many local and gateway ids. Before tiers could name a provider such a
+// value was read whole; it still is, and the catalogue check judges it.
+func TestATierPrefixThatIsNoProviderIsPartOfTheModelID(t *testing.T) {
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierLite)), "qwen/qwen3-coder")
+	table, err := resolveTiers(tierRegistry(t), "local")
+	if err != nil {
+		t.Fatalf("a slash in a local model id refused the session: %v", err)
+	}
+	for _, row := range table.Rows {
+		if row.Tier == agents.TierLite && (row.Provider != "" || row.Model != "qwen/qwen3-coder") {
+			t.Fatalf("lite = %+v; want the whole id on the session's provider", row)
+		}
+	}
 	t.Setenv(flags.EnvKey(tierModelKey(agents.TierLite)), "openai/gpt-x")
-	if _, err := resolveTiers(tierRegistry(t), anthropic.Name); err == nil || !strings.Contains(err.Error(), "openai") {
-		t.Fatalf("= %v, want a refusal naming the provider", err)
+	if _, err := checkTiers(tierRegistry(t), anthropic.Name); err == nil || !strings.Contains(err.Error(), "openai/gpt-x") {
+		t.Fatalf("= %v, want the id refused against the session's catalogue", err)
 	}
 }
 

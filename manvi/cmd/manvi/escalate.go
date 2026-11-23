@@ -81,8 +81,8 @@ func (r *subAgentRunner) escalate(ctx context.Context, cfg *subAgentConfig, req 
 	first attemptResult, firstErr error) (devcouncil.SubAgentResult, error) {
 	declined := func(why string) (devcouncil.SubAgentResult, error) {
 		if firstErr == nil && first.result.Summary != "" {
-			first.result.Summary += "\n\n[this sub-agent: showed evidence of being stuck (" +
-				first.evidence + ") and was not escalated: " + why + "]"
+			first.result.Summary = devcouncil.AppendSubAgentNote(first.result.Summary,
+				"showed evidence of being stuck ("+first.evidence+") and was not escalated: "+why)
 		}
 		return first.result, firstErr
 	}
@@ -130,8 +130,8 @@ func (r *subAgentRunner) escalate(ctx context.Context, cfg *subAgentConfig, req 
 			Child: req.Label, From: req.Tier, To: to, Evidence: first.evidence, Err: err,
 		}
 	}
-	merged.Summary += "\n\n[this sub-agent: escalated from " + req.Tier.String() + " to " + to.String() +
-		" after " + first.evidence + "]"
+	merged.Summary = devcouncil.AppendSubAgentNote(merged.Summary,
+		"escalated from "+req.Tier.String()+" to "+to.String()+" after "+first.evidence)
 	return merged, nil
 }
 

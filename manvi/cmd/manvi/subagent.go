@@ -126,6 +126,28 @@ func (r *subAgentRunner) TierPlacement(t agents.Tier) string {
 	return r.cfg.tiers[t].Placement()
 }
 
+// TierModel is the provider and model a child on t runs on; the parent's when
+// the profile does not hold t.
+func (r *subAgentRunner) TierModel(t agents.Tier) (string, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.cfg == nil {
+		return "", ""
+	}
+	parent := ""
+	if r.cfg.provider != nil {
+		parent = r.cfg.provider.Name()
+	}
+	spec, held := r.cfg.tiers[t]
+	if !held || strings.TrimSpace(spec.Model) == "" {
+		return parent, r.cfg.model
+	}
+	if spec.Provider != "" {
+		return spec.Provider, spec.Model
+	}
+	return parent, spec.Model
+}
+
 // childPlacement is where one child runs and the reasoning effort it runs at.
 type childPlacement struct {
 	provider      llm.Provider
@@ -455,10 +477,10 @@ func (r *subAgentRunner) attempt(ctx context.Context, cfg *subAgentConfig, req d
 	// Appended to the summary rather than logged, because the dispatching model
 	// is this turn's only reader: the child's own session log is not persisted.
 	for _, n := range outcomeNotices(outcome, maxSubAgentSteps) {
-		summary += "\n\n[this sub-agent: " + n.Text + "]"
+		summary = devcouncil.AppendSubAgentNote(summary, n.Text)
 	}
 	for _, n := range child.notes {
-		summary += "\n\n[this sub-agent: " + n + "]"
+		summary = devcouncil.AppendSubAgentNote(summary, n)
 	}
 
 	result.Summary = summary
