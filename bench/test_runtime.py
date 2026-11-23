@@ -730,9 +730,9 @@ from mh.runtime import protocol_block, serving_env
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")) as _fh:
     _run_src = _fh.read()
 _stamped = set(re.findall(r'protocol\["(\w+)"\]\s*=', _run_src))
-for _model in ("qwen3.8:27b", "gemini-2.5-pro"):
+for _stamp_model in ("qwen3.8:27b", "gemini-2.5-pro"):
     _stamped |= set(protocol_block(1, 1, False, 1, 1, 0.0, False,
-                                   env=serving_env(model=_model)))
+                                   env=serving_env(model=_stamp_model)))
 check("the stamp scan found the keys run.py writes",
       {"max_steps", "shell_env", "env_node", "env_client_node"} <= _stamped,
       str(sorted(_stamped)))
