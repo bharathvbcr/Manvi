@@ -270,13 +270,50 @@ func cleanComb(base rune, comb string) string {
 	return string(kept)
 }
 
+// FormatScanner decides, rune by rune and in context, which format runes
+// (category Cf) the buffer keeps. Feed it the runes of a string in order and
+// Keep answers for each. Every rune that is not a format rune is kept; a Cf rune
+// is kept only by the contextual rule in formatMarkAllowed: a joiner after a
+// pictograph, a letter or a mark, and a well-formed flag tag sequence. Bidi
+// controls and invisible separators are never kept. It is the one owner of that
+// decision: StripFormatRunes and ui.Sanitize both read it, so the text layer
+// and the buffer cannot disagree about which format runes are drawn. Control
+// characters are not its concern. The zero value is ready to use and Keep does
+// not allocate.
+type FormatScanner struct {
+	base      rune
+	comb      [4 * MaxCombPerCell]byte
+	combBytes int
+	combRunes int
+}
+
+// Keep reports whether r, the next rune of the text, is kept.
+func (s *FormatScanner) Keep(r rune) bool {
+	w := RuneWidth(r)
+	cf := unicode.Is(unicode.Cf, r)
+	switch {
+	case w > 0:
+		if cf {
+			return false
+		}
+		s.base, s.combBytes, s.combRunes = r, 0, 0
+	case cf:
+		if s.combRunes >= MaxCombPerCell || !formatMarkAllowed(r, s.base, string(s.comb[:s.combBytes])) {
+			return false
+		}
+		s.combBytes += utf8.EncodeRune(s.comb[s.combBytes:], r)
+		s.combRunes++
+	case !unicode.IsControl(r) && s.combRunes < MaxCombPerCell:
+		s.combBytes += utf8.EncodeRune(s.comb[s.combBytes:], r)
+		s.combRunes++
+	}
+	return true
+}
+
 // StripFormatRunes returns s without the format runes (category Cf) that
-// Buffer.SetRune would refuse to draw, by the same contextual rule: bidi
-// controls and invisible separators go, as does every Cf rune that is not a
-// zero-width mark; a joiner after a pictograph, a letter or a mark, and a
-// well-formed flag tag sequence stay. It is for text that reaches the tty
-// without passing through a Buffer, such as a window title. Control characters
-// and the per-cell mark bound are not its concern.
+// Buffer.SetRune would refuse to draw, by the same contextual rule
+// (FormatScanner). It is for text that reaches the tty without passing through
+// a Buffer, such as a window title.
 func StripFormatRunes(s string) string {
 	hasCf := false
 	for _, r := range s {
@@ -289,26 +326,11 @@ func StripFormatRunes(s string) string {
 		return s
 	}
 	var out strings.Builder
-	var base rune
-	comb := ""
+	var scan FormatScanner
 	for _, r := range s {
-		w := RuneWidth(r)
-		cf := unicode.Is(unicode.Cf, r)
-		switch {
-		case w > 0:
-			if cf {
-				continue
-			}
-			base, comb = r, ""
-		case cf:
-			if utf8.RuneCountInString(comb) >= MaxCombPerCell || !formatMarkAllowed(r, base, comb) {
-				continue
-			}
-			comb += string(r)
-		case !unicode.IsControl(r) && utf8.RuneCountInString(comb) < MaxCombPerCell:
-			comb += string(r)
+		if scan.Keep(r) {
+			out.WriteRune(r)
 		}
-		out.WriteRune(r)
 	}
 	return out.String()
 }

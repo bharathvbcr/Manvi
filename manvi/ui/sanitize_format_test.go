@@ -11,10 +11,11 @@ import (
 func TestSanitizeMarksInvisibleFormatCharacters(t *testing.T) {
 	for name, tc := range map[string]struct{ in, want string }{
 		"zero-width space":                {"a\u200bb", "a\\u200bb"},
-		"lone zero-width joiner":          {"x\u200dy", "x\\u200dy"},
+		"joiner with nothing before it":   {"\u200dy", "\\u200dy"},
+		"joiner after a digit":            {"1\u200d2", "1\\u200d2"},
 		"joiner between emoji is kept":    {"\U0001F468\u200d\U0001F469", "\U0001F468\u200d\U0001F469"},
 		"joiner after variation selector": {"\u2764\ufe0f\u200d\U0001F525", "\u2764\ufe0f\u200d\U0001F525"},
-		"joiner after text":               {"a\u200d\U0001F469", "a\\u200d\U0001F469"},
+		"joiner after a space":            {" \u200d\U0001F469", " \\u200d\U0001F469"},
 		"soft hyphen":                     {"a\u00adb", "a\\xadb"},
 		"byte order mark":                 {"\ufeffx", "\\ufeffx"},
 		"tag character":                   {"a\U000e0041b", "a\\U000e0041b"},
@@ -28,7 +29,7 @@ func TestSanitizeMarksInvisibleFormatCharacters(t *testing.T) {
 	if got := Sanitize("plain text, ordinary punctuation"); got != "plain text, ordinary punctuation" {
 		t.Errorf("ordinary text was altered: %q", got)
 	}
-	if strings.Contains(Sanitize("x\u200dy"), "\u200d") {
+	if strings.Contains(Sanitize("1\u200d2"), "\u200d") {
 		t.Error("a zero-width joiner survived")
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Sanitize makes untrusted text safe to write to a terminal.
@@ -40,11 +42,15 @@ func Sanitize(text string) string {
 func sanitizeSlow(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
-	for i, r := range text {
+	// Which format runes survive is decided by the render buffer's own rule, so
+	// what Sanitize lets through is exactly what the buffer will draw.
+	var scan render.FormatScanner
+	for _, r := range text {
+		keep := scan.Keep(r)
 		switch {
-		case r == zwj && zwjJoinsEmoji(text, i):
-			// A joiner between two pictographs is what makes one emoji out of
-			// several; it is ordinary text, not a hidden character.
+		case unicode.Is(unicode.Cf, r) && keep:
+			// A joiner that shapes a script (Persian, Hindi) or builds an emoji
+			// sequence, or a well-formed flag tag sequence: ordinary text.
 			b.WriteRune(r)
 		case r == '\n' || r == '\t':
 			b.WriteRune(r)
@@ -93,14 +99,32 @@ func isPlain(text string) bool {
 		}
 		if c >= utf8.RuneSelf {
 			r, size := utf8.DecodeRuneInString(text[i:])
-			if r == zwj && zwjJoinsEmoji(text, i) {
-				i += size - 1
-				continue
-			}
-			if r == utf8.RuneError || unicode.IsControl(r) || isInvisibleFormat(r) {
+			if r == utf8.RuneError || unicode.IsControl(r) {
 				return false
 			}
+			if isInvisibleFormat(r) {
+				// Whether a format rune is kept depends on what precedes it,
+				// so the answer comes from a pass over the whole text.
+				return plainWithFormat(text)
+			}
 			i += size - 1
+		}
+	}
+	return true
+}
+
+// plainWithFormat is isPlain for text that holds a format rune or a line or
+// paragraph separator: it walks every rune through the render buffer's scanner
+// and accepts the text only if each format rune is one the buffer keeps.
+func plainWithFormat(text string) bool {
+	var scan render.FormatScanner
+	for _, r := range text {
+		keep := scan.Keep(r)
+		if r == utf8.RuneError || (unicode.IsControl(r) && r != '\n' && r != '\t') {
+			return false
+		}
+		if isInvisibleFormat(r) && !(unicode.Is(unicode.Cf, r) && keep) {
+			return false
 		}
 	}
 	return true
@@ -138,46 +162,15 @@ func markerFor(r rune) string {
 	})
 }
 
-const zwj = '\u200d'
-
-// zwjJoinsEmoji reports whether the zero-width joiner at byte offset i of text
-// sits between two pictographs, looking through one emoji variation selector
-// on the left (as in a heart followed by VS16, a joiner and a flame).
-func zwjJoinsEmoji(text string, i int) bool {
-	prev, n := utf8.DecodeLastRuneInString(text[:i])
-	if prev == '\ufe0f' {
-		prev, _ = utf8.DecodeLastRuneInString(text[:i-n])
-	}
-	next, _ := utf8.DecodeRuneInString(text[i+utf8.RuneLen(zwj):])
-	return isPictograph(prev) && isPictograph(next)
-}
-
-// isPictograph is an approximation of Unicode's Extended_Pictographic, which
-// the standard library carries no table for: the emoji blocks and the symbol
-// ranges emoji sequences are built from.
-func isPictograph(r rune) bool {
-	switch {
-	case r >= 0x1F000 && r <= 0x1FAFF, r >= 0x2600 && r <= 0x27BF, r >= 0x2300 && r <= 0x23FF,
-		r >= 0x2190 && r <= 0x21FF, r >= 0x2B00 && r <= 0x2BFF:
-		return true
-	}
-	switch r {
-	case 0xA9, 0xAE, 0x203C, 0x2049, 0x2122, 0x2139, 0x24C2, 0x3030, 0x303D, 0x3297, 0x3299:
-		return true
-	}
-	return r >= 0x25AA && r <= 0x25FE
-}
-
 // isInvisibleFormat reports a rune that draws nothing (or reorders or breaks
 // what is drawn) yet changes what a reader sees: every Unicode format character
 // (Cf: bidi controls, zero-width space, joiners, soft hyphen, BOM, the tag
 // characters U+E0000 block) and the line and paragraph separators U+2028 and
 // U+2029, which a terminal or a log viewer may treat as a line break. Each is
-// shown as a visible escape. A zero-width joiner is marked even between emoji:
-// a joiner anywhere else is marked.
-//
-// The one exception is a zero-width joiner with a pictograph on each side
-// (zwjJoinsEmoji), which is how a family or a profession emoji is spelled.
+// shown as a visible escape, except the format runes the render buffer itself
+// keeps (render.FormatKept): a joiner that shapes a script or builds an emoji
+// sequence, and a well-formed flag tag sequence. Bidi controls, U+2028 and
+// U+2029 are marked in every context.
 func isInvisibleFormat(r rune) bool {
 	return r == '\u2028' || r == '\u2029' || unicode.Is(unicode.Cf, r) || isBidiControl(r)
 }
