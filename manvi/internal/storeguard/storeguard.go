@@ -20,14 +20,25 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 )
 
 // NewClient returns a store client that is closed when the test ends.
+// CallTimeout is the longest one store call a test makes may take, on the
+// client (store.Client.Timeout, which is 10s when left unset and applies under
+// any shorter or longer caller deadline: the effective bound is the smaller of
+// the two) and on the context tests pass. The first call on a fresh store spawns
+// dcstore and migrates its database, which on a loaded Windows runner was
+// observed to outlast five seconds. It only ends a call that is not answering;
+// an answered call returns at once, so the bound costs a passing test nothing.
+const CallTimeout = 30 * time.Second
+
 func NewClient(t testing.TB, binary, db string) *store.Client {
 	t.Helper()
 	c := store.New(binary, db)
+	c.Timeout = CallTimeout
 	t.Cleanup(c.Close)
 	return c
 }

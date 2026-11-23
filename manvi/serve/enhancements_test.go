@@ -26,19 +26,17 @@ func enhancementFixture(t *testing.T) *store.Client {
 	return client
 }
 
-// storeCallDeadline bounds one store call a test makes. The first call on a
-// fresh store spawns dcstore and migrates its database, which on a loaded
-// Windows runner (every package's tests start stores at once, and a new
-// executable is scanned before it runs) took longer than the five seconds that
-// were enough elsewhere. It only ends a call that is not answering: one that
-// is answered returns at once, so a larger bound costs a passing test nothing.
-const storeCallDeadline = 30 * time.Second
-
 func enhancementCall(t *testing.T, client *store.Client, method, input string) json.RawMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), storeCallDeadline)
+	ctx, cancel := context.WithTimeout(t.Context(), storeguard.CallTimeout)
 	defer cancel()
+	start := time.Now()
 	result, err := client.Workbench(ctx, method, json.RawMessage(input))
+	// Recorded so the bound can be read against what calls actually take on a
+	// loaded runner: a slow one is named in the test output.
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Logf("STORECALL %s took %s (bound %s)", method, took.Round(time.Millisecond), storeguard.CallTimeout)
+	}
 	if err != nil {
 		t.Fatalf("%s: %v", method, err)
 	}
@@ -48,7 +46,7 @@ func enhancementCall(t *testing.T, client *store.Client, method, input string) j
 // enhancementCallErr is enhancementCall for a call that is allowed to fail:
 // it returns the store's refusal instead of ending the test on it.
 func enhancementCallErr(client *store.Client, method, input string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), storeCallDeadline)
+	ctx, cancel := context.WithTimeout(context.Background(), storeguard.CallTimeout)
 	defer cancel()
 	_, err := client.Workbench(ctx, method, json.RawMessage(input))
 	return err
