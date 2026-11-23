@@ -65,6 +65,8 @@ func BuildPacket(sessionID string, events []session.Event) (string, error) {
 		verifyTotal, assemblyTotal                     int
 		droppedSeen                                    = map[string]bool{}
 		droppedOrder                                   []string
+		overrunSeen                                    = map[string]bool{}
+		overrunOrder                                   []string
 		digests                                        []string
 		specs                                          []string
 		stepRows                                       []string
@@ -168,6 +170,13 @@ func BuildPacket(sessionID string, events []session.Event) (string, error) {
 					droppedOrder = append(droppedOrder, dr)
 				}
 			}
+			for _, ov := range d.Overrun {
+				ov = bounded(ov)
+				if !overrunSeen[ov] {
+					overrunSeen[ov] = true
+					overrunOrder = append(overrunOrder, ov)
+				}
+			}
 			if d.Digest != "" {
 				short := oneLine(d.Digest, digestShown)
 				if len(digests) == 0 || digests[len(digests)-1] != short {
@@ -204,6 +213,7 @@ func BuildPacket(sessionID string, events []session.Event) (string, error) {
 	sections := []packetSection{
 		{"Verify reports", verifies, maxVerifyRows},
 		{"Prompt assembly: sections the budget dropped (unique)", droppedOrder, maxDroppedUnique},
+		{"Prompt assembly: essential sections kept past the budget (in the prompt, not dropped; unique)", overrunOrder, maxDroppedUnique},
 		{"Prompt assembly: per turn", assemblies, maxVerifyRows},
 		{"System-prompt digests, in order (a change means the cache went cold)", digests, maxVerifyRows},
 		{"Harness spec behind each prompt assembly, in order (absent when no spec was used)", specs, maxVerifyRows},

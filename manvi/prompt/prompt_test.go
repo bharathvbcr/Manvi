@@ -10,7 +10,9 @@ import (
 // same bytes, or the prompt cannot be diffed across runs or cached by a
 // provider.
 // complete reports whether every section was contributed and included.
-func complete(r Report) bool { return len(r.Omitted) == 0 && len(r.Failed) == 0 }
+func complete(r Report) bool {
+	return len(r.Omitted) == 0 && len(r.Failed) == 0 && len(r.Overrun) == 0
+}
 
 func TestAssemblyIsDeterministic(t *testing.T) {
 	build := func() string {
@@ -98,13 +100,40 @@ func TestAnEssentialSectionIsNeverTrimmedForBudget(t *testing.T) {
 	}
 	// And the overrun is recorded, so nobody reads the prompt as within budget.
 	var kept bool
-	for _, o := range report.Omitted {
+	for _, o := range report.Overrun {
 		if o.Name == "scope" && strings.Contains(o.Reason, "never trimmed") {
 			kept = true
 		}
 	}
 	if !kept {
-		t.Fatalf("the budget overrun was not recorded: %+v", report.Omitted)
+		t.Fatalf("the budget overrun was not recorded: %+v", report.Overrun)
+	}
+}
+
+// TestAnOverBudgetEssentialSectionIsNotLabelledDropped: a kept section is in the
+// prompt, so listing it among the omitted ones tells every reader of the report,
+// the session log and the evidence packet that the model never saw it.
+func TestAnOverBudgetEssentialSectionIsNotLabelledDropped(t *testing.T) {
+	a := New()
+	a.MaxRunes = 60
+	if err := a.Add(
+		Static("filler", 10, false, strings.Repeat("x", 55)),
+		Static("scope", 20, true, "Never write outside the task's planned files."),
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, report := a.Assemble()
+	for _, o := range report.Omitted {
+		if o.Name == "scope" {
+			t.Fatalf("the kept essential section is listed as omitted: %+v", o)
+		}
+	}
+	var included bool
+	for _, in := range report.Included {
+		included = included || in.Name == "scope"
+	}
+	if !included || len(report.Overrun) != 1 || report.Overrun[0].Name != "scope" {
+		t.Fatalf("included=%v overrun=%+v, want scope included and named as an overrun", included, report.Overrun)
 	}
 }
 

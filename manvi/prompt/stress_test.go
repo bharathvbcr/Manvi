@@ -50,9 +50,12 @@ func TestNoBudgetEverDropsAnEssentialSection(t *testing.T) {
 			for _, out := range report.Omitted {
 				seen[out.Name] = true
 			}
+			for _, kept := range report.Overrun {
+				seen[kept.Name] = true
+			}
 			for _, name := range append(append([]string{}, essential...), optional...) {
 				if !seen[name] {
-					t.Errorf("budget %d: section %q appears in neither Included nor Omitted", budget, name)
+					t.Errorf("budget %d: section %q appears in none of Included, Omitted and Overrun", budget, name)
 				}
 			}
 		})

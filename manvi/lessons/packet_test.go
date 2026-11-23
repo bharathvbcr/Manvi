@@ -150,3 +150,26 @@ func TestPacketReportsEventsItCouldNotRead(t *testing.T) {
 		t.Errorf("an unreadable event vanished silently:\n%s", p)
 	}
 }
+
+// A kept essential section is reported under its own heading, never as a section
+// the budget dropped.
+func TestPacketKeepsAnOverrunSectionOutOfTheDroppedList(t *testing.T) {
+	log := session.NewLog()
+	mustAppend(t, log, session.PromptAssembled, session.PromptAssembledData{
+		Included: []string{"scope"},
+		Overrun:  []string{"scope: exceeded the 10-token budget but was kept"},
+		Tokens:   40, Budget: 10,
+	})
+	p, err := BuildPacket("sess-overrun", log.Events())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range strings.Split(p, "\n## ") {
+		if strings.HasPrefix(part, "Prompt assembly: sections the budget dropped") {
+			t.Fatalf("a kept section produced a dropped-sections list:\n%s", part)
+		}
+	}
+	if !strings.Contains(p, "kept past the budget") || !strings.Contains(p, "scope: exceeded the 10-token budget but was kept") {
+		t.Fatalf("the kept section is not reported:\n%s", p)
+	}
+}
