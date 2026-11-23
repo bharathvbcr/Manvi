@@ -1187,12 +1187,7 @@ func (v *refViolation) withViolation(res tools.Result) tools.Result {
 	data, _ := json.Marshal(payload)
 	res.Text = string(data) + "\n" + res.Text
 	res.IsError = true
-	// Blocked is the gate's verdict that it refused this call. A report of a ref
-	// that moved between calls is of a move this call did not make: the command
-	// ran, and nothing was rolled back, so counting it as a refusal would tell the
-	// operator the gate contained something when nothing was contained. A call
-	// whose own change was also judged keeps the Blocked its own violation set.
-	res.Blocked = res.Blocked || !v.between
+	res.Blocked = true
 	res.Rule = rule
 	res.Severity = string(policy.Hard)
 	return res
@@ -1232,11 +1227,7 @@ func (v *refViolation) unscannedReason() string {
 	if v.manual {
 		reason += "MANUAL INTERVENTION NEEDED: inspect the refs named before relying on them. "
 	}
-	effect := "This blocks only the call that caused it: "
-	if v.between {
-		effect = "This is reported once, on the first call that saw it, and does not block that call: "
-	}
-	return reason + effect + "nothing here can scan a set this large, so the operator has to review the refs named (or the objects they reach) before relying on them, and remove them if they should not be there."
+	return reason + "This blocks only the call that caused it: nothing here can scan a set this large, so the operator has to review the refs named (or the objects they reach) before relying on them, and remove them if they should not be there."
 }
 
 // guardTimeout bounds the snapshot taken before the command.

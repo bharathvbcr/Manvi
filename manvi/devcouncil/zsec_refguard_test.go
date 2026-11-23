@@ -439,9 +439,7 @@ func TestRefChangedBetweenCallsIsReportedNotRolledBack(t *testing.T) {
 	leak := headOf(t, f.root)
 
 	res := shell(f, "echo two")
-	// Reported and marked an error, but not a gate refusal: the command ran and
-	// the ref was not its doing (TestBetweenCallsRefReportDoesNotSetBlocked).
-	if !res.IsError || res.Blocked || res.Rule != string(policy.RuleSecretPath) ||
+	if !res.IsError || !res.Blocked || res.Rule != string(policy.RuleSecretPath) ||
 		!strings.Contains(res.Text, "ref_changed_between_calls") || !strings.Contains(res.Text, "between agent calls") ||
 		!strings.Contains(res.Text, leak) || !strings.Contains(res.Text, "notes.txt") {
 		t.Fatalf("the between-call leak was not reported: %+v", res)

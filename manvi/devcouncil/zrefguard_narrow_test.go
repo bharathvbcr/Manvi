@@ -40,15 +40,7 @@ func upstreamWithCommits(t *testing.T, n int) string {
 // unscanned rule, hard, and never the credential rule or its wording.
 func requireUnscanned(t *testing.T, res shellResult, ref string) {
 	t.Helper()
-	requireUnscannedReport(t, res, ref, true)
-}
-
-// requireUnscannedReport is requireUnscanned for a report that may be of a set
-// the command did not produce: a between-calls report is an error with the
-// unscanned rule but is not a gate refusal, so Blocked is wanted false there.
-func requireUnscannedReport(t *testing.T, res shellResult, ref string, blocked bool) {
-	t.Helper()
-	if !res.IsError || res.Blocked != blocked || res.Rule != ruleRefUnscanned || !strings.Contains(res.Text, `"severity":"hard"`) {
+	if !res.IsError || !res.Blocked || res.Rule != ruleRefUnscanned || !strings.Contains(res.Text, `"severity":"hard"`) {
 		t.Fatalf("want a blocked %s result, got %+v", ruleRefUnscanned, res)
 	}
 	if res.Rule == string(policy.RuleSecretPath) || strings.Contains(res.Text, string(policy.RuleSecretPath)) {
@@ -86,7 +78,7 @@ func TestOverCapBetweenCallsIsUnscannedNotACredentialLeak(t *testing.T) {
 	tip := gitOut(t, f.root, "rev-parse", "refs/remotes/up/main")
 
 	res := shell(f, "echo two")
-	requireUnscannedReport(t, res, "refs/remotes/up/main", false)
+	requireUnscanned(t, res, "refs/remotes/up/main")
 	if !strings.Contains(res.Text, "between agent calls") || !strings.Contains(res.Text, "two") {
 		t.Errorf("not reported as a between-call result, or the command did not run: %s", res.Text)
 	}
@@ -307,7 +299,7 @@ func TestBrokenAdminDirRefusesThenARepairedOneIsScannedAsNew(t *testing.T) {
 	leak := gitOut(t, f.root, "commit-tree", gitOut(t, f.root, "write-tree"), "-m", "leak")
 	gitOut(t, f.root, "--git-dir="+admin, "update-ref", "refs/worktree/leak", leak)
 	again := shell(f, "echo two")
-	if !again.IsError || again.Blocked || again.Rule != string(policy.RuleSecretPath) ||
+	if !again.IsError || !again.Blocked || again.Rule != string(policy.RuleSecretPath) ||
 		!strings.Contains(again.Text, "ref_changed_between_calls") || !strings.Contains(again.Text, "refs/worktree/leak") {
 		t.Fatalf("the repaired admin directory's new leaking ref was not reported: %+v", again)
 	}
