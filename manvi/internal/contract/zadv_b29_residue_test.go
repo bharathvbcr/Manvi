@@ -8,96 +8,73 @@ import (
 	"testing"
 )
 
-// advBenchLoop is the regexp and tokenizer of verifyBenchSuites, copied because
-// that helper reads the real verify.sh and cannot be fed a mutated script.
-func advBenchLoop(script string) ([]string, bool) {
-	m := regexp.MustCompile(`(?s)bench_ran=0\nfor t in (.*?); do`).FindStringSubmatch(script)
-	if m == nil {
-		return nil, false
-	}
-	return strings.Fields(strings.ReplaceAll(m[1], "\\\n", " ")), true
-}
-
-var advSuiteName = regexp.MustCompile(`^[A-Za-z0-9_./-]+\.py$`)
+// advParse feeds the real parser a script, without the bench/ existence check.
+func advParse(script string) ([]string, error) { return parseBenchSuites(script, nil) }
 
 // The real verify.sh: every token the helper counts is a python suite file that
 // exists under bench/, so the count is a count of suites.
 func TestAdvB29ResidueBenchTokensAreRealSuites(t *testing.T) {
-	suites := verifyBenchSuites(t)
-	for _, s := range suites {
-		if !advSuiteName.MatchString(s) {
-			t.Errorf("verifyBenchSuites counted %q, which is not a .py suite name", s)
-		}
-		if _, err := os.Stat(filepath.Join(docRoot, "bench", s)); err != nil {
-			t.Errorf("suite %q counted from verify.sh does not exist in bench/: %v", s, err)
-		}
+	suites := verifyBenchSuites(t) // fails the test on a non-.py word or a missing file
+	if len(suites) < 5 {
+		t.Fatalf("only %d suites parsed", len(suites))
 	}
 }
 
-// A suite added on a continuation line changes the count (HOLDS expected).
+// A suite added on a continuation line changes the count.
 func TestAdvB29ResidueBenchContinuationSuiteIsCounted(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(docRoot, "verify.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, ok := advBenchLoop(string(raw))
-	if !ok {
-		t.Fatal("loop not found")
+	base, err := advParse(string(raw))
+	if err != nil {
+		t.Fatal(err)
 	}
 	mut := strings.Replace(string(raw), "batching2/test_batching2.py; do", "batching2/test_batching2.py \\\n         extra/test_new.py; do", 1)
-	got, ok := advBenchLoop(mut)
-	if !ok || len(got) != len(base)+1 {
-		t.Errorf("adding a suite on a continuation line: %d -> %d suites", len(base), len(got))
+	got, err := advParse(mut)
+	if err != nil || len(got) != len(base)+1 {
+		t.Errorf("adding a suite on a continuation line: %d -> %d suites (err %v)", len(base), len(got), err)
 	}
 }
 
-// A glob token is one shell word that expands to many suites. The count treats
-// it as one and passes silently with a wrong number.
+// A glob token is one shell word that expands to many suites: refused.
 func TestAdvB29ResidueBenchGlobTokenFailsLoudly(t *testing.T) {
-	script := "bench_ran=0\nfor t in test_a.py batching*/test_*.py; do\n"
-	toks, ok := advBenchLoop(script)
-	if !ok {
-		t.Fatal("loop not found")
-	}
-	for _, s := range toks {
-		if strings.ContainsAny(s, "*?[") {
-			t.Errorf("the suite-list parser counts glob token %q as one suite though the shell expands it to many (tokens=%v)", s, toks)
-		}
+	if toks, err := advParse("bench_ran=0\nfor t in test_a.py batching*/test_*.py; do\n"); err == nil {
+		t.Errorf("a glob token was accepted: %v", toks)
 	}
 }
 
-// A trailing space after the backslash breaks the shell continuation, but the
-// parser's "\\\n" replace does not match it, so the lone backslash is counted as a suite.
+// A trailing space after the backslash breaks the shell continuation: the lone
+// backslash is refused, not counted as a suite.
 func TestAdvB29ResidueBenchBrokenContinuationFailsLoudly(t *testing.T) {
-	script := "bench_ran=0\nfor t in test_a.py \\ \n  test_b.py; do\n"
-	toks, _ := advBenchLoop(script)
-	for _, s := range toks {
-		if !advSuiteName.MatchString(s) {
-			t.Errorf("token %q (from a broken continuation) is counted as a suite; tokens=%v", s, toks)
-		}
+	if toks, err := advParse("bench_ran=0\nfor t in test_a.py \\ \n  test_b.py; do\n"); err == nil {
+		t.Errorf("a broken continuation was accepted: %v", toks)
 	}
 }
 
-// A second suite loop added beside the first is invisible: the regexp reads
-// only the first, so the count agrees with the doc while verify.sh runs more.
+// A second suite loop beside the first is refused, not silently ignored.
 func TestAdvB29ResidueBenchSecondLoopIsNotSilentlyIgnored(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(docRoot, "verify.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := len(regexp.MustCompile(`(?m)^for t in .*\.py`).FindAllString(string(raw), -1))
-	if n != 1 {
-		t.Fatalf("verify.sh has %d 'for t in ...py' loops", n)
+	if _, err := advParse(string(raw)); err != nil {
+		t.Fatalf("the real verify.sh must parse: %v", err)
 	}
-	mut := string(raw) + "\nfor t in test_z.py; do :; done\n"
-	toks, _ := advBenchLoop(mut)
-	loops := len(regexp.MustCompile(`(?m)^for t in .*\.py`).FindAllString(mut, -1))
-	if loops > 1 && len(toks) == len(verifyBenchSuites(t)) {
-		t.Errorf("a second 'for t in' suite loop (%d loops) leaves the parsed count at %d: the doc test would still pass", loops, len(toks))
+	if toks, err := advParse(string(raw) + "\nfor t in test_z.py; do :; done\n"); err == nil {
+		t.Errorf("a second 'for t in' loop was accepted: %v", toks)
 	}
 }
 
-// Renaming the loop variable or the bench_ran initialiser fails loudly (HOLDS).
+// A suite file that does not exist under bench/ is refused when the check runs.
+func TestAdvB29ResidueBenchMissingSuiteFileIsRefused(t *testing.T) {
+	_, err := parseBenchSuites("bench_ran=0\nfor t in a.py b.py; do\n", func(s string) bool { return s == "a.py" })
+	if err == nil {
+		t.Fatal("a suite absent from bench/ was accepted")
+	}
+}
+
+// Renaming the loop variable or the bench_ran initialiser fails loudly.
 func TestAdvB29ResidueBenchRenamedLoopIsLoud(t *testing.T) {
 	for _, s := range []string{
 		"bench_ran=0\nfor s in a.py b.py; do\n",
@@ -105,7 +82,7 @@ func TestAdvB29ResidueBenchRenamedLoopIsLoud(t *testing.T) {
 		"bench_ran=0\n\nfor t in a.py b.py; do\n",
 		"bench_ran=0\nfor t in a.py b.py\ndo\n",
 	} {
-		if _, ok := advBenchLoop(s); ok {
+		if _, err := advParse(s); err == nil {
 			t.Errorf("mutated script unexpectedly parsed: %q", s)
 		}
 	}

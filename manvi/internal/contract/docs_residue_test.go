@@ -1,6 +1,8 @@
 package contract
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,19 +12,52 @@ import (
 	"testing"
 )
 
-// verifyBenchSuites reads the suite list out of the bench leg of verify.sh, the
-// artifact that decides how many suites the gate runs.
+var (
+	benchSuiteLoop = regexp.MustCompile(`(?s)bench_ran=0\nfor t in (.*?); do`)
+	benchLoopStart = regexp.MustCompile(`(?m)^\s*for t in `)
+	benchSuiteName = regexp.MustCompile(`^[\w./-]+\.py$`)
+)
+
+// parseBenchSuites reads the suite list out of the bench leg of verify.sh text,
+// the artifact that decides how many suites the gate runs. It refuses what it
+// cannot count honestly: a missing loop, more than one loop (the second would be
+// invisible), and any word that is not a plain .py path (a glob stands for many
+// suites, a stray backslash is a broken continuation). exists, when not nil,
+// must confirm each suite is a real file under bench/.
+func parseBenchSuites(script string, exists func(suite string) bool) ([]string, error) {
+	if n := len(benchLoopStart.FindAllString(script, -1)); n != 1 {
+		return nil, fmt.Errorf("verify.sh has %d 'for t in' loops, the count reads exactly one", n)
+	}
+	m := benchSuiteLoop.FindStringSubmatch(script)
+	if m == nil {
+		return nil, errors.New("verify.sh no longer has the 'bench_ran=0' / 'for t in ...; do' suite loop this test reads")
+	}
+	suites := strings.Fields(strings.ReplaceAll(m[1], "\\\n", " "))
+	for _, s := range suites {
+		if !benchSuiteName.MatchString(s) {
+			return nil, fmt.Errorf("suite word %q is not a plain .py path, so the count of %d words is not a count of suites", s, len(suites))
+		}
+		if exists != nil && !exists(s) {
+			return nil, fmt.Errorf("suite %q is named in verify.sh and absent from bench/", s)
+		}
+	}
+	return suites, nil
+}
+
 func verifyBenchSuites(t *testing.T) []string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(docRoot, "verify.sh"))
 	if err != nil {
 		t.Fatalf("reading verify.sh: %v", err)
 	}
-	m := regexp.MustCompile(`(?s)bench_ran=0\nfor t in (.*?); do`).FindSubmatch(raw)
-	if m == nil {
-		t.Fatal("verify.sh no longer has the 'for t in ...; do' bench suite loop this test reads")
+	suites, err := parseBenchSuites(string(raw), func(s string) bool {
+		st, err := os.Stat(filepath.Join(docRoot, "bench", s))
+		return err == nil && st.Mode().IsRegular()
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return strings.Fields(strings.ReplaceAll(string(m[1]), "\\\n", " "))
+	return suites
 }
 
 // CONTRIBUTING.md states how many benchmark suites verify.sh runs. It said 10
