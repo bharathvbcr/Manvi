@@ -7,6 +7,7 @@ require (
 	github.com/bharathvbcr/DevCouncil/backend/go_orchestrator v0.0.0
 	github.com/bharathvbcr/gusset v0.0.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
+	go.starlark.net v0.0.0-20261021141710-4f4267fb140d
 	golang.org/x/sys v0.50.0
 )
 

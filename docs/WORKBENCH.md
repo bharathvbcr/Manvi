@@ -1009,7 +1009,13 @@ call never answers busy because a task enhancement is running. It has its own
 `assist` lane with a deadline of `enhancementJobTimeout + 30s`, runs at most two
 calls at once across every connection (a third is answered `E_BUSY`, retryable,
 at once), and a cancelled request or a closed runner cancels the provider
-stream. Errors pass through the runner's redacted failure text.
+stream. Errors pass through the runner's redacted failure text. One failure has
+a code of its own: when Anthropic refuses the API key itself (HTTP 401,
+`authentication_error`: a wrong, revoked or disabled key), the call is answered
+`E_PROVIDER_AUTH`, not retryable, so a host can tell a rejected key from a
+configured one without reading the message. A 403 (a valid key without
+permission), any other status, and a 401 from a server other than Anthropic stay
+`E_DEPENDENCY`.
 
 `redactions` is always zero. The enhancement path has no prompt-redaction owner:
 the only scrubber on it removes known credential values from error text, and the
@@ -1175,7 +1181,7 @@ by the `manvi tools` listing, which prints what those two offer.
   the `codingagent` package imports neither the tool surface nor the registry
   (`TestManagedRunsHaveNoPathToTheBoardTools`).
 - *Counts.* The documented tool counts are the agent surface's and moved by six:
-  51 native tools, 50 with no skills (`docs/TOOLS_REFERENCE.md` section 14 specifies
+  54 native tools, 53 with no skills (`docs/TOOLS_REFERENCE.md` section 14 specifies
   the six; `TestDocumentedToolCountMatchesRegistry` measures them). The six are
   Extended, so the lean dynamic profile's offered set is unchanged.
 

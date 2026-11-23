@@ -29,6 +29,9 @@ type Prices struct {
 	// reasoning tokens. Providers disagree on this, and adding reasoning on top
 	// of an output count that contains it bills thinking twice.
 	ReasoningInOutput bool `json:"reasoning_in_output,omitempty"`
+	// SearchRequest is what one provider-hosted web search costs, in nano-USD,
+	// charged on top of tokens. Zero for a model with no such tool.
+	SearchRequest int64 `json:"search_request,omitempty"`
 }
 
 // Pricer is implemented by a provider that publishes per-model prices. A
@@ -41,6 +44,9 @@ type Pricer interface {
 const (
 	maxRate   = 1_000_000  // $1000 per million tokens
 	maxTokens = 10_000_000 // above any context window or output cap served
+
+	maxSearchRequest = 1_000_000_000 // $1 per search, far above any published price
+	maxSearches      = 1_000         // above any max_uses a request can carry
 )
 
 func (r Rates) validate() error {
@@ -56,6 +62,9 @@ func (r Rates) validate() error {
 func (p Prices) Validate() error {
 	if err := p.validate(); err != nil {
 		return err
+	}
+	if p.SearchRequest < 0 || p.SearchRequest > maxSearchRequest {
+		return fmt.Errorf("budget: search price %d nano-USD outside [0, %d]", p.SearchRequest, maxSearchRequest)
 	}
 	if p.LongPromptAbove < 0 {
 		return errors.New("budget: negative long-prompt threshold")
@@ -122,7 +131,8 @@ func (p Prices) Charge(u llm.Usage) (int64, error) {
 		return 0, err
 	}
 	if u.InputTokens <= 0 || u.InputTokens > maxTokens || u.OutputTokens < 0 || u.OutputTokens > maxTokens ||
-		u.ReasoningTokens < 0 || u.ReasoningTokens > maxTokens || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 {
+		u.ReasoningTokens < 0 || u.ReasoningTokens > maxTokens || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 ||
+		u.WebSearchRequests < 0 || u.WebSearchRequests > maxSearches {
 		return 0, fmt.Errorf("budget: provider usage missing or out of range: %+v", u)
 	}
 	uncached := u.InputTokens - u.CacheReadTokens - u.CacheWriteTokens
@@ -136,5 +146,15 @@ func (p Prices) Charge(u llm.Usage) (int64, error) {
 		output += int64(u.ReasoningTokens)
 	}
 	return int64(uncached)*r.Input + int64(u.CacheWriteTokens)*r.CacheWrite +
-		int64(u.CacheReadTokens)*r.CacheRead + output*r.Output, nil
+		int64(u.CacheReadTokens)*r.CacheRead + output*r.Output +
+		int64(u.WebSearchRequests)*p.SearchRequest, nil
+}
+
+// SearchSurcharge bounds what up to uses provider-hosted web searches can cost,
+// for a reservation made before the request is sent.
+func (p Prices) SearchSurcharge(uses int) (int64, error) {
+	if uses < 0 || uses > maxSearches {
+		return 0, fmt.Errorf("budget: %d web searches outside [0, %d]", uses, maxSearches)
+	}
+	return int64(uses) * p.SearchRequest, nil
 }

@@ -14,9 +14,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
@@ -99,7 +101,14 @@ func (s *Store) sanitizeName(name string) (string, error) {
 		return "", errors.New("artifacts: name cannot be empty")
 	}
 	clean := filepath.Clean(name)
-	if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
+	// A name is relative to the store on every platform. filepath.IsAbs is not
+	// enough on Windows, where a leading slash or backslash is rooted without
+	// being absolute (no drive) and "C:x" is drive-relative; a rooted name
+	// would be accepted and joined under the store. Both separators and any
+	// volume are refused on every platform, so the same name means the same
+	// thing everywhere.
+	if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" ||
+		strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, `\`) {
 		return "", fmt.Errorf("artifacts: invalid artifact path %q", name)
 	}
 	// "<name>.meta.json" is where the metadata of <name> is kept. A name in that
@@ -116,7 +125,10 @@ func (s *Store) sanitizeName(name string) (string, error) {
 			return "", fmt.Errorf("artifacts: invalid artifact name %q: that shape is reserved for the store's temporary files", name)
 		}
 	}
-	return clean, nil
+	// The name is slash-separated whatever the platform: it is what List reports
+	// (relName) and what a caller passed, so Get and Create must not hand it
+	// back as "lessons\\a.md" on Windows.
+	return filepath.ToSlash(clean), nil
 }
 
 // metaSuffix is appended to an artifact's name to give its metadata file.
@@ -558,41 +570,19 @@ func readArtifact(root *os.Root, clean, fullPath string, withContent bool) (*Art
 // no-follow open the writes use (safefile.OpenNoFollow): no component below the
 // root is followed if it is a link, the leaf is opened O_NOFOLLOW (and
 // O_NONBLOCK, so a FIFO planted at the name cannot hang the read), and the
-// handle itself, not a separate lstat, is checked to be a regular file. The
-// A file with more than one hard link is refused too (as the DevCouncil
+// handle itself, not a separate lstat, is checked to be a regular file. A
+// file with more than one hard link is refused too (as the DevCouncil
 // untracked-diff reader does): O_NOFOLLOW does not see a hard link to a file
-// outside the store, and a published artifact has exactly one name. A file over
-// limit bytes is refused. The error names the path; only a name that is absent
-// altogether wraps fs.ErrNotExist.
+// outside the store, and a published artifact has exactly one name (see
+// openOrdinary for the two moments a store's own file legitimately shows
+// another count). A file over limit bytes is refused. The error names the
+// path; only a name that is absent altogether wraps fs.ErrNotExist.
 func readContained(root *os.Root, rel string, limit int64, load bool) ([]byte, error) {
-	f, err := safefile.OpenNoFollow(root, filepath.FromSlash(rel), os.O_RDONLY, 0)
+	f, info, err := openOrdinary(root, rel)
 	if err != nil {
-		// os.Root can answer "does not exist" for a dangling link it resolved
-		// itself; a name that is present as anything is a refusal, not an
-		// absence, so that case must not wrap fs.ErrNotExist.
-		if errors.Is(err, fs.ErrNotExist) {
-			if _, lerr := root.Lstat(filepath.FromSlash(rel)); errors.Is(lerr, fs.ErrNotExist) {
-				return nil, err
-			}
-			return nil, fmt.Errorf("artifacts: refusing to read %q (a dangling symbolic link): %s", rel, err.Error())
-		}
-		return nil, fmt.Errorf("artifacts: refusing to read %q (a symbolic link, or not an ordinary path): %w", rel, err)
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("artifacts: inspecting %q: %w", rel, err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("artifacts: refusing to read %q: not a regular file", rel)
-	}
-	links, err := safefile.LinkCount(f)
-	if err != nil {
-		return nil, fmt.Errorf("artifacts: counting the links of %q: %w", rel, err)
-	}
-	if links != 1 {
-		return nil, fmt.Errorf("artifacts: refusing to read %q: it has %d hard links, so it may be a file outside the store", rel, links)
-	}
 	if info.Size() > limit {
 		return nil, fmt.Errorf("artifacts: refusing to read %q: %d bytes exceeds the %d-byte limit", rel, info.Size(), limit)
 	}
@@ -607,6 +597,121 @@ func readContained(root *os.Root, rel string, limit int64, load bool) ([]byte, e
 		return nil, fmt.Errorf("artifacts: refusing to read %q: it grew past the %d-byte limit", rel, limit)
 	}
 	return data, nil
+}
+
+// readHook, when non-nil, runs between a read's open and its link count check.
+// It is a seam for a test that must replace the file inside that window, which
+// no real filesystem will do on demand. Nothing else assigns it.
+var readHook func(rel string)
+
+// maxReopens bounds how many times a read reopens a name that was replaced
+// under it. Each retry needs another writer to have published in between.
+const maxReopens = 32
+
+// openOrdinary opens rel beneath root and returns it with its info, refusing
+// anything that is not a regular file with exactly one name, or that cannot
+// be shown to belong to the store.
+//
+// The link count of an open handle is a count at one instant, and a store's own
+// writers change it in two ways a reader can land inside, neither of which is
+// the planted hard link the check exists for:
+//
+//   - Update publishes by rename. A reader that opened the old file before the
+//     rename holds an inode whose last name is gone, so its count is 0. That
+//     handle is not the artifact any more, so the name is opened again (the
+//     file now published there); a count of 0 is never accepted, because the
+//     data behind a name that no longer exists is not something the store
+//     vouches for.
+//   - Create publishes exclusively with a hard link from its temporary sibling
+//     and removes the sibling a moment later, so for that moment the file has
+//     two names. The second is accepted only when it is that temporary
+//     sibling: a store-shaped name, in the same directory, for the same inode.
+//     A file with two names has no third, so a name that is in the store
+//     cannot also be a name outside it. A planted link to a file elsewhere
+//     leaves the outside name and the store name, which is not this.
+func openOrdinary(root *os.Root, rel string) (*os.File, os.FileInfo, error) {
+	for attempt := 0; ; attempt++ {
+		f, err := safefile.OpenNoFollow(root, filepath.FromSlash(rel), os.O_RDONLY, 0)
+		if err != nil {
+			// os.Root can answer "does not exist" for a dangling link it resolved
+			// itself; a name that is present as anything is a refusal, not an
+			// absence, so that case must not wrap fs.ErrNotExist.
+			if errors.Is(err, fs.ErrNotExist) {
+				if _, lerr := root.Lstat(filepath.FromSlash(rel)); errors.Is(lerr, fs.ErrNotExist) {
+					return nil, nil, err
+				}
+				return nil, nil, fmt.Errorf("artifacts: refusing to read %q (a dangling symbolic link): %s", rel, err.Error())
+			}
+			return nil, nil, fmt.Errorf("artifacts: refusing to read %q (a symbolic link, or not an ordinary path): %w", rel, err)
+		}
+		if readHook != nil {
+			readHook(rel)
+		}
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return nil, nil, fmt.Errorf("artifacts: inspecting %q: %w", rel, err)
+		}
+		if !info.Mode().IsRegular() {
+			_ = f.Close()
+			return nil, nil, fmt.Errorf("artifacts: refusing to read %q: not a regular file", rel)
+		}
+		links, err := safefile.LinkCount(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, nil, fmt.Errorf("artifacts: counting the links of %q: %w", rel, err)
+		}
+		if links == 2 && hasStoreTempSibling(root, rel, info) {
+			links = 1
+		}
+		if links == 2 {
+			// The sibling may have been removed between the count and the
+			// listing, which leaves the file with its one name.
+			if again, cerr := safefile.LinkCount(f); cerr == nil {
+				links = again
+			}
+		}
+		if links == 1 {
+			return f, info, nil
+		}
+		_ = f.Close()
+		if links == 0 && attempt < maxReopens {
+			continue
+		}
+		return nil, nil, fmt.Errorf("artifacts: refusing to read %q: it has %d hard links, so it may be a file outside the store", rel, links)
+	}
+}
+
+// hasStoreTempSibling reports whether the directory of rel holds one of the
+// store's own temporary names for rel (".<base>.<16 hex>.tmp") that is the
+// same file as info.
+func hasStoreTempSibling(root *os.Root, rel string, info os.FileInfo) bool {
+	slash := filepath.ToSlash(rel)
+	dir, base := path.Split(slash)
+	if dir == "" {
+		dir = "."
+	}
+	d, err := root.Open(filepath.FromSlash(dir))
+	if err != nil {
+		return false
+	}
+	entries, err := d.ReadDir(-1)
+	_ = d.Close()
+	if err != nil {
+		return false
+	}
+	prefix := "." + base + "."
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) || !isStoreTemp(name) {
+			continue
+		}
+		other, err := root.Lstat(filepath.FromSlash(path.Join(dir, name)))
+		if err == nil && os.SameFile(info, other) {
+			return true
+		}
+	}
+	return false
 }
 
 // List returns the artifacts in the store, sorted by name, with their metadata
@@ -744,6 +849,28 @@ func (s *Store) containedPath(clean string) (string, error) {
 	return filepath.Join(current, parts[len(parts)-1]), nil
 }
 
+// renameOverReaders is os.Rename, retried on Windows while a reader has the
+// destination open. There a rename over an open file fails with an access
+// denied or sharing violation instead of unlinking it, and a reader (Get, List,
+// another Store's update reading the sidecar) holds the file for microseconds,
+// so the failure is a collision with a reader and not a refusal. The wait is
+// bounded; past it the error is the rename's.
+func renameOverReaders(from, to string) error {
+	const windowsAccessDenied, windowsSharingViolation = 5, 32
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.Rename(from, to)
+		if err == nil || runtime.GOOS != "windows" || time.Now().After(deadline) {
+			return err
+		}
+		var errno syscall.Errno
+		if !errors.As(err, &errno) || (errno != windowsAccessDenied && errno != windowsSharingViolation) {
+			return err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // writeContained writes data at full without ever leaving a half-written file
 // at that name: the bytes go to a temporary sibling, are synced, and are then
 // published by rename (replacing) or by link (exclusive, failing if the name is
@@ -815,7 +942,7 @@ func (s *Store) writeContained(full string, data []byte, perm os.FileMode, exclu
 			}
 			return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 		}
-	} else if err := os.Rename(tmp, full); err != nil {
+	} else if err := renameOverReaders(tmp, full); err != nil {
 		return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 	}
 

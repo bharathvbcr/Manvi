@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -190,6 +191,9 @@ type Adapter struct {
 
 	// baseURL is kept so a fallback client is built against the same host.
 	baseURL string
+	// webSearchMaxUses is the hosted web search tool's per-request bound; zero
+	// leaves the tool off. See SetWebSearch.
+	webSearchMaxUses int
 	// fallback is a second key, in its own organisation and workspace, that a
 	// request is moved to when the primary's organisation is out of credit.
 	// Nil when none is configured. See SetFallback.
@@ -368,6 +372,17 @@ func (*Adapter) RejectionUnbilled(status int) bool {
 	return false
 }
 
+// CredentialRejected reports whether err is the Messages API refusing the API
+// key itself: an HTTP 401, which the API documents as authentication_error (a
+// key that is wrong, revoked or disabled). Only this adapter's own failures
+// count, because a 401 means something else to other servers. A 403 is not
+// here: it is a valid key without permission for the request, which replacing
+// the key does not fix.
+func CredentialRejected(err error) bool {
+	var failure *transport.Error
+	return errors.As(err, &failure) && failure.Provider == Name && failure.Status == http.StatusUnauthorized
+}
+
 // AttemptGateSupported declares that every Messages API attempt, retries
 // included, goes through the shared transport admission gate: Stream's only
 // HTTP calls are PostStream on the primary or fallback client, which admits
@@ -380,7 +395,7 @@ type wireRequest struct {
 	Messages     []wireMessage   `json:"messages"`
 	MaxTokens    int             `json:"max_tokens"`
 	System       string          `json:"system,omitempty"`
-	Tools        []wireTool      `json:"tools,omitempty"`
+	Tools        []any           `json:"tools,omitempty"`
 	Stream       bool            `json:"stream"`
 	OutputConfig *wireOutputConf `json:"output_config,omitempty"`
 	Thinking     *wireThinking   `json:"thinking,omitempty"`
@@ -454,6 +469,10 @@ type wireBlock struct {
 
 	// image
 	Source *wireSource `json:"source,omitempty"`
+
+	// raw, when set, is the whole block exactly as the provider sent it (a
+	// server tool block, or text with its citations) and is written as it is.
+	raw jsontext.Value
 }
 
 // MarshalJSON writes the fields a block type requires even when they are
@@ -470,6 +489,9 @@ type wireBlock struct {
 // that require them, and every other type marshals as before: a text, tool_use
 // or image block never gains a `thinking` field.
 func (b wireBlock) MarshalJSON() ([]byte, error) {
+	if b.raw != nil {
+		return b.raw, nil
+	}
 	type plain wireBlock // drops this method, so the marshal below cannot recurse
 	switch b.Type {
 	case BlockThinking:
@@ -496,7 +518,7 @@ type wireSource struct {
 
 // Stream begins a model call.
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	if err := ValidateRequest(req, a.Thinking); err != nil {
+	if err := validateRequest(req, a.Thinking, a.searchActive(req)); err != nil {
 		return nil, err
 	}
 	body, err := a.buildRequest(req)
@@ -596,14 +618,39 @@ func (a *Adapter) buildRequest(req llm.Request) (*wireRequest, error) {
 			Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema,
 		})
 	}
+	search, withSearch, err := a.searchTool(req)
+	if err != nil {
+		return nil, err
+	}
+	if withSearch {
+		out.Tools = append(out.Tools, search)
+		out.System += webSearchNote
+	}
+	var pairs pairing
 	for i, msg := range req.Messages {
 		converted, keep, err := toWireMessage(msg)
 		if err != nil {
 			return nil, fmt.Errorf("anthropic: message %d: %w", i, err)
 		}
+		if withSearch && hasServerState(msg) {
+			blocks, replayed, err := replayServer(msg)
+			if err != nil {
+				return nil, fmt.Errorf("anthropic: message %d: %w", i, err)
+			}
+			if replayed {
+				blocks = pairs.settle(blocks, openTurnMayFollow(req.Messages, i))
+				converted, keep = wireMessage{Role: string(msg.Role), Content: blocks}, len(blocks) > 0
+			}
+		}
 		if keep {
 			out.Messages = append(out.Messages, converted)
 		}
+	}
+	// A turn paused inside a hosted tool is continued by sending it back with
+	// nothing after it. Anything else that ends on an assistant message is a
+	// prefill, which current models reject.
+	if n := len(out.Messages); n > 0 && out.Messages[n-1].Role == string(llm.RoleAssistant) && !openTurn(out.Messages[n-1].Content) {
+		return nil, errors.New("anthropic: the request ends on an assistant message that is not a paused hosted-tool turn")
 	}
 	if len(out.Messages) == 0 {
 		return nil, errors.New("anthropic: no message has sendable content")
@@ -776,6 +823,10 @@ type accumulator struct {
 	toolID    string
 	toolName  string
 	args      strings.Builder
+	// raw is a server block's content_block_start exactly as received, and
+	// citations the citations_delta objects of a text block.
+	raw       jsontext.Value
+	citations []jsontext.Value
 	// sealed is set by content_block_stop, the event that says this block's
 	// content (a tool call's arguments in particular) is complete.
 	sealed bool
@@ -802,7 +853,7 @@ type wireEvent struct {
 		Usage      wireUsage `json:"usage"`
 	} `json:"message"`
 
-	ContentBlock *wireBlock `json:"content_block"`
+	ContentBlock *startBlock `json:"content_block"`
 
 	Delta *struct {
 		Type        string `json:"type"`
@@ -811,6 +862,9 @@ type wireEvent struct {
 		Signature   string `json:"signature"`
 		PartialJSON string `json:"partial_json"`
 		StopReason  string `json:"stop_reason"`
+		// Citation is one citation of a citations_delta, appended to the
+		// current text block's citations.
+		Citation jsontext.Value `json:"citation"`
 	} `json:"delta"`
 
 	Usage *wireUsage `json:"usage"`
@@ -829,6 +883,9 @@ type wireUsage struct {
 	OutputTokensDetails      *struct {
 		ThinkingTokens int `json:"thinking_tokens"`
 	} `json:"output_tokens_details"`
+	ServerToolUse *struct {
+		WebSearchRequests int `json:"web_search_requests"`
+	} `json:"server_tool_use"`
 }
 
 func (s *stream) Next() (llm.Chunk, error) {
@@ -952,6 +1009,13 @@ func (s *stream) apply(ev wireEvent) (llm.Chunk, bool, error) {
 		case BlockRedactedThinking:
 			acc.data = ev.ContentBlock.Data
 			s.retained += len(acc.data)
+		case BlockServerToolUse, BlockWebSearchResult:
+			// Provider-hosted: nothing for the loop to run, so no chunk. The
+			// block is kept whole to be sent back (see serverState).
+			acc.toolID = ev.ContentBlock.ID
+			acc.toolName = ev.ContentBlock.Name
+			acc.raw = ev.ContentBlock.Raw
+			s.retained += len(acc.toolID) + len(acc.toolName) + len(acc.raw)
 		}
 		return llm.Chunk{}, false, nil
 
@@ -981,9 +1045,21 @@ func (s *stream) apply(ev wireEvent) (llm.Chunk, bool, error) {
 			acc.signature += ev.Delta.Signature
 			s.retained += len(ev.Delta.Signature)
 			return llm.Chunk{}, false, nil
+		case DeltaCitations:
+			if acc.kind != BlockText || len(ev.Delta.Citation) == 0 {
+				return llm.Chunk{}, false, fmt.Errorf(
+					"anthropic: a citation arrived for a %q block (block %d); only text carries citations", acc.kind, ev.Index)
+			}
+			acc.citations = append(acc.citations, ev.Delta.Citation.Clone())
+			s.retained += len(ev.Delta.Citation)
+			return llm.Chunk{}, false, nil
 		case DeltaInputJSON:
 			acc.args.WriteString(ev.Delta.PartialJSON)
 			s.retained += len(ev.Delta.PartialJSON)
+			if acc.kind == BlockServerToolUse {
+				// A hosted tool's query is not a call this harness dispatches.
+				return llm.Chunk{}, false, nil
+			}
 			return llm.Chunk{
 				Kind: llm.ChunkToolCallDelta, BlockIndex: ev.Index,
 				ToolCallID: llm.CallID(acc.toolID), ToolName: acc.toolName,
@@ -1049,6 +1125,11 @@ func (s *stream) Response() (llm.Response, error) {
 		Provenance: &llm.AssistantProvenance{Provider: Name, Model: s.model},
 	}
 	var malformed []llm.MalformedCall
+	// entries mirrors msg.Content in the provider's order with the provider-
+	// hosted blocks among them; it becomes the replay state only when there are
+	// any (or cited text), so a response without them is journaled as before.
+	var entries []serverEntry
+	hostedContent := false
 	for _, index := range s.order {
 		acc := s.blocks[index]
 		if acc == nil {
@@ -1056,13 +1137,48 @@ func (s *stream) Response() (llm.Response, error) {
 		}
 		switch acc.kind {
 		case BlockText:
-			msg.Content = append(msg.Content, llm.TextBlock{Text: acc.text.String()})
+			text := acc.text.String()
+			msg.Content = append(msg.Content, llm.TextBlock{Text: text})
+			if len(acc.citations) == 0 {
+				entries = append(entries, serverEntry{Kind: entryText})
+				break
+			}
+			raw, err := citedText(text, acc.citations)
+			if err != nil {
+				return llm.Response{}, fmt.Errorf("anthropic: keeping cited text: %w", err)
+			}
+			entries = append(entries, serverEntry{Kind: entryCited, Raw: raw})
+			hostedContent = true
+		case BlockServerToolUse:
+			// Complete when sealed, like a client call; a prefix is never kept,
+			// because a replayed half-query is a request the API refuses.
+			if !acc.sealed {
+				if s.stopReason == llm.StopMaxTokens {
+					continue
+				}
+				return llm.Response{}, fmt.Errorf(
+					"anthropic: server tool call %q (id %q) was never closed by content_block_stop", acc.toolName, acc.toolID)
+			}
+			raw, err := serverToolUseBlock(acc.toolID, acc.toolName, acc.args.String())
+			if err != nil {
+				return llm.Response{}, err
+			}
+			entries = append(entries, serverEntry{Kind: entryServer, Raw: raw})
+			hostedContent = true
+		case BlockWebSearchResult:
+			if len(acc.raw) == 0 {
+				return llm.Response{}, fmt.Errorf("anthropic: web search result block %d carried no content", index)
+			}
+			entries = append(entries, serverEntry{Kind: entryServer, Raw: acc.raw})
+			hostedContent = true
 		case BlockThinking:
 			msg.Content = append(msg.Content, llm.ReasoningBlock{
 				Text: acc.text.String(), Signature: acc.signature,
 			})
+			entries = append(entries, serverEntry{Kind: entryThink})
 		case BlockRedactedThinking:
 			msg.Content = append(msg.Content, llm.ReasoningBlock{Redacted: true, Signature: acc.data})
+			entries = append(entries, serverEntry{Kind: entryThink})
 		case BlockToolUse:
 			// A tool call has to be routable and answerable, and both halves
 			// zero-value to the empty string. Without a name the tool layer
@@ -1133,7 +1249,15 @@ func (s *stream) Response() (llm.Response, error) {
 			msg.Content = append(msg.Content, llm.ToolCallBlock{
 				ID: llm.CallID(acc.toolID), Name: acc.toolName, Arguments: args,
 			})
+			entries = append(entries, serverEntry{Kind: entryTool})
 		}
+	}
+	if hostedContent {
+		state, err := serverState{Version: replayVersion, Entries: entries}.encode()
+		if err != nil {
+			return llm.Response{}, fmt.Errorf("anthropic: keeping server blocks for replay: %w", err)
+		}
+		msg.Provenance.ReplayState = state
 	}
 
 	stop := s.stopReason
@@ -1167,6 +1291,8 @@ func mapStopReason(raw string) llm.StopReason {
 		return llm.StopMaxTokens
 	case "refusal":
 		return llm.StopRefusal
+	case "pause_turn":
+		return llm.StopPause
 	default:
 		return llm.StopOther
 	}
@@ -1190,6 +1316,9 @@ func mergeUsage(into llm.Usage, w wireUsage) llm.Usage {
 	}
 	if w.OutputTokensDetails != nil && w.OutputTokensDetails.ThinkingTokens > 0 {
 		into.ReasoningTokens = w.OutputTokensDetails.ThinkingTokens
+	}
+	if w.ServerToolUse != nil && w.ServerToolUse.WebSearchRequests > 0 {
+		into.WebSearchRequests = w.ServerToolUse.WebSearchRequests
 	}
 	return into
 }

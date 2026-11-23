@@ -28,26 +28,30 @@ import (
 
 func (r *Registry) navigationTools() []tools.Tool {
 	return []tools.Tool{
+		r.codeTool(),
 		{
-			ReadOnly: true,
-			Extended: true,
-			Group:    tools.GroupNav,
-			Schema:   schema("devcouncil_graph_query", "Find symbols by name or path in the code graph, with the file and the source span of each hit.", `{"type":"object","properties":{"query":{"type":"string","description":"symbol name, partial name, or path"}},"required":["query"]}`),
-			Handler:  r.graphQuery,
+			ReadOnly:  true,
+			Extended:  true,
+			Group:     tools.GroupNav,
+			Schema:    schema("devcouncil_graph_query", "Find symbols by name or path in the code graph, with the file and the source span of each hit.", `{"type":"object","properties":{"query":{"type":"string","description":"symbol name, partial name, or path"}},"required":["query"]}`),
+			Handler:   r.graphQuery,
+			Batchable: true,
 		},
 		{
-			ReadOnly: true,
-			Extended: true,
-			Group:    tools.GroupNav,
-			Schema:   schema("devcouncil_code_dead", "List symbols with no discovered callers. Each carries a confidence and, where one applies, the reason it is exempt — a symbol reached only through a build tag, a registry, or reflection looks callerless to any static analyser.", `{"type":"object","properties":{"include_exempt":{"type":"boolean","description":"include symbols already judged exempt (default false)"}}}`),
-			Handler:  r.codeDead,
+			ReadOnly:  true,
+			Extended:  true,
+			Group:     tools.GroupNav,
+			Schema:    schema("devcouncil_code_dead", "List symbols with no discovered callers. Each carries a confidence and, where one applies, the reason it is exempt — a symbol reached only through a build tag, a registry, or reflection looks callerless to any static analyser.", `{"type":"object","properties":{"include_exempt":{"type":"boolean","description":"include symbols already judged exempt (default false)"}}}`),
+			Handler:   r.codeDead,
+			Batchable: true,
 		},
 		{
-			ReadOnly: true,
-			Extended: true,
-			Group:    tools.GroupNav,
-			Schema:   schema("devcouncil_graph_context", "For a set of files, what they depend on and what depends on them. Use before editing to see the blast radius.", `{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"},"description":"repo-relative paths"}},"required":["files"]}`),
-			Handler:  r.graphContext,
+			ReadOnly:  true,
+			Extended:  true,
+			Group:     tools.GroupNav,
+			Schema:    schema("devcouncil_graph_context", "For a set of files, what they depend on and what depends on them. Use before editing to see the blast radius.", `{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"},"description":"repo-relative paths"}},"required":["files"]}`),
+			Handler:   r.graphContext,
+			Batchable: true,
 		},
 	}
 }
@@ -284,6 +288,9 @@ type graphFileContext struct {
 	DependsOn  []string `json:"depends_on,omitempty"`
 	UsedBy     []string `json:"used_by,omitempty"`
 	Error      string   `json:"error,omitempty"`
+	// Withheld is the read-gate rule that refused the file; nothing about it
+	// was asked of devmap.
+	Withheld string `json:"withheld,omitempty"`
 }
 
 // fileResult is a graphFileContext with the qualifications its query reported.
@@ -296,6 +303,14 @@ type fileResult struct {
 // fileContextFor answers graph_context for one file.
 func (r *Registry) fileContextFor(ctx context.Context, client *devmap.Client, file string) fileResult {
 	fc := graphFileContext{Path: file}
+
+	// The answer is built from devmap's edges and notes for this file, which
+	// quote receiver text from it. A file the read gate refuses is not asked
+	// about, by the same rule every other reader applies.
+	if rule := r.readRefusal(file); rule != "" {
+		fc.Withheld = rule
+		return fileResult{ctx: fc}
+	}
 
 	// The area and its neighbours come from the same map the write gate
 	// consults, so what this reports and what the gate will permit are one
@@ -320,8 +335,19 @@ func (r *Registry) fileContextFor(ctx context.Context, client *devmap.Client, fi
 }
 
 // payload renders a navigation answer, always carrying its qualifications.
+//
+// The qualifications are devmap's own sentences, and a walk_incomplete note
+// quotes receiver text from source. Every one passes through
+// WithholdCallSiteSamples here, the single exit of this file's answers, so no
+// navigation tool can carry a sample to the model by way of "degraded". (Other
+// readers of devmap prose, the verify record and the test-selection caveat,
+// use DevmapNoteText, which ends in the same function.)
 func payload(body map[string]any, degraded []string, stale bool) tools.Result {
-	degraded = dedupe(degraded)
+	clean := make([]string, len(degraded))
+	for i, note := range degraded {
+		clean[i] = WithholdCallSiteSamples(note)
+	}
+	degraded = dedupe(clean)
 	if stale {
 		body["stale"] = true
 	}

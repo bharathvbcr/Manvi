@@ -7,6 +7,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
 )
 
 // promptText is the text the live assembly path produces, for tests that assert
@@ -291,5 +292,27 @@ func TestCapabilityGuidanceFollowsTheCapability(t *testing.T) {
 					"\"where would this live\" at a glance")
 			}
 		})
+	}
+}
+
+// The operating contract names the batch tool only when it is offered, and
+// stays small: it is essential, so every request pays for it.
+func TestOperatingContractFollowsTheBatchToolAndStaysLight(t *testing.T) {
+	reg := registryWith(t, nil)
+	for _, batch := range []bool{true, false} {
+		got := promptText(reg, PromptOptions{Provider: "anthropic", TaskToolsOffered: true, BatchOffered: batch})
+		for _, want := range []string{"Audit first", "Verify before you claim"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("BatchOffered=%v: the contract lacks %q", batch, want)
+			}
+		}
+		if strings.Contains(got, "devcouncil_batch") != batch {
+			t.Errorf("BatchOffered=%v but the prompt naming devcouncil_batch is %v", batch, !batch)
+		}
+	}
+	with, without := prompt.EstimateTokens(operatingContractSection(true)), prompt.EstimateTokens(operatingContractSection(false))
+	t.Logf("operating contract: %d estimated tokens with the batch line, %d without", with, without)
+	if with > 120 {
+		t.Errorf("the operating contract is %d estimated tokens; it is essential on every request, keep it under 120", with)
 	}
 }

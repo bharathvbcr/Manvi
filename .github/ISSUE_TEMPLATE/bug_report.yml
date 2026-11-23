@@ -1,0 +1,117 @@
+name: Bug Report
+description: Something in MANVI behaves incorrectly.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug.
+
+        **Before filing:** please search [existing issues](https://github.com/bharathvbcr/Manvi/issues?q=is%3Aissue) first.
+
+        **Do not report security vulnerabilities here.** A way around the policy
+        ladder is the vulnerability class that matters in this project; report it
+        privately through
+        [GitHub's vulnerability reporting](https://github.com/bharathvbcr/Manvi/security/advisories/new)
+        as described in [SECURITY.md](https://github.com/bharathvbcr/Manvi/blob/main/SECURITY.md).
+
+        A model doing something unhelpful, wrong or expensive is a quality issue and
+        belongs here. A gate that lets something through it should not have is a
+        vulnerability and does not.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe, and what did you expect instead?
+      placeholder: |
+        Expected: the write outside the repository root is refused.
+        Actual: the run report marks it allowed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The exact command line, and the smallest repository or prompt that shows it.
+        A bug we cannot reproduce is a bug we cannot fix.
+      placeholder: |
+        1. manvi run --provider local ...
+        2. Ask it to ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: manvi --version
+      description: Paste the output of `manvi --version`, including the revision.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (amd64)
+        - Linux (arm64)
+        - Windows 11
+        - Windows 10
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Model and provider
+      description: Which provider and model the run used, or "none" if the bug does not involve a model.
+      placeholder: "local (Ollama) / qwen3-coder, or anthropic / ..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area?
+      options:
+        - Policy ladder / gate / grants
+        - Agent turn loop
+        - Providers / local models
+        - Tools (native or MCP)
+        - TUI / watch
+        - manvi serve (embedding)
+        - DevCouncil component integration (devmap, dcstore, dcverify, dcgrep)
+        - Session log / replay
+        - verify.sh / CI
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: manvi doctor
+      description: |
+        Paste the output of `manvi doctor`. It prints the posture and which binary
+        each component resolved to. **Review it before pasting:** it may include
+        local paths.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true

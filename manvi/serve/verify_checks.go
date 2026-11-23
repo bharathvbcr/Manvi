@@ -444,17 +444,10 @@ func (r *VerifyRunner) affectedInBatches(ctx context.Context, rec *VerifyRecord,
 
 // walkNote reads devmap's walk_incomplete, which is a message when the walk was
 // cut short and null or false when it was not.
+// The text passes through devcouncil.DevmapNoteText, which withholds the
+// call-site samples devmap quotes from source.
 func walkNote(raw json.RawMessage) string {
-	text := strings.TrimSpace(string(raw))
-	switch text {
-	case "", "null", "false":
-		return ""
-	}
-	var message string
-	if json.Unmarshal(raw, &message) == nil {
-		return devcouncil.TruncateRunes(strings.TrimSpace(message), 400)
-	}
-	return text
+	return devcouncil.TruncateRunes(devcouncil.DevmapNoteText(raw), 400)
 }
 
 // judge asks the read-only critic for one verdict per criterion and records

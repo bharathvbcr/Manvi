@@ -52,6 +52,7 @@ func (e runEnv) subAgentConfig(reg *flags.Registry, pipeline *tools.Registry, na
 		meter:           meter,
 		coreToolsOnly:   coreOnly,
 		assertInvariant: assertInvariant(reg),
+		serialLookups:   serialLookupMode(reg),
 	}
 }
 

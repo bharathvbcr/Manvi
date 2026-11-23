@@ -11,6 +11,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
@@ -39,14 +40,116 @@ const harnessSpecKey = "harness.spec"
 // tier keys, and not a safety flag. Empty selects no spec, which is the
 // behaviour of every release before this one.
 func harnessFlagDefs() []flags.Def {
-	return []flags.Def{{
+	return append(webSearchFlagDefs(), []flags.Def{{
 		Key: harnessSpecKey, Kind: flags.KindString, Default: "", Mutable: flags.HumanOnly,
 		Description: "Name of the harness spec this session runs with: extra prompt sections, a skills " +
 			"selection, a lessons library and sub-agent roles, from a spec the process registered or " +
 			".devcouncil/harness/<name>.json. Empty runs none. A spec cannot set flags, tiers, posture, " +
 			"the verify command, fetch hosts or MCP servers, and cannot widen a role. Operator scope: " +
 			"never read from the repository's config.yaml.",
-	}}
+	}, {
+		Key: serialLookupsKey, Kind: flags.KindEnum, Default: string(agent.SerialLookupsRefuse),
+		Values:  []string{string(agent.SerialLookupsOff), string(agent.SerialLookupsNote), string(agent.SerialLookupsRefuse)},
+		Mutable: flags.HumanOnly,
+		Description: "What the agent loop does when consecutive steps each make a single read-only lookup while " +
+			"devcouncil_batch is offered: refuse notes the third and refuses the fifth once (sent again, it runs), " +
+			"note only notes every third, off does neither.",
+	}, {
+		Key: execContainmentKey, Kind: flags.KindEnum, Default: execContainmentOff,
+		Values: []string{execContainmentOff, execContainmentSecrets}, Mutable: flags.HumanOnly,
+		Description: "Whether devcouncil_exec_command runs under a macOS seatbelt profile (sandbox-exec) that denies " +
+			"reading the repository's secret files (DevCouncil's policy.SecretPathPatterns), so grep -r, rg or a " +
+			"program the agent builds cannot read what a command naming the path would be refused. The same " +
+			"profile denies writing, hard-linking and deleting those files, and renaming any directory above them " +
+			"(up to the repository root and its parents), so a secret cannot be moved out from under its deny; " +
+			"ordinary files are unaffected. Not contained: a secret-named file created outside a secret directory " +
+			"while the command runs, the verify command, and a host where Apple removes the deprecated " +
+			"sandbox-exec. secrets turns it on; where sandbox-exec is unavailable the command is refused, never " +
+			"run uncontained. Operator scope: never read from the repository's config.yaml.",
+	}, {
+		Key: coreToolsOnlyKey, Kind: flags.KindBool, Default: "false", Mutable: flags.HumanOnly,
+		Description: "Offer only the core tool set, whichever provider is in use: task lifecycle, sub-agent, " +
+			"artifact and other extended tools are left out of every request. llm.local.core_tools_only does the " +
+			"same for the local provider alone; either one turns it on. Operator scope: never read from the " +
+			"repository's config.yaml.",
+	}, {
+		Key: dynamicToolsKey, Kind: flags.KindBool, Default: "false", Mutable: flags.HumanOnly,
+		Description: "Start every provider from the core tool set and let the model load the rest on demand with " +
+			"devcouncil_search_tools and devcouncil_activate_tools, instead of sending every schema each request. " +
+			"llm.local.dynamic_tools does the same for the local provider alone (and defaults on there); either " +
+			"one turns it on. Operator scope: never read from the repository's config.yaml.",
+	}, {
+		Key: batchToolKey, Kind: flags.KindEnum, Default: batchToolOn,
+		Values: []string{batchToolOn, batchToolOff}, Mutable: flags.HumanOnly,
+		Description: "Whether devcouncil_batch is offered. off removes the tool from every tool set, drops the " +
+			"prompt's line about it, and with it the batching rule that harness.serial_lookups enforces. " +
+			"Operator scope: never read from the repository's config.yaml.",
+	}}...)
+}
+
+// execContainmentKey names the switch for secret-file containment of shell
+// commands; see devcouncil.Deps.ExecContainment. Off unless the operator turns
+// it on, which is the behaviour of every release before it.
+const execContainmentKey = "harness.exec_containment"
+
+// Values of execContainmentKey.
+const (
+	execContainmentOff     = "off"
+	execContainmentSecrets = "secrets"
+)
+
+// execContainmentMode is the configured mode. A registry that cannot answer,
+// which only one built without harnessFlagDefs can be, is off: that is the
+// behaviour before the switch existed.
+func execContainmentMode(reg *flags.Registry) string {
+	mode, _, err := reg.String(execContainmentKey)
+	if err != nil || mode == "" {
+		return execContainmentOff
+	}
+	return mode
+}
+
+// serialLookupsKey names the batching rule's mode; see agent.SerialLookups.
+const serialLookupsKey = "harness.serial_lookups"
+
+// The operator's switches over which tool schemas a turn offers. They apply to
+// every provider; the llm.local.* pair they sit beside names the local provider
+// only. All three change what the agent can reach, so they are operator scope.
+const (
+	coreToolsOnlyKey = "harness.core_tools_only"
+	dynamicToolsKey  = "harness.dynamic_tools"
+	batchToolKey     = "harness.batch_tool"
+)
+
+// Values of batchToolKey.
+const (
+	batchToolOn  = "on"
+	batchToolOff = "off"
+)
+
+// batchToolWithheld reports whether the operator withheld devcouncil_batch. A
+// registry that cannot answer, which only one built without harnessFlagDefs can
+// be, offers it: that is the behaviour of every release before the switch.
+func batchToolWithheld(reg *flags.Registry) bool {
+	mode, _, err := reg.String(batchToolKey)
+	return err == nil && mode == batchToolOff
+}
+
+// harnessBool reads one of the boolean switches above; an unreadable key is off.
+func harnessBool(reg *flags.Registry, key string) bool {
+	on, _, err := reg.Bool(key)
+	return err == nil && on
+}
+
+// serialLookupMode is the configured mode. A registry that cannot answer, which
+// only a registry built without harnessFlagDefs can be, gets the default and
+// strictest mode rather than none.
+func serialLookupMode(reg *flags.Registry) agent.SerialLookups {
+	mode, _, err := reg.String(serialLookupsKey)
+	if err != nil {
+		return agent.SerialLookupsRefuse
+	}
+	return agent.SerialLookups(mode)
 }
 
 // specIdentity is what the log records about the spec a prompt carried. Both

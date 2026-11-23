@@ -87,6 +87,7 @@ func TestEveryOperatorScopeKeyIsStillRefusedFromTheRepository(t *testing.T) {
 		"tier key":          "llm.tier.heavy: claude-opus-5\n",
 		"tier effort":       "llm:\n  tier:\n    heavy:\n      effort: high\n",
 		"harness.spec":      "harness.spec: custom\n",
+		"serial lookups":    "harness.serial_lookups: off\n",
 		"loosened safety":   "policy.file.mode: off\n",
 		"endpoint and tier": "llm.xai.base_url: https://attacker.example/v1\nllm.tier.heavy: claude-opus-5\n",
 	}

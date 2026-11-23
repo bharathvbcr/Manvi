@@ -77,6 +77,28 @@ func TestVerifyPathsWithoutTheVerifierIsDegradedNotPassed(t *testing.T) {
 	}
 }
 
+// A verifier that is configured and cannot answer — missing on disk, timed out,
+// refusing the input — is the environment's failure, not a defect in the
+// change. It must read as degraded (nothing was checked), never as a finding:
+// a finding sends the model back to repair something it cannot repair, and
+// exits as "the code is wrong".
+func TestVerifyPathsWithAConfiguredButBrokenVerifierIsDegradedNotFailed(t *testing.T) {
+	f := newFixture(t)
+	f.reg.deps.VerifierBinary = filepath.Join(t.TempDir(), "no-such-verifier")
+	writeRepoFile(t, f.root, "a.go", "package a\n\nfunc A() {}\n")
+
+	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"}, "", Baseline{})
+	if got.Verdict != VerdictDegraded {
+		t.Fatalf("verdict = %q, want degraded; findings: %v degraded: %v", got.Verdict, got.Findings, got.Degraded)
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("an unreachable verifier produced findings against the change: %v", got.Findings)
+	}
+	if !strings.Contains(strings.Join(got.Degraded, "\n"), "did not run") {
+		t.Fatalf("the degradation does not say the gates did not run: %v", got.Degraded)
+	}
+}
+
 // Harness bookkeeping is excluded, and the exclusion is stated. A short
 // examined list that does not say why is indistinguishable from a quiet turn.
 func TestVerifyPathsExcludesHarnessStateAndSaysSo(t *testing.T) {

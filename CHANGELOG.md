@@ -23,6 +23,152 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **`work.assist.complete` answers a rejected Anthropic key with
+  `E_PROVIDER_AUTH`** (not retryable). Before, a revoked or wrong key came back
+  as `E_DEPENDENCY` with only the provider's text, so a host could not tell it
+  apart from an outage without reading the message. Only Anthropic's HTTP 401
+  carries the new code; a 403, other statuses and another server's 401 are
+  unchanged. The message is still the runner's redacted text.
+- `harness.exec_containment` (operator scope; `off` by default, `secrets`). With
+  `secrets` on macOS, `devcouncil_exec_command` runs under `sandbox-exec` with a
+  profile that denies reads of the repository's secret files (DevCouncil's
+  `policy.SecretPathPatterns`, enumerated per command with symlinks resolved),
+  so `grep -r`, `rg` or a built program can no longer read what a command naming
+  the path would be refused. Where `sandbox-exec` is unavailable the command is
+  refused, never run uncontained. Refused in a repository `config.yaml`.
+  Measured overhead: about 7 ms per command plus about 6.5 ms per 1000
+  repository entries. Known gaps: hard links, secret files created outside a
+  secret directory mid-command, no per-path allow list; the verify command is
+  not contained. Security impact: narrows access only.
+- bench: `bench/batching2/` is a pre-registered five-arm study (batch off;
+  default; identical repeat; devcouncil_script nudge; serial lookups off) with
+  dependent-lookup tasks and a 480-record pointer-chase fixture. At n=120 units
+  on Haiku 5.5 the default batching policy cut input tokens by about 70k per
+  unit against batch-off (98.33% CI −114k to −29k), and the script nudge cut a
+  further 65k against the default (CI −101k to −35k); the serial-lookup refusal
+  fired in 15 of 120 default runs and no token effect from it is shown (CI −102k
+  to +39k). The pre-registered power calculation underestimated the spread
+  (delta SD about 196k, not 34k). `run_batching.py` is now a reusable study
+  runner; `bench/batching2` tests run in verify.sh's bench step and are excluded
+  from the paper supplement.
+- The end-of-turn check now selects the tests a turn's changes reach, through the
+  code index's `affected` query, and reports them on `verify.report`
+  (`test_selection`, `selected_tests`) and in the bounce text as "selected, not
+  run": up to 20 names plus the total, the index generation, and whether the
+  index is stale. Selection only: no test is executed, the verdict is unchanged,
+  and `MANVI_VERIFY_COMMAND` still runs exactly as before. When the index is
+  unavailable, stale, or does not contain a changed file, the report says the
+  selection did not run or may be incomplete, never "no affected tests".
+- **`devcouncil_script` chains lookups in one step.** A short Starlark script (at most 16 KiB; new dependency
+  `go.starlark.net`) whose functions are the read-only lookups `devcouncil_batch` may carry, called by full name
+  with keyword arguments, so one call can use the previous call's answer (`json.decode` is available; each call
+  returns `.text`, `.error`, `.refused`, `.truncated`). Every call passes the batch's own admission (now one shared
+  function, `admitInner`), the repeat ledger, progress accounting and per-call gate-evidence recording under
+  `<call id>#<n>`. Bounded by `max_calls` (default 16, at most 32), 1,000,000 interpreter steps, 30 s of wall
+  time, 32 KiB per answer and 128 KiB of output; a breach ends the script and keeps its output so far. Hermetic:
+  no `load()`, files, network, clock or randomness. A `read_file` inside a script never counts as read for the
+  overwrite guard. A step with a script call resets the serial-lookup run. `harness.batch_tool: off` withholds it
+  with the batch tool. Native tool count 53 to 54 (53 in a repository with no skills, from 52).
+- `bench/batching/`: a paired three-arm benchmark of the batching policy (batch tool off, on with serial lookups off, on with the default) that drives the built `manvi run --json` live and reuses the bench's bootstrap statistics. Pre-registration, tasks, driver, unit tests, raw rows and a results summary are included. No setting or tool changed.
+
+- `devcouncil_write_file` and `devcouncil_patch_file` end their result with a bounded impact line from the code index: up to 10 callers outside the written file, labelled with the index generation and stated stale when the index has not seen the write, or one line saying the check did not run. `devcouncil_code` opens with `index_notice` when the index is behind the tree, naming the paths this session wrote that it has not seen, and hoists completeness fields that are identical on every sub-envelope into one `shared_envelope` (differing values are left in place).
+
+- **Tool offering is operator-settable on every provider.** `harness.core_tools_only`
+  and `harness.dynamic_tools` (both default `false`) give any provider the core
+  set (about 25 of 46 tools, roughly 4.1k of 7.6k schema tokens per request) or
+  on-demand activation; the `llm.local.*` pair keeps working for the local
+  provider, and either turns the behaviour on. `harness.batch_tool` (`on`, the
+  default; `off`) withholds `devcouncil_batch`, and with it the prompt's batch
+  line and the serial-lookup rule. All three change what the agent can reach, so
+  they are operator scope: a repository `config.yaml` that sets one is refused at
+  startup. Defaults are unchanged: a cloud provider is still offered every tool.
+- **Design: shell commands can read repository secret files they do not name.**
+  `docs/SECRET_CONTAINMENT_DESIGN.md` records the reproduction (`grep -r`, `rg`
+  and a program run by `go run` read `secrets/` in dev posture; only a command
+  naming the path is refused), why neither a containment seam nor a callable
+  `dc-redact` contract exists yet, and the proposed seam. No behaviour change.
+- **Optional hosted web search for Anthropic agents, off by default.**
+  `llm.anthropic.web_search` (`off`, the default; `on`) and
+  `llm.anthropic.web_search_max_uses` (1 to 20, default 3) add Anthropic's
+  server-side `web_search_20250305` tool to requests that offer tools. Both are
+  operator scope: a repository `config.yaml` that sets either is refused. The
+  query text the model writes is sent to Anthropic and its search backend, and
+  results cannot be framed as untrusted by the harness, so the system prompt
+  says so while the tool is attached. Searches are priced ($10 per 1,000) and
+  reserved against the budget ledger; server blocks and citations are kept in
+  the session log's replay state and replayed only while they still match;
+  `pause_turn` is continued up to 4 times per turn and then ends unfinished
+  (new `llm.StopPause`, exit status 5). Previously a stream containing server
+  blocks or `citations_delta` failed to decode.
+
+- **`devcouncil_batch`: several independent lookups in one step.** Up to 16
+  calls to allowlisted read-only tools (file reads, grep, find/list, the graph
+  tools, git reads, get_diff) run concurrently, at most four at once, and come
+  back as one result holding only the lines each call kept (`match`, an RE2
+  filter; `max_lines`, default 200). The agent loop expands the batch itself,
+  so each inner call passes the offered-set check, the repeat ledger, progress
+  accounting and gate-evidence recording exactly as a top-level call does, and
+  no inner call becomes a wire message. Calls cannot use each other's results:
+  this is batching, not scripting. While the batch tool is offered, the loop
+  enforces it: after three consecutive steps of one lookup each (a one-call
+  batch counts as one) it appends a note, and the lookup that would make five
+  in a row is refused once without running; sent again, it runs. The refusal
+  stays out of the repeat ledger and is charged as one step, not a stall.
+  `harness.serial_lookups` (`refuse`, the default; `note`; `off`) sets it. It is
+  operator scope: a repository `config.yaml` that sets it is refused at startup.
+  Inside a batch each call gets the lesser of 32 KiB and what the earlier calls
+  left of the batch's 128 KiB, decided as the fold proceeds, so sixteen small
+  answers do not shrink each other's room. `read_file` does not mark a file
+  read inside a batch; it returns the mark on its result (`Result.OnShown`) and
+  the loop commits it only for an answer it showed in full. The tool's
+  description names the lookups the surface marks batchable, generated rather
+  than hand-listed.
+- **`devcouncil_code`: the code graph's explore, impact, trace and affected
+  questions in one tool**, through DevCouncil's `devmap.Client.Advanced`. It is
+  a core tool whenever a navigator is attached, so a session with a code map
+  holds it without activating anything. Source excerpts in the answer pass the
+  read gate; an excerpt that names no file is withheld.
+- **`devcouncil_read_file` reads a line range** with `offset` and `limit`.
+  The reference already documented both parameters; the handler now accepts
+  them, and a ranged answer starts with the range and the file's line count.
+- **An operating contract in every prompt**: audit first, batch independent
+  lookups (only when the batch tool is offered), verify before claiming.
+  Essential, in both densities, and held under 120 estimated tokens by a test.
+
+### Changed
+
+- DevCouncil pin moved from `230bbf04` to `d938f7f8` (origin/main; 37 commits,
+  16 touching linked paths). Schema constants are unchanged (devmap-store 29,
+  dc-store 11, workbench 17), so no cross-app schema carry is needed. The
+  vendored lease contract and its checksum are re-synced, `crates/Cargo.lock`
+  gains the new `dc-proc` edges, the docs schema re-read gate is re-read at the
+  new pin, and the quiet-tree grep test follows DevCouncil 29cf2dde (an
+  untracked nested repository is no longer searched when ignore rules are on).
+  gusset stays at `19383ad`.
+- Verification runs to a verdict, and `manvi run` reports it. A turn that
+  changed files and ended at the step ceiling runs the end-of-turn check once
+  more on the final tree; a turn that ended on an error or cancellation after
+  changing files is recorded as `degraded` with its reason. New `manvi run` exit
+  statuses: `10` (verification failed and the failure still stands) and `11`
+  (verification could not run); both were `0` before. A turn that changes files
+  only through shell commands with `MANVI_VERIFY_COMMAND` unset now exits `11`.
+  A configured verifier that cannot answer (missing binary, timeout) degrades
+  the verdict instead of reporting a finding, and the model is no longer bounced
+  for it. Event wire fields are unchanged.
+- **`devcouncil_write_file` also refuses a file that changed after it was
+  read.** The session records a SHA-256 of exactly the bytes a full read showed
+  (or that it wrote itself) and compares it with the file on disk before
+  overwriting; a mismatch, or a file that cannot be read back, is refused with
+  "has changed since you read it". Another writer's addition is no longer
+  silently dropped.
+- **`devcouncil_write_file` refuses to overwrite an existing file this
+  session has not read.** The refusal names the remedy (read it, or patch it)
+  and carries no policy rule, because the gate did not make it. A file the
+  session wrote itself may be overwritten again. A resumed session and each
+  sub-agent start with nothing read. `devcouncil_patch_file` is unaffected: it
+  already has to quote the text it replaces.
+- The native tool count is 53 (52 in a repository with no skills).
+
 - **The Gemini adapter serves `gemini-4-hydrogen`** (GA 2026-11-12), with the
   limits its model page states: a 1,048,576-token context window and 65,536
   output tokens. Vani triages with it. `gemini-4-carbon` and `gemini-4-argon`
@@ -634,6 +780,38 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Security (code-graph read gate): devmap's unresolved call-site `receiver`
+  text, which is raw source, is withheld when the site's file is a secret path
+  or unnamed; call-site samples in devmap prose (`walk_incomplete`,
+  `coverage_gap`, notes and degraded reasons) are replaced by the count and
+  `[call-site sample withheld]`, in the code tool, `graph_context`,
+  test-selection caveats, the verify record and refine citations; identifiers
+  and source that merely mention "call site" are left alone, path fields are
+  never rewritten, and every withholding is counted. `graph_context` now applies
+  the read gate to its input files.
+- Security (`harness.exec_containment=secrets`): the profile also denies
+  writing, hard-linking, cloning and deleting secret files and renaming,
+  unlinking or cloning any directory above one, closing `mv .env y`, `mv cfg
+  cfg2` and `clonefile` of a parent directory or the repository root. Deleting
+  or moving a tree that contains a secret-named file fails while it is on.
+- `devcouncil_batch` stops an answer at the first line that exceeds its byte
+  budget instead of showing later lines across a silent gap.
+- `devcouncil_write_file` decides whether the read-before-overwrite guard
+  applies from what the write actually replaces, so a file that appears mid-call
+  is not overwritten unread.
+- `manvi run` help no longer says exit 10 covers the step ceiling (that exits
+  2).
+- devcouncil_write_file now re-checks, inside the atomic replace and immediately
+  before the rename, that the file still holds the bytes the agent read. A
+  change landing between the overwrite check and the replace is refused with the
+  usual "has changed since you read it" message instead of being clobbered.
+  devcouncil_delete_file now records the deleted path for the stale-index
+  notice, appends the usual impact line when an index is available, and clears
+  the overwrite guard, so a re-created file must be read again before it can be
+  overwritten.
+- devcouncil_script: a tool call freed by the wall-time bound now ends the
+  script at that call; before, the next statement could still run and print
+  after the bound.
 - **The bench verifier no longer takes the candidate worker's word for any check that decides a verdict** (ft-efcc491a, post-hoc review of 808a94a). Before: the import ban was a `sys.meta_path` finder inside the worker, and argument writeback a report from a method candidate code could replace, so a candidate passed `globmatch` by removing the finder and importing `fnmatch` through `builtins.__dict__["__imp"+"ort__"]`, passed `intervals` while appending to its arguments by replacing `_make_wb` (through `gc.get_objects()` or `sys.modules["__main__"]._g`), and could reach `queue` in `concurrency_race` as `sys.modules["__main__"]._g["queue"]` or as `_queue`. Now (`bench/mh/rpc.py`):
   - The ban is an audit hook the worker installs before the candidate's first line. CPython cannot remove one, and this one reads no state a candidate can reach. It refuses the `import` event of every banned name however an import statement, `__import__` or `importlib` spells it (not loader-level calls into `_imp`, which raise no such event; see the loader-level follow-up below), the reading of a banned module's source (so loading `queue.py` by hand fails too), `ctypes` and the sub-interpreter modules, and `gc.get_objects`/`get_referrers`/`get_referents`. `_queue`, `_sre`, `_fnmatch` are banned with `queue`, `re`, `fnmatch`.
   - The worker harness loads no `re`, `queue`, `json`, `base64` or `importlib` (it has its own JSON codec and inbox), so there is no already-imported copy to reach through `_g` or `json.decoder.re`. The `forbid` reply, sent before any candidate line has run, lists anything loaded anyway, and the record names it.

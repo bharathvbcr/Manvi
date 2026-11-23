@@ -145,6 +145,20 @@ type Result struct {
 	// tells an operator a gate contained something when nothing was contained.
 	// Only the gate knows, so only the gate sets this.
 	Blocked bool
+	// OnShown is a side effect the handler defers until the answer has reached
+	// the model whole. A handler running under a View (a batch that keeps only
+	// part of every answer) cannot know whether its answer survives the cut, so
+	// it returns what it would have recorded here instead of recording it; the
+	// agent loop calls it once, and only after it has shown the answer in full.
+	// A call that was cut, errored or never folded leaves it uncalled, which is
+	// the safe direction: devcouncil_read_file's mark is what lets a file be
+	// overwritten, and a missing mark costs one re-read.
+	//
+	// The closure belongs to the registry that built the result: it commits to
+	// that registry's own state and never to a second copy of it. Outside a
+	// View the answer is shown as returned and handlers act at once, so a
+	// top-level result never carries one.
+	OnShown func()
 }
 
 // Qualified reports whether the outcome was reached by anything other than the
@@ -237,6 +251,16 @@ type Tool struct {
 	// strand it. A list of pairs written beside the registry is true on the day
 	// it is written and quietly wrong afterwards.
 	Requires []string
+	// Batchable admits the tool inside a devcouncil_batch call, where the
+	// agent loop runs it concurrently with the batch's other calls.
+	//
+	// An opt-in, never derived from ReadOnly. ReadOnly says a tool cannot
+	// mutate; Batchable also says it is safe to run concurrently and out of
+	// order with its neighbours, which activation (it changes what the next
+	// call may name), sub-agent dispatch and a nested batch are not, though
+	// all three are marked ReadOnly. A tool added later is therefore outside
+	// every batch until someone decides it belongs.
+	Batchable bool
 }
 
 // PreExecute is the waterfall event for the pre-execute stage. A listener may
@@ -980,6 +1004,132 @@ func Dispatcher(ctx context.Context) *Registry {
 	}
 	r, _ := ctx.Value(dispatcherKey{}).(*Registry)
 	return r
+}
+
+// BatchToolName is the tool that runs several independent lookups in one step.
+// The agent loop runs it itself (see agent/batch.go); the registered handler
+// only refuses, for a caller that reaches it without a loop.
+const BatchToolName = "devcouncil_batch"
+
+// MaxBatchCalls is the most calls one batch may carry.
+const MaxBatchCalls = 16
+
+// BatchTool is the batch tool's registration. Its schema has one owner here,
+// beside the name the loop dispatches on. batchable is the full names of the
+// tools the surface marks Batchable; the description names exactly those, so it
+// cannot drift from what the loop admits. With none it says only that the
+// lookups are the read-only ones the tool list marks as batchable.
+func BatchTool(batchable ...string) Tool {
+	names := slices.Clone(batchable)
+	slices.Sort(names)
+	names = slices.Compact(names)
+	lookups := "the read-only lookups of this tool list"
+	if len(names) > 0 {
+		lookups = strings.Join(names, ", ")
+	}
+	return Tool{
+		Schema: llm.ToolSchema{
+			Name: BatchToolName,
+			Description: "Run up to 16 independent read-only lookups in one step, concurrently, and get back " +
+				"only the lines you ask for. Name each tool in full. The tools a batch may carry: " + lookups + ". " +
+				"Use it whenever you would otherwise make several lookups one step at a time. Calls cannot " +
+				"use each other's results; anything that writes, runs a command or activates tools is refused " +
+				"inside a batch. Per call: match keeps only lines matching a regular expression, max_lines " +
+				"caps the lines kept (default 200).",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"calls":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"tool":{"type":"string"},"args":{"type":"object"},"match":{"type":"string","description":"RE2 regular expression; keep only matching lines"},"max_lines":{"type":"integer","minimum":1,"maximum":2000}},"required":["tool"]}}},"required":["calls"]}`),
+		},
+		Group:    GroupCore,
+		ReadOnly: true,
+		Handler: func(context.Context, Call) Result {
+			return Errorf("%s is run by the agent loop and was reached without one, so nothing ran; call the tools one at a time", BatchToolName)
+		},
+	}
+}
+
+// ScriptToolName is the tool that runs a short Starlark script whose calls are
+// the read-only lookups, so one step can chain them: the second call's arguments
+// may come from the first call's answer. The agent loop runs it itself (see
+// agent/script.go); the registered handler only refuses.
+const ScriptToolName = "devcouncil_script"
+
+const (
+	// DefaultScriptCalls is how many tool calls a script may make when it names
+	// no max_calls.
+	DefaultScriptCalls = 16
+	// MaxScriptCalls is the most max_calls may ask for.
+	MaxScriptCalls = 32
+	// MaxScriptBytes bounds the script's source.
+	MaxScriptBytes = 16 << 10
+)
+
+// ScriptTool is the script tool's registration, with its schema owned here
+// beside the name the loop dispatches on. callable is the full names of the
+// lookups the surface marks Batchable; the description names exactly those.
+func ScriptTool(callable ...string) Tool {
+	names := slices.Clone(callable)
+	slices.Sort(names)
+	names = slices.Compact(names)
+	lookups := "the read-only lookups of this tool list"
+	if len(names) > 0 {
+		lookups = strings.Join(names, ", ")
+	}
+	return Tool{
+		Schema: llm.ToolSchema{
+			Name: ScriptToolName,
+			Description: "Chain read-only lookups in one step with a short Starlark script (Python-like; no imports, " +
+				"files or network). Use it when a lookup needs the answer of the one before it; independent lookups " +
+				"belong in devcouncil_batch. Callable, by full name with keyword arguments only: " + lookups + ". " +
+				"Each call returns a struct with .text (the answer, cut at 32 KiB), .error (true when the call failed or " +
+				"was refused) and .truncated; json.decode parses a JSON answer. Output is what print() writes. " +
+				"Example: r = devcouncil_grep(pattern=\"func Run\"); print(r.text). " +
+				"Bounds: max_calls (default 16, at most 32), 1e6 interpreter steps, 30 s, 128 KiB of output; a breach " +
+				"ends the script and keeps its output so far. A file read inside a script is never counted as read in " +
+				"full, so read it on its own before writing it.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"script":{"type":"string","maxLength":16384},"max_calls":{"type":"integer","minimum":1,"maximum":32}},"required":["script"]}`),
+		},
+		Group:    GroupCore,
+		ReadOnly: true,
+		Handler: func(context.Context, Call) Result {
+			return Errorf("%s is run by the agent loop and was reached without one, so nothing ran; call the tools one at a time", ScriptToolName)
+		},
+	}
+}
+
+type viewKey struct{}
+
+// View is how much of a tool's answer may reach the model: a batch keeps only
+// the lines and bytes each call asked for, and the bytes left in the batch
+// when a call's turn comes depend on the calls before it, which a handler
+// running concurrently cannot know. MaxLines and MaxBytes are therefore upper
+// bounds, not promises. A handler whose side effects depend on the model having
+// seen its whole answer — devcouncil_read_file marks a file as read — defers
+// them on Result.OnShown rather than acting under a View.
+type View struct {
+	MaxLines int
+	MaxBytes int
+	// Filtered is set when only lines matching a pattern are kept, so even a
+	// short answer may not arrive whole.
+	Filtered bool
+}
+
+// WithView attaches the view a call's answer will be cut to.
+func WithView(ctx context.Context, v View) context.Context {
+	return context.WithValue(ctx, viewKey{}, v)
+}
+
+// ViewFrom returns the view attached to ctx, if any. No view means the answer
+// reaches the model as the handler returns it.
+func ViewFrom(ctx context.Context) (View, bool) {
+	v, ok := ctx.Value(viewKey{}).(View)
+	return v, ok
+}
+
+// Batchable reports whether name is registered and admitted inside a batch.
+func (r *Registry) Batchable(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.tools[name]
+	return ok && t.Batchable
 }
 
 // ActivateToolName is the tool a model calls to activate others in dynamic mode.

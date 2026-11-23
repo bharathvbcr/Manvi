@@ -206,7 +206,11 @@ const (
 	StopToolUse   StopReason = "tool_use"
 	StopMaxTokens StopReason = "max_tokens"
 	StopRefusal   StopReason = "refusal"
-	StopOther     StopReason = "other"
+	// StopPause is a provider-hosted tool loop that paused before finishing:
+	// the turn is not over, and the answer to it is the same history sent back
+	// so the provider can continue (Anthropic's pause_turn).
+	StopPause StopReason = "pause_turn"
+	StopOther StopReason = "other"
 )
 
 // Usage is token accounting, recorded per call.
@@ -216,6 +220,9 @@ type Usage struct {
 	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	// WebSearchRequests is the number of provider-hosted web searches this
+	// call was billed for, a charge in addition to its tokens.
+	WebSearchRequests int `json:"web_search_requests,omitempty"`
 	// Throughput, when the server reports it. Zero means it did not.
 	//
 	// These are the operational signals for a locally served model, where the

@@ -2,6 +2,7 @@ package devcouncil
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -179,9 +180,16 @@ const ungatedToolSentence = "devcouncil_read_file, devcouncil_grep, " +
 func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		Path string `json:"path"`
+		// Offset and Limit select a line range: Offset is the 1-based first
+		// line, Limit the number of lines. Both zero is the whole file.
+		Offset int `json:"offset"`
+		Limit  int `json:"limit"`
 	}
 	if err := decode(call, &args); err != nil {
 		return tools.Errorf("bad arguments: %v", err)
+	}
+	if args.Offset < 0 || args.Limit < 0 {
+		return tools.Errorf("offset and limit must not be negative")
 	}
 	rel, contained := r.containedRel(args.Path)
 	if !contained {
@@ -214,8 +222,89 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	if err != nil {
 		return tools.Errorf("reading %s: %v", args.Path, err)
 	}
-	return annotate(tools.Result{Text: string(data)}, decision)
+	// Recorded only for a whole file the model will actually see: a refused or
+	// failed read is not an inspection, and neither is a range or a batch view
+	// that cuts the answer — the overwrite guard (inspect.go) reads this, and
+	// "read one line of it" is not "read it". What is recorded is the digest of
+	// these bytes, so the mark lapses when the file changes.
+	//
+	// Under a View this handler cannot tell whether its answer will survive the
+	// cut (the bytes left in a batch depend on the calls before it), so the
+	// mark is returned on the result and the agent loop commits it once it has
+	// shown the answer whole. See tools.Result.OnShown.
+	if args.Offset == 0 && args.Limit == 0 {
+		result := annotate(tools.Result{Text: string(data)}, decision)
+		sum := sha256.Sum256(data)
+		if _, inView := tools.ViewFrom(ctx); inView {
+			result.OnShown = func() { r.inspected.mark(rel, sum) }
+		} else {
+			r.inspected.mark(rel, sum)
+		}
+		return result
+	}
+	text, err := lineRange(string(data), args.Offset, args.Limit)
+	if err != nil {
+		return tools.Errorf("reading %s: %v", args.Path, err)
+	}
+	return annotate(tools.Result{Text: text}, decision)
 }
+
+// overwriteRefusal is the audit-first rule for write_file over an existing
+// file: the agent must have read it in full, and what it read must still be what
+// is on disk. nil means the overwrite may go ahead. A file that cannot be read
+// back to compare is refused, not waved through: a check that could not run is
+// not a check that passed.
+func (r *Registry) overwriteRefusal(ctx context.Context, path, normalized string) *tools.Result {
+	seen, ok := r.inspected.digest(normalized)
+	if !ok {
+		res := tools.Errorf("%s exists and has not been read in full in this session, so it was "+
+			"not overwritten: write_file replaces every byte. Read the whole file with "+
+			"devcouncil_read_file first (no offset or limit), or change part of it with "+
+			"devcouncil_patch_file", path)
+		return &res
+	}
+	current, err := readContained(ctx, r.deps.Root, normalized, maxToolReadBytes)
+	if err != nil {
+		res := tools.Errorf("%s was not overwritten: it could not be read back to check it is unchanged "+
+			"since you read it (%v). Read it again with devcouncil_read_file, or change part of it with "+
+			"devcouncil_patch_file", path, err)
+		return &res
+	}
+	if sha256.Sum256(current) != seen {
+		res := tools.Errorf("%s", changedSinceReadMessage(path))
+		return &res
+	}
+	return nil
+}
+
+// lineRange returns lines [offset, offset+limit) of text, 1-based, under a
+// header that says which lines they are and how many the file has. A range
+// that starts past the end is an error rather than an empty answer: an empty
+// slice reads as an empty file.
+func lineRange(text string, offset, limit int) (string, error) {
+	lines := strings.SplitAfter(text, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	total := len(lines)
+	if offset == 0 {
+		offset = 1
+	}
+	if offset > total {
+		return "", fmt.Errorf("offset %d is past the end: the file has %d lines", offset, total)
+	}
+	end := total
+	if limit > 0 && offset-1+limit < total {
+		end = offset - 1 + limit
+	}
+	return fmt.Sprintf("[lines %d-%d of %d]\n", offset, end, total) +
+		strings.Join(lines[offset-1:end], ""), nil
+}
+
+// afterCreatedCheck runs between the existence question writeFile asks for the
+// reuse note and the pin that decides what the write really replaces: the window
+// a file can appear in. A test creates the file here instead of racing a sleep.
+var afterCreatedCheck = func() {}
 
 func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
@@ -238,6 +327,7 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	// duplicating" from a line in the system prompt into something that
 	// actually looks.
 	reusePath, creating := r.createdPath(args.Path)
+	afterCreatedCheck()
 	// The target is pinned BEFORE the ladder runs and before any approval
 	// prompt: the identity snapshot has to predate human-scale delays, or a
 	// concurrent actor could swap a directory for a symlink while the prompt
@@ -250,6 +340,10 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 		if err != nil {
 			return tools.Errorf("%v", err)
 		}
+		// What the write replaces is what the pin saw, and the pin fails closed
+		// on a stat error. The earlier createdPath answer folds an unreadable
+		// path into "new", so it cannot decide the guard below.
+		creating = !pinned.targetExisted
 	}
 	decision, err := r.deps.Gate.EvaluateWrite(args.Path, task, dc.OpWrite)
 	if err != nil {
@@ -261,6 +355,25 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 			return r.refusal(decision)
 		}
 		decision = escalated
+	}
+	// The guard runs for every in-root target the pin found: creating is now the
+	// pin's answer, not the earlier existence check's.
+	// Audit before overwrite, asked after the gate so a write the policy
+	// refuses is reported as the policy's refusal — the evidence trail records
+	// what the gate decided, and this rule must not hide it. A plain error and
+	// no Rule, because the gate did not make this decision. Only inside the
+	// repository: an outside path is reachable only with the hard rules off,
+	// and devcouncil_read_file cannot read one, so the rule could never be
+	// satisfied there. See inspect.go.
+	if !outside && !creating {
+		if refusal := r.overwriteRefusal(ctx, args.Path, normalized); refusal != nil {
+			return *refusal
+		}
+		// The check above and the replace below are two steps; the replace
+		// repeats the comparison against these bytes just before it renames.
+		if seen, ok := r.inspected.digest(normalized); ok && pinned != nil {
+			pinned.requireContent(seen, args.Path)
+		}
 	}
 
 	full, err := r.resolvePath(args.Path)
@@ -288,6 +401,7 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	// because none of them changed a file and a checker handed a path that was
 	// never written would report on the wrong thing — or, worse, report a pass
 	// for a write the gate refused.
+	r.inspected.mark(normalized, sha256.Sum256([]byte(args.Content)))
 	result := annotate(
 		tools.Result{
 			Text:  fmt.Sprintf("wrote %s (%d bytes)", decision.Target, len(args.Content)),
@@ -297,7 +411,7 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	if creating {
 		result = annotateReuse(result, r.checkReuse(ctx, reusePath))
 	}
-	return result
+	return r.noteWriteImpact(ctx, result, decision.Target)
 }
 
 // writeFailure is the result of a write that did not complete. When the failure
@@ -363,12 +477,15 @@ func (r *Registry) deleteFile(ctx context.Context, call tools.Call) tools.Result
 		if err := RemovePinned(r.deps.Root, normalizedDelete); err != nil {
 			return tools.Errorf("%v", err)
 		}
-		return annotate(
+		// A path that comes back is a new file the agent has not read, and the
+		// index still holds the file that is gone.
+		r.inspected.forget(normalizedDelete)
+		return r.noteWriteImpact(ctx, annotate(
 			tools.Result{
 				Text:  fmt.Sprintf("deleted %s", decision.Target),
 				Wrote: []string{decision.Target},
 			},
-			decision)
+			decision), decision.Target)
 	}
 
 	full, err := r.resolvePath(args.Path)
@@ -1393,6 +1510,12 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 		}
 		content = string(data)
 	}
+	// Whether the agent had this exact file in full before the patch: then it
+	// also knows the whole patched result, and the overwrite guard follows it.
+	// A patch on a file it never read in full, or one changed since, records
+	// nothing — an anchor match is not a read.
+	seen, wasRead := r.inspected.digest(decision.Target)
+	readBefore := wasRead && seen == sha256.Sum256([]byte(content))
 
 	if args.StartLine > 0 || args.EndLine > 0 {
 		lines := strings.Split(content, "\n")
@@ -1465,13 +1588,16 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 			return writeFailure(decision.Target, "writing patched "+args.Path, err)
 		}
 	}
+	if readBefore {
+		r.inspected.mark(decision.Target, sha256.Sum256([]byte(content)))
+	}
 
-	return annotate(
+	return r.noteWriteImpact(ctx, annotate(
 		tools.Result{
 			Text:  fmt.Sprintf("patched %s (%d bytes)", decision.Target, len(content)),
 			Wrote: []string{decision.Target},
 		},
-		decision)
+		decision), decision.Target)
 }
 
 // matchCandidates keeps the paths that match pattern, either whole or by their

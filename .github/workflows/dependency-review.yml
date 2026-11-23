@@ -1,0 +1,27 @@
+# Fail a pull request that adds a dependency with a known vulnerability.
+#
+# verify.sh already runs govulncheck over the Go plane and cargo audit over the
+# Rust one, so a vulnerable dependency already on main is caught on every run.
+# This is the other half: it looks at what a pull request *changes* in the
+# manifests and lockfiles, so the advisory is raised on the diff that
+# introduces the dependency rather than on a later run. It reads the dependency
+# graph and posts nothing; it does not replace either of those checks.
+name: dependency-review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: moderate

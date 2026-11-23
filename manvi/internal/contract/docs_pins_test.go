@@ -94,7 +94,7 @@ func TestPinClaimMatcherRecognisesBothForms(t *testing.T) {
 // recorded here; moving the pin fails this test until it is re-read.
 const (
 	schemaVerifiedAtPin  = "84ab457023928c3cb6564dfc1aa112aee789b0f9"
-	workbenchSchemaAtPin = 17 // WORKBENCH_SCHEMA, rust/dc-store/src/workbench/mod.rs:36
+	workbenchSchemaAtPin = 17 // WORKBENCH_SCHEMA, rust/dc-store/src/workbench/mod.rs:39
 	dcStoreSchemaAtPin   = 11 // SCHEMA_VERSION, rust/dc-store/src/lib.rs:61
 )
 
