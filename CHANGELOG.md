@@ -33,6 +33,103 @@ under **Unreleased** in the same commit as the code.
   batch); the read result says so. The write-impact lookup
   keeps its 8 s cap, now documented with a measurement.
 
+
+**The 2026-11-23 land** (one entry per landed lane)
+
+- **b25-scriptmem:** `devcouncil_script` is bounded in memory. It ends once
+  process-wide heap growth passes 512 MiB (sampled every 10 ms) and refuses to
+  start if the runtime cannot report the heap.
+- **b25-toolsjson:** `manvi tools --json` prints the native tool catalog as a
+  JSON array of `{name, class, description}`, and `manvi tools` refuses unknown
+  arguments. `manvi tool` accepts only `--json VALUE` or `--json=VALUE`: a
+  misspelt flag or an empty `--json` is refused instead of running the tool with
+  `{}`. No exit status changed (0 answered, 1 everything else).
+- **b25-bench:** `tools.ChildScope` is the single owner of every bench child's
+  environment, temp directory and write roots (the model's shell, the shell
+  verifier and both RPC verifier children): an exact-name allow-listed
+  environment, a private HOME and TMPDIR under one runner-private
+  `mh-runner-<pid>-<rand>` parent. `.env*` files and symlinks anywhere in the
+  work tree are guard roots under a bounded scan. The protocol stamp records
+  `shell_env: scrubbed`, so cells run before this report drift. `test_adv_b25.py`
+  joins the verify gate; its host-touching probes need `MH_ADV_HOST_PROBES=1`.
+- **b26-benchres:** bench: the runner kills every process an episode started, not
+  only its process group, and an episode close can report `episode_unverified`;
+  provider keys are kept out of every exec-time environment (`run.py` and
+  `grid.py` re-exec themselves to drop them); the runner refuses a workspace
+  root outside every protected root; a capped `.env` scan refuses the episode;
+  the shell profile denies the cfprefsd, pasteboard and notification mach lookups.
+- **b26-storeleak:** `manvi` closes the store client it opens for the lease and
+  watch builds, and the `storeguard.NoNewChildren` test helper fails a test that leaves a
+  `dcstore` child behind.
+- **b26-creds:** a local-provider credential goes only to an address the operator
+  named (the refusal says `manvi use local --base-url <addr>`); a user config
+  with more than one hard link is refused; `anthropic-account` strips an
+  inherited `ANTHROPIC_BASE_URL` and refuses a marker that is a symlink or is
+  reached through one; `ui.Sanitize` marks Unicode format characters and
+  U+2028/2029.
+- **b26-subject:** approvals show the whole subject and an over-long one is
+  deny-only; a key aimed at a withdrawn card is consumed, not applied; the model's
+  lease label is stored as `agent:<label>`; each child session gets a
+  harness-assigned grantor identity; an override's operation is what the gate
+  re-evaluates, not what the caller names.
+- **b27-lifecycle:** the TUI exit sweep ends live members of a process group whose
+  leader exited unreaped, deciding from one process-table read, and reports
+  "signalled but could not be confirmed gone" when the table cannot be re-read
+  afterwards instead of "still running".
+- **b27-platform:** `GOOS=freebsd/openbsd/netbsd go vet ./cmd/manvi` is clean
+  again; a hermeticity test pins that the TUI test helper's registry reads no
+  `MANVI_*` variable or config file.
+- **b28-refguard (via train/20261122-lanes):** the ref guard passes oids to
+  `git rev-list` on stdin, so a repository with tens of thousands of commits no
+  longer fails with "argument list too long"; the latency test counts git
+  processes instead of asserting a wall-clock ceiling.
+- **b28-tuirune (via train/20261122-lanes):** bidi overrides and isolates,
+  invisible format characters and stray tag characters never reach the terminal.
+  Emoji ZWJ sequences, well-formed subdivision flags and one script joiner per
+  cell after a letter or mark are kept.
+- **b29-drops:** a contract test ties `maxProtocolRequest` to DevCouncil's
+  `maxWorkbenchInput`; session drop reports use the earlier header's
+  `trimmed_turns` even without `created_at`.
+- **b29-runtime:** `define_subagent` decodes a model's role into a narrow struct
+  and refuses unknown keys and data after the arguments object; the warm devmap
+  pool is an LRU with idle expiry, keyed by directory identity, and closes what it
+  evicts.
+- **b29-residue:** the Lean verification deadline is derived from the work, floored
+  at 240 s, and a cut-off check reports "could not run";
+  `DC_LEAN_KERNEL_TIMEOUT_MS` accepts one leading `+`; rigor next-action wording
+  matches DevCouncil's for the gates Manvi maps; the bench-suite count in the docs
+  is read from `verify.sh`.
+- **b30-tuitext:** window titles and notifications drop bidi and invisible format
+  runes by the same rule as the screen buffer; `Buffer.SetCell` cannot store
+  control or format runes, a zero-width base or a wide rune in the last column;
+  joiners, flag tags and variation selectors after a wide character are painted.
+- **b31-tui:** the status bar drops fields nothing populated; Ctrl+Z turns focus
+  and any-motion reporting off and back on, only for the modes that were on;
+  Ctrl+\, Ctrl+], Ctrl+^ and Ctrl+_ decode under those names; the transcript is
+  bounded in bytes.
+- **b31-wrapper:** releasing a sub-agent worktree no longer runs a repository-wide
+  `git worktree prune`; the commit check streams `git ls-files` and passes
+  exclusions as `^oid` lines so `rev-list --stdin` works on git older than 2.42;
+  sub-agent verdict markers are minted per dispatch; `work_create_item` honours
+  cancellation while waiting for its lock; `graph_context` sets
+  `answer_is_partial` when a file fails.
+- **b31-misc:** a kept essential prompt section is labelled as an overrun, not as
+  dropped; `notarytool submit --wait` is bounded by `--timeout 30m`.
+- **b31-computer:** computer-use masking folds width, case and separators across
+  text fields, masks the sensitive input node, adds 16-bit PNG parity, and
+  approval takes its own capture; sensitive controls without bounds fail closed.
+  New exported `EffectivePolicy`.
+- **b31-settle:** one settlement rule decides whether a provider tool call is
+  complete (a 0-byte call under length, content_filter or a missing finish no
+  longer runs `{}`), with one conformance table; Gemini stops reading the
+  undocumented cached-token field.
+- **b31-llmops:** budget attempts are owned by a per-process token and a zombie
+  owner counts as gone, so new ledger records carry `owner`/`owner_start` and an
+  older binary refuses a ledger a newer one wrote; every admitted attempt of a
+  `Stream` call is kept; `llm/local` backs off exponentially when a server stays
+  down; `geminiproxy` records only a request label and an error class and opens
+  its capture without following links.
+
 ### Added
 
 - **`work.assist.complete` answers a rejected Anthropic key with
