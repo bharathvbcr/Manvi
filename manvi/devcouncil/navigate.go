@@ -325,7 +325,10 @@ func (r *Registry) fileContextFor(ctx context.Context, client *devmap.Client, fi
 	edges, err := client.Deps(ctx, file)
 	if err != nil {
 		fc.Error = err.Error()
-		return fileResult{ctx: fc}
+		// The error is in this file's own entry, where a model reading the other
+		// entries does not look. It is also a gap in the answer, so it goes where
+		// payload turns a gap into answer_is_partial.
+		return fileResult{ctx: fc, degraded: []string{fmt.Sprintf("%s: the graph could not answer: %s", file, err)}}
 	}
 	// Direction comes from the data, not from the subcommand's name: an
 	// edge whose source is this file is something it depends on, and one

@@ -160,6 +160,9 @@ type workAPI struct {
 	// and the put" in front of the code.
 	beforePut func(ctx context.Context)
 
+	// lockWait overrides workLockWait; a test sets it to reach the timeout.
+	lockWait time.Duration
+
 	mu       sync.Mutex
 	repo     string
 	sessions map[*Session]string
@@ -173,10 +176,19 @@ type workAPI struct {
 // Registry in the process. It is package-level on purpose: two Registries over
 // one store each held their own mutex and could both pass a count that only one
 // of them fits.
+//
+// A lock is a one-slot channel and not a sync.Mutex because a create waiting for
+// it has to be able to give up: a Mutex cannot be abandoned, so a cancelled call
+// sat behind a slow store until the create ahead of it finished.
 var (
 	workRepoLocksMu sync.Mutex
-	workRepoLocks   = map[string]*sync.Mutex{}
+	workRepoLocks   = map[string]chan struct{}{}
 )
+
+// workLockWait bounds how long one create waits for the repository lock. The
+// create ahead of it is itself bounded, by a store call at a time, so this is
+// the longest a healthy queue is worth waiting out.
+const workLockWait = 2 * time.Minute
 
 func newWorkAPI(board workBoard, binding WorkBinding) (*workAPI, error) {
 	if err := binding.validate(); err != nil {
@@ -217,16 +229,39 @@ func storeKeyOf(board workBoard) string {
 	return ""
 }
 
-func (a *workAPI) repoLock(repo string) *sync.Mutex {
+func (a *workAPI) repoLock(repo string) chan struct{} {
 	key := a.storeKey + "\x00" + repo
 	workRepoLocksMu.Lock()
 	defer workRepoLocksMu.Unlock()
-	m, ok := workRepoLocks[key]
+	lock, ok := workRepoLocks[key]
 	if !ok {
-		m = &sync.Mutex{}
-		workRepoLocks[key] = m
+		lock = make(chan struct{}, 1)
+		workRepoLocks[key] = lock
 	}
-	return m
+	return lock
+}
+
+// lockRepo takes the repository's lock, or reports why it did not: the call was
+// cancelled while waiting, or the wait ran out. The returned release is nil
+// exactly when a refusal is returned.
+func (a *workAPI) lockRepo(ctx context.Context, repo string) (release func(), refused *tools.Result) {
+	lock := a.repoLock(repo)
+	wait := a.lockWait
+	if wait <= 0 {
+		wait = workLockWait
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		res := refuse("cancelled", "the call was cancelled while it waited for another proposal to this repository to finish; nothing was written")
+		return nil, &res
+	case <-timer.C:
+		res := refuse("busy", "another proposal to this repository did not finish in time, so this one was not attempted; nothing was written")
+		return nil, &res
+	}
 }
 
 // --- refusals ---
@@ -812,9 +847,11 @@ func (a *workAPI) create(ctx context.Context, sess *Session, call tools.Call) to
 
 	// Count-then-create is one critical section per repository, so two
 	// concurrent creates cannot both pass a check that only one of them fits.
-	lock := a.repoLock(repo)
-	lock.Lock()
-	defer lock.Unlock()
+	release, refused := a.lockRepo(ctx, repo)
+	if refused != nil {
+		return *refused
+	}
+	defer release()
 
 	own, refused := a.ownTaskIfMapped(ctx, repo, state)
 	if refused != nil {

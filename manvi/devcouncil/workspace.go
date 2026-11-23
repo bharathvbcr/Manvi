@@ -61,7 +61,7 @@ type GitWorktreeCoordinator struct {
 	BaseDir      string
 	DevmapBinary string
 
-	// gitMu serializes `git worktree add` and `git worktree remove`/`prune`
+	// gitMu serializes `git worktree add` and `git worktree remove`
 	// against Root's shared `.git/worktrees` admin directory so an 8-way
 	// concurrent fan-out never hits `.git/config.lock` contention or prunes a
 	// sibling's half-initialized admin entry. Sub-agent turns and stacked DevMap
@@ -127,8 +127,9 @@ func (c *GitWorktreeCoordinator) ProvisionWorktree(ctx context.Context, label st
 // ReleaseWorktree inspects the worktree for uncommitted or untracked changes or
 // new commits relative to Lease.HeadSHA. When retainDirty is true and work
 // exists in the worktree, the checkout is preserved so the parent or operator
-// can inspect and integrate it; otherwise the worktree and its container
-// directory are removed and pruned.
+// can inspect and integrate it; otherwise the worktree's registration and its
+// container directory are removed. Registrations that are not this lease's are
+// left as they are.
 func (c *GitWorktreeCoordinator) ReleaseWorktree(ctx context.Context, lease *WorkspaceLease, retainDirty bool) (bool, error) {
 	if c == nil || lease == nil || strings.TrimSpace(lease.Path) == "" {
 		return false, nil
@@ -149,8 +150,11 @@ func (c *GitWorktreeCoordinator) ReleaseWorktree(ctx context.Context, lease *Wor
 	}
 
 	c.gitMu.Lock()
+	// Only this lease's own registration is the release's to drop, and `worktree
+	// remove` drops it. `worktree prune` is repository-wide: it would also forget
+	// every registration of the operator's whose directory is missing for now (an
+	// unmounted volume, a move in progress).
 	_, removeErr := runGit(relCtx, c.Root, "worktree", "remove", "--force", lease.Path)
-	_, _ = runGit(relCtx, c.Root, "worktree", "prune")
 	c.gitMu.Unlock()
 
 	if lease.ContainerDir != "" {

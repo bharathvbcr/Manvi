@@ -920,6 +920,19 @@ func (s *refSnapshot) unreadableNow(after *refSnapshot) []string {
 // recorded oids, at most maxGuardCommits+1 of them. A ref that now points at
 // something that is not a commit (an annotated tag of a blob) adds none.
 func (r *Registry) newCommits(ctx context.Context, oid string, recorded []string) ([]string, error) {
+	// The names go to rev-list line by line on standard input, where an empty
+	// line ends the list (dropping every exclusion after it) and a newline or a
+	// leading dash would add a line or an option. Only a bare hex object name
+	// (full or abbreviated, either case) is safe to pass, so anything else is
+	// refused rather than judged against a shorter list.
+	if err := checkBareObjectName(oid); err != nil {
+		return nil, err
+	}
+	for _, id := range recorded {
+		if err := checkBareObjectName(id); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", oid+"^{commit}"); err != nil {
 		kind, kerr := runGit(ctx, r.deps.Root, "cat-file", "-t", oid)
 		if kerr != nil {
@@ -935,16 +948,41 @@ func (r *Registry) newCommits(ctx context.Context, oid string, recorded []string
 		}
 		return nil, nil
 	}
-	args := []string{"rev-list", fmt.Sprintf("--max-count=%d", maxGuardCommits+1), oid + "^{commit}"}
-	if len(recorded) > 0 {
-		args = append(args, "--not")
-		args = append(args, recorded...)
-	}
-	out, err := runGit(ctx, r.deps.Root, args...)
+	// The recorded ids grow with the number of refs, so they go on standard
+	// input: as arguments, tens of thousands of them exceed the operating
+	// system's limit and the call fails with "argument list too long".
+	out, err := runGitStdin(ctx, r.deps.Root, revListInput(oid, recorded), "rev-list", fmt.Sprintf("--max-count=%d", maxGuardCommits+1), "--stdin")
 	if err != nil {
 		return nil, err
 	}
 	return strings.Fields(out), nil
+}
+
+// revListInput is what newCommits writes to `git rev-list --stdin`: the tip as
+// a plain line and each excluded id as a "^<id>" line. There is no option line:
+// git before 2.42 reads only revisions from standard input (a "--not" line is
+// an error there), and every line is parsed as a revision argument, where the
+// "^" prefix means exclusion. The names were checked as bare hex by the caller,
+// so the prefix cannot be turned into an option.
+func revListInput(oid string, recorded []string) string {
+	var in strings.Builder
+	in.WriteString(oid + "^{commit}\n")
+	for _, id := range recorded {
+		in.WriteString("^" + id + "\n")
+	}
+	return in.String()
+}
+
+// maxObjectNameLen is the longest object name git writes (SHA-256, in hex).
+const maxObjectNameLen = 64
+
+// checkBareObjectName refuses a name that is not hex digits, at most
+// maxObjectNameLen of them.
+func checkBareObjectName(name string) error {
+	if name == "" || len(name) > maxObjectNameLen || !isHexString(name) {
+		return fmt.Errorf("refusing to pass %q to git rev-list: not a bare object name", name)
+	}
+	return nil
 }
 
 // commitLeaks judges one commit by what it adds over each parent, with the

@@ -32,7 +32,23 @@ import (
 
 // VerdictMarker is the line prefix a judging child is asked to emit. It is
 // deliberately not a word that occurs in ordinary prose about reviewing code.
+//
+// It names the kind of marker, not the one a child is told. Every dispatch
+// extends it with a nonce of its own (DispatchVerdictMarker), because a
+// constant spelled in source is spelled in every file a child may quote back,
+// and a line of quoted text that starts with it was a verdict. The prefix is
+// kept whole so that readers that refuse an answer carrying "MANVI-VERDICT"
+// (the lesson parser) keep refusing it.
 const VerdictMarker = "MANVI-VERDICT:"
+
+// DispatchVerdictMarker is the marker one dispatch is told to write: kind (a
+// request's Verdict, normally VerdictMarker) with nonce before its colon, as
+// "MANVI-VERDICT-<nonce>:". The nonce is minted per dispatch by the host and
+// is not known to any text written before the dispatch, so a marker line in
+// quoted file text cannot spell it.
+func DispatchVerdictMarker(kind, nonce string) string {
+	return strings.TrimSuffix(strings.TrimSpace(kind), ":") + "-" + nonce + ":"
+}
 
 // MaxVerdictFindings bounds how many objections travel with a verdict.
 //
@@ -46,14 +62,15 @@ const MaxVerdictFindings = 12
 const MaxVerdictFindingRunes = 400
 
 // VerdictInstruction is what a judging child is told, appended to its role
-// prompt. Stated as a requirement with its failure mode named, because a child
-// that omits the line is not refused — it is recorded as having reached no
-// judgement, and it should know that is what silence buys.
-func VerdictInstruction() string {
+// prompt, for the marker this dispatch minted (DispatchVerdictMarker). Stated as
+// a requirement with its failure mode named, because a child that omits the
+// line is not refused — it is recorded as having reached no judgement, and it
+// should know that is what silence buys.
+func VerdictInstruction(marker string) string {
 	return "End your answer with a single line in exactly this form:\n" +
-		"  " + VerdictMarker + " PASS\n" +
+		"  " + marker + " PASS\n" +
 		"or\n" +
-		"  " + VerdictMarker + " FAIL\n" +
+		"  " + marker + " FAIL\n" +
 		"followed, when you fail it, by one line per objection beginning \"- \".\n" +
 		"A missing, unreadable or self-contradicting line is recorded as no judgement, " +
 		"which is treated as a failure to certify — not as approval."
