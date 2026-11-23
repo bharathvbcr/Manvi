@@ -9,7 +9,8 @@ import (
 
 // refCells lays text out the way SetString always has for text that stays under
 // the cap: a base rune in its cell, a wide one with a continuation, and every
-// zero-width mark appended to the cell on its left. It is the oracle the capped
+// zero-width mark appended to the cell on its left, or to the wide base when
+// that cell is a continuation. It is the oracle the capped
 // buffer must agree with wherever the cap is not reached.
 func refCells(text string, w int) []Cell {
 	cells := make([]Cell, w)
@@ -22,7 +23,11 @@ func refCells(text string, w int) []Cell {
 		switch {
 		case cw == 0:
 			if x-1 >= 0 && x-1 < w {
-				cells[x-1].Comb += string(r)
+				i := x - 1
+				if cells[i].R == 0 && i-1 >= 0 {
+					i--
+				}
+				cells[i].Comb += string(r)
 			}
 		case x+cw > w:
 			return cells

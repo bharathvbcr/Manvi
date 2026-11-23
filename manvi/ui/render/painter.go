@@ -156,10 +156,10 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 					b.WriteRune(cell.R)
 				}
 				b.WriteString(cell.Comb)
-				p.prev.SetCell(col, y, cell)
+				p.prev.storeCell(col, y, cell)
 				w := RuneWidth(cell.R)
 				if w == 2 && col+1 < p.cur.W {
-					p.prev.SetCell(col+1, y, p.cur.Cell(col+1, y))
+					p.prev.storeCell(col+1, y, p.cur.Cell(col+1, y))
 				}
 				if w < 1 {
 					w = 1
@@ -287,7 +287,7 @@ func (p *Painter) eraseRest(b *bytes.Buffer, x, y int, lastX, lastY *int) bool {
 	p.applyStyle(b, want.Style)
 	b.WriteString("\x1b[K")
 	for col := x; col < p.cur.W; col++ {
-		p.prev.SetCell(col, y, want)
+		p.prev.storeCell(col, y, want)
 	}
 	*lastX, *lastY = x, y
 	return true
