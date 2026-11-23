@@ -4,6 +4,10 @@ package budget
 
 import "golang.org/x/sys/windows"
 
+// processZombie: Windows has no zombie state; an exited process is reported by
+// processGone.
+func processZombie(int) bool { return false }
+
 // processStartUnix is when pid's process was created, in Unix seconds, from
 // GetProcessTimes. A process that cannot be opened, or a failed query, is not
 // a start time.

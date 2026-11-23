@@ -72,6 +72,8 @@ func TestStartedAfterTellsAReusedPIDFromItsOwner(t *testing.T) {
 		{"started well after the record", Attempt{StartedUnix: recorded}, startAt(recorded+startSlackSeconds+1, true), true},
 		{"start time unreadable", Attempt{StartedUnix: recorded}, startAt(0, false), false},
 		{"record carries no time", Attempt{}, startAt(recorded, true), false},
+		{"the owner's own start outranks the record time", Attempt{StartedUnix: recorded + 3600, OwnerStart: recorded}, startAt(recorded+60, true), true},
+		{"a record time far after the owner's start is not held against it", Attempt{StartedUnix: recorded, OwnerStart: recorded - 3600}, startAt(recorded-3600, true), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := startedAfter(c.a, c.startOf); got != c.want {

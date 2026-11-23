@@ -61,6 +61,13 @@ type Attempt struct {
 	ReservedNanoUSD int64  `json:"reserved_nano_usd"`
 	PID             int    `json:"pid"`
 	StartedUnix     int64  `json:"started_unix"`
+	// Owner is a token drawn at random when the owning process started, and
+	// OwnerStart that process's own start time. Together they say whose record
+	// this is without trusting the pid, which the system hands to a later
+	// process once the first is gone. Records written before they existed carry
+	// neither, and are judged by pid and StartedUnix alone.
+	Owner      string `json:"owner,omitempty"`
+	OwnerStart int64  `json:"owner_start,omitempty"`
 }
 
 // Snapshot is the persisted ledger.
@@ -142,6 +149,9 @@ func validate(s Snapshot) error {
 		seen[a.ID] = true
 		if a.State != stateReserved && a.State != stateAccepted {
 			return fmt.Errorf("budget: attempt %d has invalid state %q", a.ID, a.State)
+		}
+		if len(a.Owner) > maxOwnerTokenLen {
+			return fmt.Errorf("budget: attempt %d has an owner token of %d bytes, over %d", a.ID, len(a.Owner), maxOwnerTokenLen)
 		}
 		if a.ReservedNanoUSD <= 0 || a.Model == "" {
 			return fmt.Errorf("budget: attempt %d must name its model and hold a reservation", a.ID)
@@ -373,9 +383,8 @@ func save(path string, s Snapshot) error {
 // it frees is the in-flight slot, which a crashed fan-out would otherwise hold
 // until every later reservation failed at maxInFlight.
 //
-// The current process's own attempts are never touched unless the record
-// predates this process (see ownerGone), and an owner whose liveness cannot be
-// established is treated as alive. Misjudging a live owner as dead costs that
+// The current process's own attempts are never touched (see ownerGone), and an
+// owner whose liveness cannot be established is treated as alive. Misjudging a live owner as dead costs that
 // owner its settlement (the request errors); it never lets spend escape the
 // ledger.
 func reclaimDead(s *Snapshot, gone func(Attempt) bool) []Attempt {
@@ -428,6 +437,7 @@ func (l *Ledger) reserve(ctx context.Context, model string, amount int64) (uint6
 		s.InFlight = append(s.InFlight, Attempt{
 			ID: id, Model: model, State: stateReserved, ReservedNanoUSD: amount,
 			PID: os.Getpid(), StartedUnix: time.Now().Unix(),
+			Owner: ownerToken, OwnerStart: ownStartUnix(),
 		})
 		return nil
 	})

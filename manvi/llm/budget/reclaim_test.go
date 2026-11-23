@@ -165,6 +165,7 @@ func TestReclaimTakesALivePIDThatStartedAfterTheRecord(t *testing.T) {
 		for i := range s.InFlight {
 			if s.InFlight[i].PID == cmd.Process.Pid {
 				s.InFlight[i].StartedUnix = 1_000
+				s.InFlight[i].OwnerStart = 1_000
 			}
 		}
 		return nil
