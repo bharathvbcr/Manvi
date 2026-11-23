@@ -101,6 +101,12 @@ func decodeByte(buf []byte) (Event, int) {
 		return Key{Type: KeySpace, Mod: ModCtrl}, 1
 	case b == ' ':
 		return Key{Type: KeySpace, Runes: []rune{' '}}, 1
+	case b >= 0x1c && b < 0x20:
+		// 0x1c to 0x1f are Ctrl plus the punctuation keys that carry them, not
+		// letters: Ctrl+\, Ctrl+], Ctrl+^ and Ctrl+_ (what many terminals send
+		// for Ctrl+/). The letter rule below would name them | } ~ and DEL, which
+		// no binding can be written in.
+		return Key{Type: KeyRunes, Runes: []rune{rune(b + 0x40)}, Mod: ModCtrl}, 1
 	case b < 0x20:
 		// Control bytes are Ctrl plus the letter they map to: 0x01 is Ctrl+A.
 		// 0x0a is Ctrl+J rather than Enter, which only holds because ICRNL is
