@@ -3,6 +3,7 @@ package artifacts
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -13,6 +14,9 @@ import (
 // links" under concurrent writers (TestCompareAndSwapAcrossStoresLosesNoUpdate,
 // intermittent in CI).
 func TestAReadThatLosesItsFileToAnUpdateReadsThePublishedOne(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot rename over an open file, so a reader never holds an unlinked one (renameOverReaders waits instead)")
+	}
 	store, _ := newTestStore(t)
 	if _, err := store.Create("a.md", "one", Metadata{}); err != nil {
 		t.Fatal(err)
@@ -116,7 +120,12 @@ func TestAHardLinkToAFileOutsideTheStoreIsStillRefused(t *testing.T) {
 // drive is refused, and the name a caller gets back is slash-separated.
 func TestNamesAreStoreRelativeAndSlashSeparatedOnEveryPlatform(t *testing.T) {
 	store, _ := newTestStore(t)
-	for _, bad := range []string{"/etc/passwd", `\etc\passwd`, `\\host\share\x.md`} {
+	bad := []string{"/etc/passwd", `\etc\passwd`, `\\host\share\x.md`}
+	if runtime.GOOS == "windows" {
+		// Volumes exist only there; on Unix "C:x" is an ordinary file name.
+		bad = append(bad, `C:foo.md`, `C:\x.md`)
+	}
+	for _, bad := range bad {
 		if _, err := store.Create(bad, "x", Metadata{}); err == nil {
 			t.Errorf("Create(%q) should be refused", bad)
 		}

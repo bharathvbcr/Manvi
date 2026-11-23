@@ -14,9 +14,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
@@ -847,6 +849,28 @@ func (s *Store) containedPath(clean string) (string, error) {
 	return filepath.Join(current, parts[len(parts)-1]), nil
 }
 
+// renameOverReaders is os.Rename, retried on Windows while a reader has the
+// destination open. There a rename over an open file fails with an access
+// denied or sharing violation instead of unlinking it, and a reader (Get, List,
+// another Store's update reading the sidecar) holds the file for microseconds,
+// so the failure is a collision with a reader and not a refusal. The wait is
+// bounded; past it the error is the rename's.
+func renameOverReaders(from, to string) error {
+	const windowsAccessDenied, windowsSharingViolation = 5, 32
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.Rename(from, to)
+		if err == nil || runtime.GOOS != "windows" || time.Now().After(deadline) {
+			return err
+		}
+		var errno syscall.Errno
+		if !errors.As(err, &errno) || (errno != windowsAccessDenied && errno != windowsSharingViolation) {
+			return err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // writeContained writes data at full without ever leaving a half-written file
 // at that name: the bytes go to a temporary sibling, are synced, and are then
 // published by rename (replacing) or by link (exclusive, failing if the name is
@@ -918,7 +942,7 @@ func (s *Store) writeContained(full string, data []byte, perm os.FileMode, exclu
 			}
 			return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 		}
-	} else if err := os.Rename(tmp, full); err != nil {
+	} else if err := renameOverReaders(tmp, full); err != nil {
 		return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 	}
 
