@@ -633,9 +633,14 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		// reads as a rule that fired on nothing.
 		note := ""
 		if ev.Path != "" {
-			note = ev.Rule + " " + g.Dot + " " + ev.Path
+			note = ev.Rule
 		}
 		out = append(out, trailed(render.WrapText(ev.Text, body, th.Status(StatusWarn).With(render.Bold)), note, th, body)...)
+		if ev.Path != "" {
+			// The subject is shown whole, wrapped, and called what it is — the
+			// same rows the approval card draws.
+			out = append(out, decisionLines(ev.Subject, ev.Path, body, th.Subtle(), th.Muted())...)
+		}
 
 	case ui.KindApprovalDone:
 		add(render.Styled(g.Arrow+" "+ev.Text, th.Muted()))

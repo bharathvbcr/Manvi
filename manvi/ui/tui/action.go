@@ -69,6 +69,10 @@ type (
 		// Reply carries the answer back to the blocked caller. Buffered by the
 		// sender, so a decision never blocks the UI loop.
 		Reply chan ui.Decision
+		// Done, when set, is closed when the blocked caller stops waiting: its
+		// context was cancelled or timed out. The card is withdrawn then, and a
+		// late answer to it is refused, because nobody is left to receive it.
+		Done <-chan struct{}
 	}
 	// ActionTurnStarted marks a session busy.
 	ActionTurnStarted struct{ SessionID string }

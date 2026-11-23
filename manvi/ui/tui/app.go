@@ -241,7 +241,7 @@ func (a *App) Context() Context {
 	if a.overlay != nil {
 		return CtxOverlay
 	}
-	if v := a.Current(); v != nil && v.Approval() != nil && a.mode == ModeSession {
+	if v := a.Current(); v != nil && v.activeCard() != nil && a.mode == ModeSession {
 		return CtxApproval
 	}
 	if a.mode == ModeDashboard {
@@ -271,8 +271,8 @@ func (a *App) textTarget() *Prompt {
 	if v == nil {
 		return nil
 	}
-	if v.Approval() != nil {
-		return v.Approval().Prompt()
+	if card := v.activeCard(); card != nil {
+		return card.Prompt()
 	}
 	if a.mode == ModeSession && v.Focus == CtxPrompt {
 		return v.Prompt
@@ -284,6 +284,9 @@ func (a *App) textTarget() *Prompt {
 func (a *App) Dispatch(act Action) []Effect {
 	switch act.(type) {
 	case ActionKey, ActionRune, ActionPaste, ActionClick, ActionScroll:
+		if a.consumeAfterWithdrawal(act) {
+			return nil
+		}
 		a.noteOverlayInput()
 		// The operator is here, so how the last turn of the session in front
 		// of them ended is no longer news for the tab to carry.
@@ -302,6 +305,11 @@ func (a *App) Dispatch(act Action) []Effect {
 		// Decided before the tick mutates anything, so the tick that clears a
 		// notice still counts: the frame has to lose it.
 		a.tickMoved = a.animating()
+		// A card whose caller has gone is retired here, on the update path, in
+		// every session and not only the one on screen.
+		for _, v := range a.views {
+			v.retireWithdrawn()
+		}
 		a.tick++
 		if tip := a.tick / 50; tip != (a.tick-1)/50 {
 			// The composer's placeholder tip rotates every fifty ticks.
@@ -325,6 +333,13 @@ func (a *App) Dispatch(act Action) []Effect {
 
 	case ActionResize:
 		a.width, a.height = t.W, t.H
+		// A card's subject is laid out at a width. At the new one the end of a
+		// long command may be off screen, so nothing painted before counts.
+		for _, v := range a.views {
+			if card := v.activeCard(); card != nil {
+				card.subjectEndPainted = false
+			}
+		}
 		return nil
 
 	case ActionEvent:
@@ -400,7 +415,7 @@ func (a *App) Dispatch(act Action) []Effect {
 		return a.rune(t)
 
 	case ActionKey:
-		if !approvalAlwaysLive(t.Binding) && a.approvalInert() {
+		if !a.keyIsLive(t.Binding) && a.approvalInert() {
 			return nil
 		}
 		return a.key(t.Binding)
@@ -436,6 +451,49 @@ func (a *App) approvalInert() bool {
 	return !card.admit()
 }
 
+// consumeAfterWithdrawal retires any card whose caller has gone and, when that
+// happened since the last frame, swallows the input with a notice. The keystroke
+// was aimed at the card that went; applied to the composer it would submit or
+// type into a draft, and applied to the card behind it would answer a question
+// nobody has read. Quitting and cancelling the turn are not answers and still go
+// through.
+func (a *App) consumeAfterWithdrawal(act Action) bool {
+	v := a.Current()
+	if v == nil || a.overlay != nil || a.mode != ModeSession {
+		return false
+	}
+	v.retireWithdrawn()
+	if !v.retiredSincePaint {
+		return false
+	}
+	if k, ok := act.(ActionKey); ok {
+		switch resolve(k.Binding, CtxApproval) {
+		case CmdQuit, CmdCancel:
+			return false
+		}
+	}
+	a.setNotice("the approval was withdrawn; key ignored", StatusWarn)
+	return true
+}
+
+// keyIsLive reports whether a key acts on a card before the card admits input.
+// Esc is live only on a card the operator has been looking at: one promoted after
+// another was retired may be answered by a stray keystroke aimed at its
+// predecessor, so it is gated like every other answer.
+func (a *App) keyIsLive(binding string) bool {
+	if !approvalAlwaysLive(binding) {
+		return false
+	}
+	if binding == "esc" {
+		if v := a.Current(); v != nil {
+			if card := v.activeCard(); card != nil && card.guarded {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // approvalAlwaysLive names the keys that act on a card before it admits input.
 // Quitting is not an answer, cancelling the turn only ever refuses (a turn
 // stopped early costs the operator a retry), and escape only ever refuses: a
@@ -446,7 +504,8 @@ func approvalAlwaysLive(binding string) bool {
 		return true
 	}
 	switch resolve(binding, CtxApproval) {
-	case CmdQuit, CmdCancel:
+	case CmdQuit, CmdCancel, CmdPageUp, CmdPageDown:
+		// Paging only moves the window over a long subject; it answers nothing.
 		return true
 	}
 	return false
@@ -496,12 +555,13 @@ func (a *App) approvalRequested(t ActionApprovalRequest) []Effect {
 		return []Effect{denyEffect(t.Reply, "no session is attached to put this to an operator")}
 	}
 	card := NewApprovalCard(t.Request, t.Reply)
+	card.done = t.Done
 	card.clock = func() time.Time { return a.now() }
 	v.PushApproval(card)
 	v.Apply(ui.Event{
 		Kind: ui.KindApproval, At: time.Now().UTC(),
 		Text: t.Request.Reason, Rule: t.Request.Rule, Severity: t.Request.Severity,
-		Path: t.Request.Path, TaskID: t.Request.TaskID,
+		Path: t.Request.Path, Subject: t.Request.Subject, TaskID: t.Request.TaskID,
 		Grantable: t.Request.Grantable, ApprovalID: t.Request.ID,
 	})
 	// A blocked session pulls attention to itself, but never by hijacking the
@@ -572,6 +632,10 @@ func (a *App) dismiss() []Effect {
 	if v != nil && v.Approval() != nil {
 		card := v.Approval()
 		decision, done := card.Back()
+		if card.withdrawn() {
+			v.retireWithdrawn()
+			return nil
+		}
 		if !done {
 			return nil
 		}
@@ -579,7 +643,7 @@ func (a *App) dismiss() []Effect {
 		v.Apply(ui.Event{
 			Kind: ui.KindApprovalDone, At: time.Now().UTC(),
 			ApprovalID: card.Request.ID, Rule: card.Request.Rule,
-			Path: card.Request.Path, Text: decisionText(decision),
+			Path: card.Request.Path, Subject: card.Request.Subject, Text: decisionText(decision),
 		})
 		return []Effect{EffectDecide{Reply: card.Reply, Decision: decision}}
 	}

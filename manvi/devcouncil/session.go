@@ -2,10 +2,15 @@ package devcouncil
 
 import (
 	"context"
+	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 )
+
+// defaultIdentity is the grantor identity of a session nothing has named.
+const defaultIdentity = "manvi"
 
 // Session is the state one agent carries while working a task: which task it
 // holds, and the token proving it.
@@ -36,6 +41,9 @@ type Session struct {
 	// that lease, and must not be able to release or renew it out from under
 	// the agent that does.
 	inherited bool
+	// children counts the child sessions this one has handed out, so each gets
+	// an identity of its own.
+	children atomic.Int64
 	// leases, when set, is told about every lease this session acquires and
 	// gives back. It is how a fan-out's cleanup learns about a lease a child
 	// took by calling devcouncil_checkout_task itself, which is the only way
@@ -114,7 +122,15 @@ func (s *Session) clear() {
 // record would go on saying it holds a task the store has already given away.
 func (s *Session) NewChildSession(leases LeaseSink) *Session {
 	state := s.State()
-	child := &Session{owner: state.Owner, leases: leases}
+	// A child is recorded as the grantor of its own overrides under an identity
+	// the harness assigns: its parent's, then its position among the parent's
+	// children. Nothing the model supplies is part of it, and two children can
+	// no longer be mistaken for one another in the ledger.
+	parent := state.Owner
+	if parent == "" {
+		parent = defaultIdentity
+	}
+	child := &Session{owner: parent + "/" + strconv.FormatInt(s.children.Add(1), 10), leases: leases}
 	if state.TaskID != "" && state.Token != "" {
 		child.taskID, child.token, child.inherited = state.TaskID, state.Token, true
 	}

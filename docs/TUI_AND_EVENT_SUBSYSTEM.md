@@ -63,6 +63,7 @@ type Event struct {
     Rule       string   `json:"rule,omitempty"`
     Severity   string   `json:"severity,omitempty"`
     Path       string   `json:"path,omitempty"`
+    Subject    string   `json:"subject,omitempty"` // what Path is: "command", or empty/"path"
     Grantable  bool     `json:"grantable,omitempty"`
     GrantID    string   `json:"grant_id,omitempty"`
     GrantedBy  string   `json:"granted_by,omitempty"`
@@ -413,10 +414,10 @@ flowchart TD
     CheckTUI -- No (CLI/CI) --> Deny["Return Policy Error to Model"]
     CheckTUI -- Yes --> OpenModal["Render Modal on Top of Transcript"]
     
-    OpenModal --> PromptUser["Display Rule, File Path, and Diff Preview"]
+    OpenModal --> PromptUser["Display Rule and the Whole Subject (path or command)"]
     PromptUser --> Choice{"Operator Input"}
-    Choice -- [a] Allow Once --> RequestReason["Prompt for Justification Reason"]
-    Choice -- [d] Deny --> SendDeny["Reject Tool Call & Inform Model"]
+    Choice -- "[2] / [enter] on Allow Once" --> RequestReason["Prompt for Justification Reason"]
+    Choice -- "[1] / [esc] Deny" --> SendDeny["Reject Tool Call & Inform Model"]
     
     RequestReason --> IssueGrant["Issue Scoped Human Grant in Ledger"]
     IssueGrant --> ResumeExecution["Allow Tool Execution & Resume Turn"]
@@ -427,6 +428,8 @@ flowchart TD
 To prevent accidental permission grants when an operator is typing into the composer as an approval request arrives:
 - **Activation Quiet Period**: An approval card takes no input until it has been painted and 400 ms have passed since the later of that paint and the last input it refused. Type-ahead bursts of any length are dropped rather than replayed.
 - **Mouse Safety**: Only the left mouse button operates the card; middle or right clicks do nothing. Wheel scrolling over the card navigates choices without confirming.
+- **Whole Subject**: The card, the transcript entry and the line renderer lay the subject out through one function (`ui.DecisionRows`): wrapped, never cut, with newlines and tabs drawn as `\n` and `\t`, and labelled `command` or `path` from the event's `subject`. A subject longer than 8 rows scrolls with `PgUp`/`PgDn`, and the allow option stays unarmed until the last row has been on screen. Deny is never gated.
+- **Withdrawn Cards**: When the request's context is cancelled or times out, the card is retired with a `withdrawn: cancelled before an answer` entry, and a late answer to it is refused.
 - **Escape / Quit Priority**: `Esc`, `Ctrl+C`, and quit shortcuts remain active immediately without activation delay to refuse or abort.
 - **Overlay Isolation**: Closing an overlay (such as the command palette) over a card restarts the 400 ms quiet period.
 

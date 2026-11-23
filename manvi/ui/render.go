@@ -39,6 +39,7 @@ func CleanEvent(e Event, clean func(string) string) Event {
 	e.Rule = clean(e.Rule)
 	e.Severity = clean(e.Severity)
 	e.Path = clean(e.Path)
+	e.Subject = clean(e.Subject)
 	e.GrantID = clean(e.GrantID)
 	e.GrantedBy = clean(e.GrantedBy)
 	e.Demoted = clean(e.Demoted)
@@ -330,6 +331,20 @@ func (r *Renderer) bounded(text string, n int) string {
 	return Truncate(r.safe(text), n)
 }
 
+// subjectWidth is the width a decision's subject is wrapped to on this face. It
+// writes to a stream whose width it does not know, so it wraps at a width that
+// fits an ordinary terminal and never cuts.
+const subjectWidth = 100
+
+// writeSubject writes what a decision is about, whole, through the layout every
+// face shares. The credential scrubber runs over the whole subject before it is
+// wrapped, so a value straddling a row boundary is still recognised.
+func (r *Renderer) writeSubject(e Event) {
+	for _, row := range DecisionRows(e.Subject, r.scrubber.Clean(e.Path), subjectWidth) {
+		r.write("    %-*s%s\n", SubjectLabelWidth, row.Label, Sanitize(row.Text))
+	}
+}
+
 func (r *Renderer) write(format string, args ...any) {
 	if _, err := fmt.Fprintf(r.out, format, args...); err != nil && r.writeErr == nil {
 		r.writeErr = err
@@ -434,8 +449,8 @@ func (r *Renderer) Emit(e Event) {
 		// A question raised through this same seam has no blocked path. Printing
 		// the rule row anyway would report a rule that fired on nothing.
 		if e.Path != "" {
-			r.write("    rule %s%s%s  severity %s  path %s\n",
-				p.Bold, r.safe(e.Rule), p.Reset, r.safe(e.Severity), r.safe(e.Path))
+			r.write("    rule %s%s%s  severity %s\n", p.Bold, r.safe(e.Rule), p.Reset, r.safe(e.Severity))
+			r.writeSubject(e)
 		}
 
 	case KindApprovalDone:

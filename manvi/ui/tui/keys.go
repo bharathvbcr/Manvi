@@ -138,6 +138,8 @@ var bindings = []Binding{
 	{Keys: []string{"down", "j"}, Cmd: CmdNextItem, Ctx: CtxApproval, Label: "next option"},
 	{Keys: []string{"up", "k"}, Cmd: CmdPrevItem, Ctx: CtxApproval, Label: "prev option"},
 	{Keys: []string{"space"}, Cmd: CmdToggleSelect, Ctx: CtxApproval, Label: "tick option"},
+	{Keys: []string{"pgup"}, Cmd: CmdPageUp, Ctx: CtxApproval, Label: "scroll command up"},
+	{Keys: []string{"pgdn"}, Cmd: CmdPageDown, Ctx: CtxApproval, Label: "scroll command down"},
 	{Keys: []string{"enter"}, Cmd: CmdAccept, Ctx: CtxApproval, Label: "confirm", Hint: true},
 	{Keys: []string{"esc"}, Cmd: CmdDismiss, Ctx: CtxApproval, Label: "deny", Hint: true},
 	{Keys: []string{"left"}, Cmd: CmdCursorLeft, Ctx: CtxApproval},
@@ -428,6 +430,12 @@ func (a *App) key(binding string) []Effect {
 			a.overlay.MovePage(-1)
 			return nil
 		}
+		if ctx == CtxApproval {
+			if v := a.Current(); v != nil && v.Approval() != nil {
+				v.Approval().ScrollSubject(-subjectRowBudget)
+			}
+			return nil
+		}
 		if ctx == CtxDashboard {
 			a.dashboard.Page(-1, len(a.views))
 			return nil
@@ -435,6 +443,12 @@ func (a *App) key(binding string) []Effect {
 	case CmdPageDown:
 		if a.overlay != nil {
 			a.overlay.MovePage(1)
+			return nil
+		}
+		if ctx == CtxApproval {
+			if v := a.Current(); v != nil && v.Approval() != nil {
+				v.Approval().ScrollSubject(subjectRowBudget)
+			}
 			return nil
 		}
 		if ctx == CtxDashboard {

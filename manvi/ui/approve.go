@@ -61,15 +61,7 @@ func (r Request) IsQuestion() bool { return len(r.Choices) > 0 }
 
 // SubjectLabel is the noun the prompt uses for Path. It defaults to "path",
 // which is what every producer meant before the field existed.
-func (r Request) SubjectLabel() string {
-	switch r.Subject {
-	case "command":
-		return "command"
-	case "question":
-		return "question"
-	}
-	return "path"
-}
+func (r Request) SubjectLabel() string { return SubjectLabel(r.Subject) }
 
 // Decision is the answer.
 type Decision struct {

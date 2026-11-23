@@ -111,9 +111,14 @@ type Event struct {
 	// Policy fields. Rule is set whenever a rule fired, including on a success
 	// the posture or a grant allowed — a qualified pass is not a clean one, and
 	// the face must be able to say which it was.
-	Rule      string   `json:"rule,omitempty"`
-	Severity  string   `json:"severity,omitempty"`
-	Path      string   `json:"path,omitempty"`
+	Rule     string `json:"rule,omitempty"`
+	Severity string `json:"severity,omitempty"`
+	Path     string `json:"path,omitempty"`
+	// Subject says what Path is, in the words of Request.Subject: "command" when
+	// Path is a shell command line, and empty or "path" when it is a file path.
+	// It is additive and optional, so a consumer that predates it reads the same
+	// event it always did.
+	Subject   string   `json:"subject,omitempty"`
 	Grantable bool     `json:"grantable,omitempty"`
 	GrantID   string   `json:"grant_id,omitempty"`
 	GrantedBy string   `json:"granted_by,omitempty"`
