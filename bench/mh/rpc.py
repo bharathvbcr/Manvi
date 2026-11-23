@@ -41,6 +41,25 @@ that it asked the worker for, never sending the other operand. Any other
 worker object is unequal to everything but itself, and `!=` against one raises
 (it cannot be answered, so it is never answered "true").
 
+Accepted limits (each fails closed, never open; pinned by stress_test.py C6):
+  * Equality and ordering have a data path only for exact builtins and builtin
+    subclasses. A returned Decimal, Fraction, complex, dataclass, deque, dict
+    view or range never equals its builtin twin, `<` and `sorted` on a Proxy
+    raise TypeError, and an instance of a class whose metaclass defines
+    `__eq__` is unequal to everything but itself. A test that needs one of
+    these compares a builtin it asks for (`str(x)`, `list(x)`, `x.numerator`).
+  * On the checker, `bool`, `len`, `hash`, `str` and `repr` of a worker object
+    are the worker's answer, not data the checker computes. A test must not use
+    them as the verdict on a candidate object. The one live use, globmatch's
+    `bool(got) is not want`, never shows the candidate `want`.
+  * A comparison that stops at the first mismatch sends one `value` request per
+    element it reached, so the worker can see where the checker stopped: at most
+    about one bit per run, and only for a test that goes on after a mismatch.
+  * On the worker, a checker object answers call, getattr and setattr only.
+    `len`, iteration, `next` and item access raise TypeError there (the checker
+    serves none of them, and a refused op would otherwise end the verification
+    with a transport failure); a test exports a callable or an attribute instead.
+
 What the candidate can undo, and what it cannot
 -----------------------------------------------
 Everything inside the worker process is the candidate's to rewrite: the
@@ -444,14 +463,28 @@ class _Codec:
         except (binascii.Error, ValueError, TypeError) as e:
             raise _Fatal(f"malformed base64 on the wire: {e}") from None
 
-    def decode(self, j, depth=0):
+    def decode(self, j):
+        """The object a wire tree stands for. A tree the peer got wrong (a
+        missing field, a field of the wrong type, a handle to nothing, an
+        unhashable set member) is a transport failure, never a KeyError or
+        TypeError: those would reach the hidden test, whose `except Exception`
+        could swallow them and skip the check that was being made."""
+        try:
+            return self._decode(j, 0)
+        except _Fatal:
+            raise
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError,
+                OverflowError) as e:
+            raise _Fatal(f"malformed wire tree: {type(e).__name__}: {e}") from None
+
+    def _decode(self, j, depth):
         if depth > MAX_DEPTH:
             raise _Fatal("decode too deep")
         t = type(j)
         if j is None or t is bool or t is int or t is str or t is float:
             return j
         if t is list:
-            return [self.decode(x, depth + 1) for x in j]
+            return [self._decode(x, depth + 1) for x in j]
         if t is not dict or "$" not in j:
             raise _Fatal(f"malformed wire node: {t}")
         tag = j["$"]
@@ -462,13 +495,13 @@ class _Codec:
         if tag == "ba":
             return bytearray(self._b64(j["b"]))
         if tag == "t":
-            return tuple(self.decode(x, depth + 1) for x in j["v"])
+            return tuple(self._decode(x, depth + 1) for x in j["v"])
         if tag == "s":
-            return {self.decode(x, depth + 1) for x in j["v"]}
+            return {self._decode(x, depth + 1) for x in j["v"]}
         if tag == "fs":
-            return frozenset(self.decode(x, depth + 1) for x in j["v"])
+            return frozenset(self._decode(x, depth + 1) for x in j["v"])
         if tag == "d":
-            return {self.decode(k, depth + 1): self.decode(v, depth + 1)
+            return {self._decode(k, depth + 1): self._decode(v, depth + 1)
                     for k, v in j["v"]}
         if tag == "co":
             if j["o"] == self.ep.side:
@@ -501,6 +534,20 @@ def _opaque(x, depth=0):
     return False
 
 
+def _checker_op_refused(what):
+    """What the worker sees for an operation the checker does not serve.
+
+    The checker serves only CHECKER_OPS, and answers anything else by exiting.
+    A worker that used `len`, iteration or item access on an object the hidden
+    test exported (a range, a deque, a dict view) would therefore end the whole
+    verification with a transport failure, whoever's code asked. The refusal is
+    raised here instead, where the candidate and the test author can both read
+    it; export a callable or a plain attribute for the candidate to use.
+    """
+    return TypeError(f"{what} is not available on an object the checker exported "
+                     "to the worker (the checker serves call, getattr and setattr only)")
+
+
 class Proxy:
     __slots__ = ("_ep", "_rid", "__weakref__")
 
@@ -521,21 +568,31 @@ class Proxy:
         return self._ep.request_call(self._rid, args, kwargs)
 
     def __getitem__(self, key):
+        if self._ep.side == "w":
+            raise _checker_op_refused("item access")
         return self._ep.request("getitem", {"id": self._rid,
                                              "key": self._ep.codec.encode(key)})
 
     def __setitem__(self, key, value):
+        if self._ep.side == "w":
+            raise _checker_op_refused("item assignment")
         self._ep.request("setitem", {"id": self._rid,
                                      "key": self._ep.codec.encode(key),
                                      "val": self._ep.codec.encode(value)})
 
     def __len__(self):
+        if self._ep.side == "w":
+            raise _checker_op_refused("len()")
         return self._ep.request("len", {"id": self._rid})
 
     def __iter__(self):
+        if self._ep.side == "w":
+            raise _checker_op_refused("iteration")
         return self._ep.request("iter", {"id": self._rid})
 
     def __next__(self):
+        if self._ep.side == "w":
+            raise _checker_op_refused("next()")
         return self._ep.request("next", {"id": self._rid})
 
     def __bool__(self):
@@ -776,7 +833,7 @@ class Endpoint:
     link is deliberately asymmetric.
     """
 
-    _OPS = frozenset()
+    _OPS = frozenset()   # fail-closed default: a bare Endpoint serves nothing
     # The worker's wire codec imports nothing; CheckerEndpoint swaps in the stdlib's.
     _dumps = staticmethod(wire_dumps)
     _loads = staticmethod(wire_loads)
@@ -1043,13 +1100,15 @@ class Endpoint:
             if k == "q":
                 self._serve(lane, frame)
                 continue
-            if frame.get("rid") != rid:
+            if k not in ("r", "e") or frame.get("rid") != rid:
                 # Strict ping-pong per lane means the only response that can
                 # arrive while we wait is ours. Anything else is a protocol bug.
                 self._fatal("out-of-order response")
             if k == "e":
                 self.wb_raised += sum(1 for a in (wb_args or ()) if _wb_wants(a))
-                self._raise_remote(frame["x"])
+                self._raise_remote(frame.get("x"))
+            if "v" not in frame:
+                self._fatal("reply without a value")
             self._writeback(wb_args, frame.get("wb"), wb_sent)
             return self.codec.decode(frame["v"])
 
@@ -1118,7 +1177,11 @@ class Endpoint:
     # ---- serving a request from the peer ---------------------------------- #
 
     def _serve(self, lane, frame):
-        rid = frame["rid"]
+        rid = frame.get("rid")
+        if type(rid) is not int:
+            # Read before the try below: a KeyError here would surface in whatever
+            # thread pumped the lane, which on the checker is the hidden test's.
+            self._fatal("request without an integer rid")
         prev = getattr(self._local, "lane", None)
         self._local.lane = lane
         try:
@@ -1146,17 +1209,27 @@ class Endpoint:
         return {"mro": mro, "args": args, "str": str(e)}
 
     def _raise_remote(self, x):
+        if type(x) is not dict:
+            self._fatal("malformed exception report")
         if "fatal_kind" in x:
             raise RemoteFatal(f"worker raised {x['fatal_kind']}: {x.get('str', '')}")
-        cls = self._build_class(x["mro"], x["mro"][0][1] if x["mro"] else "Exception")
+        mro = x.get("mro")
+        if type(mro) is not list or not all(
+                type(e) is list and len(e) == 2 and type(e[0]) is str and type(e[1]) is str
+                for e in mro):
+            self._fatal("malformed exception report")
+        cls = self._build_class(mro, mro[0][1] if mro else "Exception")
         if not issubclass(cls, Exception):
             # `fatal_kind` is what an honest endpoint sends for SystemExit and
             # friends. A reply that names one through `mro` instead is a forgery
             # of that kind: re-raising it here would let candidate code end the
             # checker with the exit code of its choice (SystemExit(0) -> pass).
             raise RemoteFatal(f"worker raised {cls.__name__}: {x.get('str', '')}")
+        wire_args = x.get("args", [])
+        if type(wire_args) is not list:
+            self._fatal("malformed exception report")
+        args = tuple(self.codec.decode(a) for a in wire_args)
         try:
-            args = tuple(self.codec.decode(a) for a in x.get("args", []))
             exc = cls(*args)
         except Exception:
             exc = cls(x.get("str", ""))
