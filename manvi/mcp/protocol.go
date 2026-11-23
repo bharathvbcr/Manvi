@@ -1,5 +1,9 @@
-// Package mcp implements the Model Context Protocol (MCP 2.0 Stateless)
-// and the Open Plugin 1.0 Standard in pure Go with zero external dependencies.
+// Package mcp implements a Model Context Protocol client and manager: the
+// initialize handshake for the revisions in handshakeVersions (2024-11-05
+// through ProtocolVersionLatest) and the 2.0-stateless request envelope, plus
+// the Open Plugin 1.0 standard. It is written against the standard library and
+// has no MCP SDK; its only imports from outside the standard library are this
+// module's childenv package and DevCouncil's go_orchestrator/proc.
 package mcp
 
 import "encoding/json"
