@@ -427,8 +427,14 @@ test("bench: a suite's NOT COVERED line is named as a gate that did not run, nev
 test("bench: control — suites that name no gap pass", () => {
   const run = runGate([SEGMENTS.bench], ["python3"]);
   assert.equal(run.status, 0, run.out);
-  // The fake python3 reports 100 per suite, and the bench step runs 13 suites.
-  assert.match(run.out, /covered: 1300 checks/);
+  // The fake python3 reports 100 per suite, and the bench step runs every suite
+  // in verify.sh's loop; the count is read from there so adding a suite does not
+  // leave this pinned to the old number.
+  const loop = VERIFY.join("\n").match(/bench_ran=0\nfor t in ([\s\S]*?); do/);
+  assert.ok(loop, "verify.sh no longer has the bench suite loop this test counts");
+  const suites = loop[1].replace(/\\\n/g, " ").split(/\s+/).filter(Boolean).length;
+  assert.ok(suites >= 5, `read only ${suites} bench suites`);
+  assert.match(run.out, new RegExp(`covered: ${suites * 100} checks`));
   assert.match(run.out, /PASS all gates/);
 });
 
