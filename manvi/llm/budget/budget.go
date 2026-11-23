@@ -373,16 +373,16 @@ func save(path string, s Snapshot) error {
 // it frees is the in-flight slot, which a crashed fan-out would otherwise hold
 // until every later reservation failed at maxInFlight.
 //
-// The current process's own attempts are never touched, and an owner whose
-// liveness cannot be established is treated as alive. Misjudging a live owner
-// as dead costs that owner its settlement (the request errors); it never lets
-// spend escape the ledger.
-func reclaimDead(s *Snapshot, gone func(int) bool) []Attempt {
-	self := os.Getpid()
+// The current process's own attempts are never touched unless the record
+// predates this process (see ownerGone), and an owner whose liveness cannot be
+// established is treated as alive. Misjudging a live owner as dead costs that
+// owner its settlement (the request errors); it never lets spend escape the
+// ledger.
+func reclaimDead(s *Snapshot, gone func(Attempt) bool) []Attempt {
 	var reclaimed []Attempt
 	kept := s.InFlight[:0]
 	for _, a := range s.InFlight {
-		if a.PID != self && gone(a.PID) {
+		if gone(a) {
 			reclaimed = append(reclaimed, a)
 			s.RetainedNanoUSD += a.ReservedNanoUSD
 			s.RetainedAttempts++
@@ -402,7 +402,7 @@ func (l *Ledger) Reconcile(ctx context.Context) ([]Attempt, error) {
 	defer cancel()
 	var reclaimed []Attempt
 	err := l.update(ctx, func(s *Snapshot) error {
-		reclaimed = reclaimDead(s, processGone)
+		reclaimed = reclaimDead(s, ownerGone)
 		return nil
 	})
 	return reclaimed, err
@@ -414,7 +414,7 @@ func (l *Ledger) reserve(ctx context.Context, model string, amount int64) (uint6
 	}
 	var id uint64
 	err := l.update(ctx, func(s *Snapshot) error {
-		reclaimDead(s, processGone)
+		reclaimDead(s, ownerGone)
 		if len(s.InFlight) >= maxInFlight {
 			return fmt.Errorf("budget: %d attempts already in flight", maxInFlight)
 		}

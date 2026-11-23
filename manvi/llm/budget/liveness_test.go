@@ -52,3 +52,31 @@ func TestExitProbeGone(t *testing.T) {
 		})
 	}
 }
+
+// A pid that is alive but started after the attempt was recorded belongs to a
+// stranger that was handed a dead owner's pid.
+func TestStartedAfterTellsAReusedPIDFromItsOwner(t *testing.T) {
+	startAt := func(unix int64, ok bool) func(int) (int64, bool) {
+		return func(int) (int64, bool) { return unix, ok }
+	}
+	const recorded = 1_000_000
+	for _, c := range []struct {
+		name    string
+		a       Attempt
+		startOf func(int) (int64, bool)
+		want    bool
+	}{
+		{"started before it reserved", Attempt{StartedUnix: recorded}, startAt(recorded-60, true), false},
+		{"started in the same second", Attempt{StartedUnix: recorded}, startAt(recorded, true), false},
+		{"started within the clock slack", Attempt{StartedUnix: recorded}, startAt(recorded+startSlackSeconds, true), false},
+		{"started well after the record", Attempt{StartedUnix: recorded}, startAt(recorded+startSlackSeconds+1, true), true},
+		{"start time unreadable", Attempt{StartedUnix: recorded}, startAt(0, false), false},
+		{"record carries no time", Attempt{}, startAt(recorded, true), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := startedAfter(c.a, c.startOf); got != c.want {
+				t.Fatalf("startedAfter = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

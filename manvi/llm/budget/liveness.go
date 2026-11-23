@@ -1,5 +1,7 @@
 package budget
 
+import "os"
+
 // The decision half of the Windows process-liveness probe. The syscalls that
 // feed it live in lock_windows.go; the rule lives here, in a file every
 // platform builds, so a unit test can run it anywhere. lock_windows.go checks
@@ -16,6 +18,36 @@ const (
 	// ran out: a running process, for a zero-length wait.
 	waitTimeout = 258
 )
+
+// startSlackSeconds is how far a process's start may trail the time recorded
+// on its attempt before the pid is taken to belong to another process. A real
+// owner started before it reserved anything, so the slack only has to cover the
+// whole-second granularity of both clocks and a small clock step; a larger step
+// misjudges a live owner as dead, which retains its spend and never loses it.
+const startSlackSeconds = 5
+
+// ownerGone reports whether the process that reserved a can no longer settle
+// it: its pid names nothing, or names a process that started after the attempt
+// was recorded, which means the pid was reused by a stranger. The current
+// process's own pid is never "gone", but a record that predates this process
+// (left by an earlier one that held the same pid) is replaced like any other.
+func ownerGone(a Attempt) bool {
+	if a.PID != os.Getpid() && processGone(a.PID) {
+		return true
+	}
+	return startedAfter(a, processStartUnix)
+}
+
+// startedAfter reports whether the process now holding a's pid started later
+// than a was recorded. Only a definite start time counts; an unreadable one, or
+// a record with no time, says nothing.
+func startedAfter(a Attempt, startOf func(pid int) (unix int64, ok bool)) bool {
+	if a.StartedUnix <= 0 {
+		return false
+	}
+	start, ok := startOf(a.PID)
+	return ok && start > a.StartedUnix+startSlackSeconds
+}
 
 // exitProbe is everything the Windows probe learned about one pid.
 type exitProbe struct {

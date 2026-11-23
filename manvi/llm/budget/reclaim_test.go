@@ -131,6 +131,58 @@ func TestReclaimLeavesLiveOwnersAlone(t *testing.T) {
 	}
 }
 
+// TestReclaimTakesALivePIDThatStartedAfterTheRecord holds an attempt in a
+// running process, then backdates the record to before that process existed:
+// the pid now names a stranger, and nothing will ever settle the attempt.
+func TestReclaimTakesALivePIDThatStartedAfterTheRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	// #nosec G204 G702 -- re-execs this test binary as the ledger helper; the environment selects the role.
+	cmd := exec.CommandContext(t.Context(), os.Args[0])
+	cmd.Env = append(os.Environ(), "BUDGET_HELPER_LEDGER="+path, "BUDGET_HELPER_COUNT=1", "BUDGET_HELPER_HOLD=1")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Wait() })
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || strings.TrimSpace(line) != "held" {
+		t.Fatalf("worker did not report its reservation: %q %v", line, err)
+	}
+	if _, ok := processStartUnix(cmd.Process.Pid); !ok {
+		t.Skip("this platform reports no process start time")
+	}
+	l, err := Open(context.Background(), path, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.update(context.Background(), func(s *Snapshot) error {
+		for i := range s.InFlight {
+			if s.InFlight[i].PID == cmd.Process.Pid {
+				s.InFlight[i].StartedUnix = 1_000
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := l.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0].PID != cmd.Process.Pid {
+		t.Fatalf("reclaimed %+v, want the stranger's attempt", reclaimed)
+	}
+	if got := snapshot(t, l); len(got.InFlight) != 0 || got.RetainedAttempts != 1 || got.RetainedNanoUSD <= 0 {
+		t.Fatalf("a reused pid's attempt must be retained as spend: %+v", got)
+	}
+}
+
 // TestReclaimTreatsANonPositivePIDAsGone checks the guard that keeps a corrupt
 // pid from being signalled: kill(0, …) addresses the caller's process group.
 func TestReclaimTreatsANonPositivePIDAsGone(t *testing.T) {
