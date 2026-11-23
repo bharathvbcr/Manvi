@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -163,6 +164,9 @@ func TestAWideningNeedsTheLease(t *testing.T) {
 // for a *pattern* rather than a file. The target is quoted before it is
 // written, so what lands in the task's scope covers itself and nothing else.
 func TestAnOverrideForAWildcardWidensOnlyTheLiteralPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the wildcard path is \"**\", which Windows rejects as a file name before the override is ever judged")
+	}
 	f := newFixture(t)
 	f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"})
 

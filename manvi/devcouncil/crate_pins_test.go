@@ -267,7 +267,7 @@ func lintsOf(rustDir string) ([]string, error) {
 // dependency specs and workspace lints here as in DevCouncil's own workspace at
 // pinnedRust (the pinned commit). It returns every difference, not the first.
 func compareCratePins(manviCrates, siblingRust, pinnedRust string) ([]string, error) {
-	siblingReal, err := filepath.EvalSymlinks(siblingRust)
+	siblingReal, err := realDir(siblingRust)
 	if err != nil {
 		return nil, fmt.Errorf("DevCouncil rust/ is not at %s (CI places it with scripts/fetch-modules.sh): %w", siblingRust, err)
 	}
@@ -290,7 +290,7 @@ func compareCratePins(manviCrates, siblingRust, pinnedRust string) ([]string, er
 
 	var diffs []string
 	for _, p := range manvi.Packages {
-		real, err := filepath.EvalSymlinks(filepath.Dir(p.ManifestPath))
+		real, err := realDir(filepath.Dir(p.ManifestPath))
 		if err != nil {
 			return nil, fmt.Errorf("resolve member %s at %s: %w", p.Name, p.ManifestPath, err)
 		}
@@ -429,7 +429,7 @@ func TestCratePinDriftIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range md.Packages {
-		real, err := filepath.EvalSymlinks(filepath.Dir(p.ManifestPath))
+		real, err := realDir(filepath.Dir(p.ManifestPath))
 		if err != nil {
 			t.Fatal(err)
 		}

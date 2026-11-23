@@ -188,7 +188,7 @@ func TestZadvW17TwoStepHideThenParkLeak(t *testing.T) {
 	if first.IsError || first.Blocked {
 		t.Fatalf("step 1 (worktree hidden by the command) was refused or blocked: %+v", first)
 	}
-	res := shell(f, advScript(t, f, leakObject+" && git --git-dir="+admin+" update-ref refs/worktree/leak $c"))
+	res := shell(f, advScript(t, f, leakObject+" && git --git-dir="+filepath.ToSlash(admin)+" update-ref refs/worktree/leak $c"))
 	advParked(t, admin, "refs/worktree/leak", res)
 }
 
@@ -200,7 +200,7 @@ func TestZadvW17DetachedHeadOfAPrunableWorktreeIsStillSeen(t *testing.T) {
 	if err := os.Rename(wt, wt+".away"); err != nil {
 		t.Fatal(err)
 	}
-	res := shell(f, advScript(t, f, leakObject+" && git --git-dir="+admin+" update-ref --no-deref HEAD $c"))
+	res := shell(f, advScript(t, f, leakObject+" && git --git-dir="+filepath.ToSlash(admin)+" update-ref --no-deref HEAD $c"))
 	advBlocked(t, res, "FAIL-OPEN")
 }
 
@@ -393,6 +393,6 @@ func TestZadvW17NoGitWorktreeOutsideRootThenParkedLeak(t *testing.T) {
 	if err := os.Remove(filepath.Join(wt, ".git")); err != nil {
 		t.Fatal(err)
 	}
-	res := shell(f, advScript(t, f, leakObject+" && git --git-dir="+admin+" update-ref refs/worktree/leak $c"))
+	res := shell(f, advScript(t, f, leakObject+" && git --git-dir="+filepath.ToSlash(admin)+" update-ref refs/worktree/leak $c"))
 	advParked(t, admin, "refs/worktree/leak", res)
 }

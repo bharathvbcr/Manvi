@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +25,9 @@ func batchTree(t *testing.T) (string, []string) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"link-to-dir", "q\"uote.go", `back\slash.go`, "tab\tname.go", "new\nline.go"} {
+		if runtime.GOOS == "windows" && strings.ContainsAny(name, "\"\\\t\n") {
+			continue // not a legal file name there, so it was never created
+		}
 		// Absent where the platform could not create the name (see
 		// trickyUntrackedTree).
 		if err := os.Remove(filepath.Join(root, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -80,7 +85,13 @@ func TestBatchRenderDeclinesWhatItCannotAttribute(t *testing.T) {
 
 	escaped := newGitRepo(t)
 	write(t, escaped, "plain.go", "package p\n")
-	write(t, escaped, "q\"uote.go", "package p\n")
+	// A name git writes escaped in a diff header: a quote where the platform
+	// allows one, otherwise a non-ASCII letter, which core.quotepath escapes.
+	escapedName := "q\"uote.go"
+	if runtime.GOOS == "windows" {
+		escapedName = "caf" + string(rune(0xe9)) + ".go"
+	}
+	write(t, escaped, escapedName, "package p\n")
 	if _, _, ok := renderUntrackedBatch(ctx, escaped, untrackedPaths(t, escaped), 1<<30); ok {
 		t.Error("a path git escapes in its header was rendered by the batch")
 	}

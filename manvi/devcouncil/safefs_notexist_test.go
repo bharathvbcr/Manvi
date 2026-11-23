@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -53,7 +54,7 @@ func TestWritePinnedCreatesReplacesAndRefusesALink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if info.Mode().Perm() != 0o600 && runtime.GOOS != "windows" { // Windows has no permission bits to keep
 		t.Errorf("an existing file's permission bits were not kept: %v", info.Mode().Perm())
 	}
 	outside := filepath.Join(t.TempDir(), "outside.md")
