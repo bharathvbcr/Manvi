@@ -103,6 +103,19 @@ func leaseLabel(raw string) string {
 	return b.String()
 }
 
+// agentLeaseOwner is the lease owner recorded for a lease whose label an agent
+// chose: "agent:" plus the sanitised, bounded label. The prefix says an agent
+// chose the name, so a model that typed "human:operator" cannot read as the
+// operator in the lease and watch faces. An empty label yields "", and the
+// caller picks the owner it would have used without one. Every place that
+// stores a model-chosen label as a lease owner goes through here.
+func agentLeaseOwner(raw string) string {
+	if label := leaseLabel(raw); label != "" {
+		return "agent:" + label
+	}
+	return ""
+}
+
 func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		TaskID string `json:"task_id"`
@@ -126,8 +139,8 @@ func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 	// face, so it is stored with a prefix that says an agent chose it: a model
 	// that typed "human:operator" must not read as the operator.
 	owner := identity
-	if label := leaseLabel(args.Owner); label != "" {
-		owner = "agent:" + label
+	if labelled := agentLeaseOwner(args.Owner); labelled != "" {
+		owner = labelled
 	}
 
 	lease, err := r.deps.Store.Acquire(ctx, store.AcquireRequest{

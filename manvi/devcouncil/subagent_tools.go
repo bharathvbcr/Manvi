@@ -1270,9 +1270,17 @@ func (r *Registry) spawnTask(t spawnRequest, req SubAgentRequest, role resolvedR
 			}
 
 			if t.TaskID != "" {
+				// The label is the model's, so the owner goes through the
+				// same prefix and bound checkout applies; spawn requires a
+				// non-empty label, and the fallback keeps an unnameable one
+				// from reading as anyone else.
+				owner := agentLeaseOwner(t.Label)
+				if owner == "" {
+					owner = "agent:subagent"
+				}
 				acquire := store.AcquireRequest{
 					TaskID: t.TaskID,
-					Owner:  t.Label,
+					Owner:  owner,
 					TTL:    r.deps.LeaseTTL,
 				}
 				lease, err := r.deps.Store.Acquire(childCtx, acquire)
