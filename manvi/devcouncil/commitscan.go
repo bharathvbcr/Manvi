@@ -343,70 +343,85 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 	// directories are listed collapsed so a node_modules is one entry, not a
 	// million; a collapsed directory is entered only when its own name is under
 	// a secret pattern (secrets/).
+	//
+	// Each listing is consumed as git writes it and only the paths under a secret
+	// pattern are kept, so the length of the listing is not a limit: what is held
+	// is the secret-path files (at most maxSecretFiles) and one path at a time.
+	// Reading it whole under the capture cap refused every commit in a tree whose
+	// listing was longer than 16 MiB, which an honest monorepo reaches.
 	listings := [][]string{
 		{"ls-files", "-z", "--cached", "--others", "--exclude-standard"},
 		{"ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"},
 	}
+	var secret []string
 	seen := map[string]bool{}
-	var candidates []string
-	add := func(p string) {
-		if p != "" && !seen[p] {
-			seen[p] = true
-			candidates = append(candidates, p)
+	addSecret := func(p string) error {
+		if p == "" || seen[p] {
+			return nil
 		}
+		hit, err := secretPaths(r.matcher(), []string{p})
+		if err != nil {
+			return err
+		}
+		if len(hit) == 0 {
+			return nil
+		}
+		seen[p] = true
+		secret = append(secret, p)
+		if len(secret) > maxSecretFiles {
+			return fmt.Errorf("the tree holds at least %d files under secret paths, more than the %d this check can enumerate",
+				len(secret), maxSecretFiles)
+		}
+		return nil
+	}
+	walked := 0
+	visit := func(p string) error {
+		if !strings.HasSuffix(p, "/") {
+			return addSecret(p)
+		}
+		hit, err := secretPaths(r.matcher(), []string{p + "x"})
+		if err != nil {
+			return err
+		}
+		if len(hit) == 0 {
+			return nil
+		}
+		walkErr := filepath.WalkDir(filepath.Join(r.deps.Root, filepath.FromSlash(p)),
+			func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if d.Type().IsRegular() {
+					walked++
+					if rel, relErr := filepath.Rel(r.deps.Root, path); relErr == nil {
+						if err := addSecret(filepath.ToSlash(rel)); err != nil {
+							return err
+						}
+					}
+				}
+				if walked > maxSecretFiles*4 {
+					return fs.SkipAll
+				}
+				return nil
+			})
+		if walkErr != nil {
+			return fmt.Errorf("walking %s: %w", p, walkErr)
+		}
+		return nil
 	}
 	var captures []gitCapture
 	for _, args := range listings {
-		listed, err := runGitWhole(ctx, r.deps.Root, args...)
+		listed, err := r.streamListing(ctx, args, visit)
 		if err != nil {
 			return set, fmt.Errorf("listing files: %w", err)
 		}
 		captures = append(captures, listed)
-		for _, p := range strings.Split(listed.out, "\x00") {
-			if !strings.HasSuffix(p, "/") {
-				add(p)
-				continue
-			}
-			hit, err := secretPaths(r.matcher(), []string{p + "x"})
-			if err != nil {
-				return set, err
-			}
-			if len(hit) == 0 {
-				continue
-			}
-			walkErr := filepath.WalkDir(filepath.Join(r.deps.Root, filepath.FromSlash(p)),
-				func(path string, d fs.DirEntry, err error) error {
-					if err != nil {
-						return err
-					}
-					if d.Type().IsRegular() {
-						if rel, relErr := filepath.Rel(r.deps.Root, path); relErr == nil {
-							add(filepath.ToSlash(rel))
-						}
-					}
-					if len(candidates) > maxSecretFiles*4 {
-						return fs.SkipAll
-					}
-					return nil
-				})
-			if walkErr != nil {
-				return set, fmt.Errorf("walking %s: %w", p, walkErr)
-			}
-		}
 	}
 
 	// What the listings could not cover goes on the set before any early return
 	// below: a tree with no secret-path file it could see is exactly the tree
 	// whose hidden directory might hold one.
 	set.notes = listingWarningNotes(captures)
-	secret, err := secretPaths(r.matcher(), candidates)
-	if err != nil {
-		return set, err
-	}
-	if len(secret) > maxSecretFiles {
-		return set, fmt.Errorf("the tree holds %d files under secret paths, more than the %d this check can enumerate",
-			len(secret), maxSecretFiles)
-	}
 	if len(secret) == 0 {
 		return set, nil
 	}
