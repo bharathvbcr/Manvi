@@ -1,0 +1,11 @@
+# Every text file is checked out with LF on every platform.
+#
+# Without this, a Windows checkout with core.autocrlf=true (the default of
+# Git for Windows, and so of the windows-latest runner) rewrites each file to
+# CRLF. Go source tolerates that, but whatever reads these files as data does
+# not: scripts/module-pins.txt gained a trailing CR on its commit column (which
+# the pin-versus-docs tests then rejected as "not a full commit"), shell scripts
+# stop parsing under bash, and fixtures that spell out line endings change
+# meaning. The index already holds LF throughout; this keeps the working tree
+# the same as the index.
+* text=auto eol=lf
