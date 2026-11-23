@@ -301,11 +301,14 @@ func bindMasks(digest [32]byte, masks []image.Rectangle) [32]byte {
 	}
 	h := sha256.New()
 	h.Write(digest[:])
-	var buf [8]byte
+	// Each coordinate is written as a signed varint: injective for every int
+	// (a negative or oversized coordinate cannot collide with another), and with
+	// no narrowing conversion to reason about.
+	var buf [binary.MaxVarintLen64]byte
 	for _, r := range masks {
 		for _, v := range [4]int{r.Min.X, r.Min.Y, r.Max.X, r.Max.Y} {
-			binary.BigEndian.PutUint64(buf[:], uint64(int64(v)))
-			h.Write(buf[:])
+			n := binary.PutVarint(buf[:], int64(v))
+			h.Write(buf[:n])
 		}
 	}
 	var sum [32]byte

@@ -179,7 +179,7 @@ func wide(n int) uint16 {
 	if n < 0 {
 		n = -n
 	}
-	return uint16(n % 65536)
+	return uint16(n % 65536) // #nosec G115 -- n is non-negative here, so n % 65536 is within 0..65535
 }
 
 // patterned returns a frame with structure at every scale, so it compresses like

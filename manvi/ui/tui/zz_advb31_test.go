@@ -72,7 +72,7 @@ func TestAdvB31ScrollbackStreamedGrowthManySmallAppends(t *testing.T) {
 // cycles: the counter never drifts from what the entries hold, and
 // dropped + retained is the number of entries ever created.
 func TestAdvB31ScrollbackCounterNeverDriftsOverManyCycles(t *testing.T) {
-	rng := rand.New(rand.NewSource(31))
+	rng := rand.New(rand.NewSource(31)) // #nosec G404 -- deterministic seed for a reproducible property test
 	kinds := []ui.Kind{ui.KindText, ui.KindReasoning, ui.KindNotice, ui.KindToolStart, ui.KindToolResult, ui.KindTurnEnd, ui.KindError}
 	for _, bounds := range [][2]int{{0, 3000}, {7, 0}, {7, 3000}, {1, 50}, {50, 1 << 20}} {
 		s := NewScrollback()

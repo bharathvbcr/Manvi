@@ -12,7 +12,7 @@ func TestCaptureFileIsOwnerOnlyEvenWhenItAlreadyExists(t *testing.T) {
 		t.Skip("Windows has no POSIX permission bits")
 	}
 	path := filepath.Join(t.TempDir(), "gemini-wire.log")
-	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f, err := openCapture(path)

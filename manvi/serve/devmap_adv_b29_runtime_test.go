@@ -328,7 +328,7 @@ func TestAdvB29RuntimeCloseDuringRealCallLeavesNoChildBehind(t *testing.T) {
 	deadline := time.Now().Add(20 * time.Second)
 	var pids []string
 	for time.Now().Before(deadline) {
-		raw, _ := os.ReadFile(logPath)
+		raw, _ := os.ReadFile(logPath) // #nosec G304 -- logPath is a file this test wrote under t.TempDir
 		if strings.Contains(string(raw)+" ", " mcp ") || strings.HasSuffix(strings.TrimSpace(string(raw)), " mcp") {
 			break
 		}
@@ -342,7 +342,7 @@ func TestAdvB29RuntimeCloseDuringRealCallLeavesNoChildBehind(t *testing.T) {
 		t.Error("the in-flight call never returned after Close")
 	}
 	time.Sleep(500 * time.Millisecond)
-	raw, _ := os.ReadFile(logPath)
+	raw, _ := os.ReadFile(logPath) // #nosec G304 -- logPath is a file this test wrote under t.TempDir
 	mcpStarts := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		f := strings.Fields(line)
@@ -704,7 +704,7 @@ func fakeMCPDevmap(t *testing.T, hang bool) (script, logPath, calledPath string)
 // liveMCPChildren returns, and then kills (only PIDs this test's script logged),
 // every logged "mcp" child that is still alive.
 func liveMCPChildren(logPath string) []int {
-	raw, _ := os.ReadFile(logPath)
+	raw, _ := os.ReadFile(logPath) // #nosec G304 -- logPath is a file this test wrote under t.TempDir
 	var alive []int
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		if !strings.Contains(" "+line+" ", " mcp ") {
@@ -767,7 +767,7 @@ func TestAdvB29RuntimeCloseDuringAnInFlightWarmCallLeaksNoChild(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 	if alive := liveMCPChildren(logPath); len(alive) > 0 {
-		raw, _ := os.ReadFile(logPath)
+		raw, _ := os.ReadFile(logPath) // #nosec G304 -- logPath is a file this test wrote under t.TempDir
 		t.Fatalf("a devmap mcp child survived pool Close and the call's return: pids %v\n%s", alive, raw)
 	}
 }

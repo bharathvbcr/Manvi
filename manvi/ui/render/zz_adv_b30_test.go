@@ -123,7 +123,7 @@ func TestAdvB30StripFormatRunesMatchesPaintedFormatRunes(t *testing.T) {
 	}
 	marks := []rune{0x0301, 0xFE0F, 0x200D, 0x200C, 0x202E, 0xE0067, 0xE007F, 0x0600}
 	bases := []rune{'a', 0x1F468, 0x1F3F4, 0x6F22, '1', ' ', 0x06CC}
-	rng := rand.New(rand.NewSource(30))
+	rng := rand.New(rand.NewSource(30)) // #nosec G404 -- deterministic seed for a reproducible property test
 	const cases = 6000
 	for n := 0; n < cases; n++ {
 		var sb strings.Builder
