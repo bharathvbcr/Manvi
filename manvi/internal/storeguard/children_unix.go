@@ -16,10 +16,6 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
-// settle bounds how long an abandoned start, which a client closes
-// asynchronously, gets to finish ending before the children count as leaked.
-const settle = 5 * time.Second
-
 // psTimeout bounds one process listing.
 const psTimeout = 10 * time.Second
 

@@ -339,6 +339,11 @@ func TestCLICommandsRunCleanly(t *testing.T) {
 	cleanup := setProjectRootForTest(root)
 	defer cleanup()
 
+	// doctor probes the store. Left to its default lookup it resolves the
+	// operator's installed dcstore and starts a child of it that this test
+	// never closes; an absent binary keeps the probe off the host.
+	t.Setenv("MANVI_STORE_BINARY", filepath.Join(root, "absent-dcstore"))
+
 	var out, notes bytes.Buffer
 	if err := run(&out, &notes, []string{"flags"}); err != nil {
 		t.Fatalf("run flags: %v", err)
