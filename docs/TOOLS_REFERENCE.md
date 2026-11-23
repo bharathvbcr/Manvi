@@ -273,6 +273,10 @@ manvi tool devcouncil_find_files --json '{"pattern": "**/*.go"}'
 manvi tool devcouncil_verify_task --json '{"task_id": "TASK-001"}'
 ```
 
+**Arguments.** After the tool name, `manvi tool` accepts nothing, or one `--json VALUE` / `--json=VALUE` whose value is a UTF-8 JSON object. A misspelt flag, a stray word, a second `--json` or a non-object value is refused with the usage and the tool does not run. There is no `key=value` form, no `-` or `@file`, and no `--write` (unlike `gitpulse-mcp call`).
+
+**Exit status.** `0` means the tool answered. `1` means anything else: a usage error, an unknown tool, a bad payload, a tool that refused or failed, or output that could not be written. No status above 1 is returned, unlike `dev tool call` (0, 1, 2, 3) and `gitpulse-mcp call` (0 to 4). The full list is in `manvi --help` and [Tool Exit Codes](CLI_AND_CONFIGURATION.md#tool-exit-codes-manvi-tool).
+
 ---
 
 ## Tool Execution Lifecycle & Qualification
