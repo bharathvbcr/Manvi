@@ -182,9 +182,12 @@ func TestLocalRefusesATimeoutWithNoValue(t *testing.T) {
 func TestADeclaredEndpointIsNeverScannedPast(t *testing.T) {
 	const declared = "http://127.0.0.1:1/v1"
 	var notes bytes.Buffer
-	got := resolveLocalEndpoint(context.Background(), pinnedTo(t, declared), declared, nil, &notes, "")
+	got, credential := resolveLocalEndpoint(context.Background(), pinnedTo(t, declared), declared, borrowedOpenAIKey, &notes, "")
 	if got != declared {
 		t.Fatalf("resolved to %q, want the declared address unchanged", got)
+	}
+	if credential == nil {
+		t.Error("an address the operator named was denied the credential resolver")
 	}
 	if notes.Len() != 0 {
 		t.Errorf("a configured address produced a note: %q", notes.String())

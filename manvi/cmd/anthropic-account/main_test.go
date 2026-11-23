@@ -312,7 +312,10 @@ func TestExecReplacesInheritedCredentials(t *testing.T) {
 	if env[credentials.AnthropicFallbackKeyEnv] != altKey || env[credentials.AnthropicFallbackWorkspaceEnv] != "wrkspc_01Alt" {
 		t.Errorf("fallback: key %q workspace %q", env[credentials.AnthropicFallbackKeyEnv], env[credentials.AnthropicFallbackWorkspaceEnv])
 	}
-	if env["ANTHROPIC_BASE_URL"] != "https://example.invalid" || env["PATH"] != "/usr/bin:/bin" {
+	if _, ok := env["ANTHROPIC_BASE_URL"]; ok {
+		t.Error("an inherited ANTHROPIC_BASE_URL reached the child without --keep-base-url")
+	}
+	if env["PATH"] != "/usr/bin:/bin" {
 		t.Error("unrelated variables were not passed through")
 	}
 	for _, kv := range l.env {

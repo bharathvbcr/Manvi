@@ -8,7 +8,7 @@
 // two of them, a workspace id that belonged to the other organisation. This is
 // the one place the pick is made:
 //
-//	anthropic-account exec [--account NAME] [--repo DIR] [--no-fallback] -- CMD [ARG...]
+//	anthropic-account exec [--account NAME] [--repo DIR] [--no-fallback] [--keep-base-url] -- CMD [ARG...]
 //	anthropic-account which [--account NAME] [--repo DIR] [--json]
 //	anthropic-account list [--json]
 //	anthropic-account doctor
@@ -84,7 +84,7 @@ func main() {
 }
 
 const usage = `usage:
-  anthropic-account exec [--account NAME] [--repo DIR] [--no-fallback] -- CMD [ARG...]
+  anthropic-account exec [--account NAME] [--repo DIR] [--no-fallback] [--keep-base-url] -- CMD [ARG...]
   anthropic-account which [--account NAME] [--repo DIR] [--json]
   anthropic-account list [--json]
   anthropic-account doctor`
@@ -195,6 +195,7 @@ func runExec(args []string, d deps) error {
 	var sel selector
 	sel.bind(fs)
 	noFallback := fs.Bool("no-fallback", false, "do not hand the child a second organisation's key")
+	keepBaseURL := fs.Bool("keep-base-url", false, "pass an inherited ANTHROPIC_BASE_URL to the child (cleared by default, since it decides where the key is sent)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -205,6 +206,9 @@ func runExec(args []string, d deps) error {
 	names, err := anthropicEnvNames()
 	if err != nil {
 		return err
+	}
+	if *keepBaseURL {
+		delete(names.strip, baseURLEnv)
 	}
 	chosen, _, err := sel.choose(d, !*noFallback)
 	if err != nil {

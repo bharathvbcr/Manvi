@@ -67,7 +67,7 @@ func showLocal(ctx context.Context, out io.Writer, reg *flags.Registry, args []s
 	if err != nil {
 		return err
 	}
-	pinned := origin != flags.OriginDefault
+	pinned := localBaseURLNamed(declared, origin)
 
 	if resolveOnly {
 		return resolveLocalSelection(ctx, out, reg, timeout)
@@ -81,7 +81,7 @@ func showLocal(ctx context.Context, out io.Writer, reg *flags.Registry, args []s
 	// answered the question this command asks.
 	endpoints := local.WellKnownEndpoints()
 	if pinned {
-		endpoints = []local.Endpoint{{BaseURL: declared}}
+		endpoints = []local.Endpoint{{BaseURL: declared, Named: true}}
 	}
 
 	scanCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -108,7 +108,7 @@ func showLocal(ctx context.Context, out io.Writer, reg *flags.Registry, args []s
 	for _, srv := range servers {
 		reportServer(out, srv)
 	}
-	reportHowToUse(ctx, out, reg, servers, pinned, resolve)
+	reportHowToUse(ctx, out, reg, servers, pinned)
 	return nil
 }
 
@@ -173,6 +173,8 @@ func summariseModels(srv local.Server) string {
 		}
 	}
 	switch {
+	case srv.AuthRequired:
+		return "requires a credential, so its models could not be listed"
 	case len(srv.Models) == 0:
 		return "no models"
 	case known == 0:
@@ -250,7 +252,7 @@ func humanTokens(n int) string {
 // already local and whose server was found does not need to be told to export
 // what they exported, and a command that repeats settings back regardless is
 // one whose output stops being read.
-func reportHowToUse(ctx context.Context, out io.Writer, reg *flags.Registry, servers []local.Server, pinned bool, resolveCredential func() (credentials.Secret, error)) {
+func reportHowToUse(ctx context.Context, out io.Writer, reg *flags.Registry, servers []local.Server, pinned bool) {
 	provider, _, _ := reg.String(flags.LLMDefaultProvider)
 	model, modelOrigin, _ := reg.String(flags.LLMLocalModel)
 
@@ -270,7 +272,6 @@ func reportHowToUse(ctx context.Context, out io.Writer, reg *flags.Registry, ser
 		Declared:           servers[0].BaseURL,
 		DeclaredByOperator: pinned,
 		Model:              namedLocalModel(reg),
-		Credential:         resolveCredential,
 	})
 	if note := res.Note(); note != "" {
 		_, _ = fmt.Fprintf(out, "  %s\n\n", note)
@@ -283,6 +284,11 @@ func reportHowToUse(ctx context.Context, out io.Writer, reg *flags.Registry, ser
 		for _, l := range lines {
 			_, _ = fmt.Fprintf(out, "    %s\n", l)
 		}
+		return
+	}
+
+	if chosen.AuthRequired {
+		_, _ = fmt.Fprintf(out, "  %s requires a credential, so its models cannot be listed or chosen until it accepts one.\n", chosen.BaseURL)
 		return
 	}
 
