@@ -58,6 +58,43 @@ func TestDocumentedToolCountMatchesRegistry(t *testing.T) {
 		t.Errorf("docs/TOOLS_REFERENCE.md: documents %q core tools, a session with no skills registers %d", m[1], core)
 	}
 
+	// Sites that restate the catalogue, often beside the no-skills count. Each
+	// capture group is checked against its count, and every match in the file
+	// must agree, so a stale copy further down a page fails too.
+	restated := []struct {
+		file    string
+		pattern string
+		counts  []int
+	}{
+		{"README.md", `badge/tools-(\d+)_native`, []int{want}},
+		{"README.md", `(?i)\b(\d+) native tools`, []int{want}},
+		{"README.md", `(\d+) in a repository with no skills`, []int{core}},
+		{"docs/WORKBENCH.md", `(\d+) native tools, (\d+) with no skills`, []int{want, core}},
+		{"docs/04-visual-architecture-guide.html", `the (\d+) native tools \((\d+) without repo skills\)`, []int{want, core}},
+		{".github/METADATA.md", `(\d+) native tools \((\d+) with no skills\)`, []int{want, core}},
+		{"docs/README.md", `\x60(\d+)-tools\x60`, []int{want}},
+		{"docs/README.md", `all (\d+) native tools \((\d+) in a repository with no skills\)`, []int{want, core}},
+	}
+	for _, s := range restated {
+		body := readFile(t, filepath.Join(root, s.file))
+		ms := regexp.MustCompile(s.pattern).FindAllStringSubmatch(body, -1)
+		if len(ms) == 0 {
+			t.Errorf("%s: no count matched %q — the sentence stating the tool count was reworded or removed; re-point this guard at it", s.file, s.pattern)
+			continue
+		}
+		for _, m := range ms {
+			for i, count := range s.counts {
+				got, err := strconv.Atoi(m[i+1])
+				if err != nil {
+					t.Fatalf("%s: %q is not a number: %v", s.file, m[i+1], err)
+				}
+				if got != count {
+					t.Errorf("%s: states %d where the registry gives %d (pattern %q)", s.file, got, count, s.pattern)
+				}
+			}
+		}
+	}
+
 	for _, s := range sites {
 		body := readFile(t, filepath.Join(root, s.file))
 		m := regexp.MustCompile(s.pattern).FindStringSubmatch(body)
