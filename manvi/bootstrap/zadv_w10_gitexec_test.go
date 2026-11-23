@@ -124,7 +124,7 @@ func zadvIncludeCase(t *testing.T, run zadvRun, cond string) {
 	hookMarker := filepath.Join(r.markers, "hook")
 	hooks := filepath.ToSlash(filepath.Join(r.markers, "hooks"))
 	r.hooksDir(t, hooks, hookMarker)
-	inc := filepath.Join(r.markers, "inc.cfg")
+	inc := filepath.ToSlash(filepath.Join(r.markers, "inc.cfg"))
 	body := "[core]\n\thooksPath = " + hooks + "\n\tfsmonitor = " + monPath + "\n"
 	if err := os.WriteFile(inc, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

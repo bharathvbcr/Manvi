@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ const stubHealthy = `{"generation_id":7,"node_count":50,"edge_count":90,"is_fres
 // delay is applied to every invocation.
 func stubDevmap(tb testing.TB, status string, delay time.Duration) (*Registry, func() []string) {
 	tb.Helper()
+	if runtime.GOOS == "windows" {
+		tb.Skip("the stand-in devmap is a #!/bin/sh script counting its own invocations, which Windows cannot start")
+	}
 	dir := tb.TempDir()
 	log := filepath.Join(dir, "calls.log")
 	script := "#!/bin/sh\n" +

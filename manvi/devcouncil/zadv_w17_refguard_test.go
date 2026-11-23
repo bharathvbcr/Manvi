@@ -91,7 +91,9 @@ func advAddWorktree(t *testing.T, f *fixture, name string) (wt, admin string) {
 	wt = filepath.Join(f.root, "wts", name)
 	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
 	common := gitOut(t, f.root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	return wt, filepath.Join(common, "worktrees", name)
+	// Slash form: both go into shell commands, where a Windows path's backslashes
+	// are escapes and the path arrives with them removed.
+	return filepath.ToSlash(wt), filepath.ToSlash(filepath.Join(common, "worktrees", name))
 }
 
 // leakObject is a shell fragment that builds a commit holding the staged leak
@@ -180,7 +182,7 @@ func TestZadvW17PerWorktreeRefMovedWhileWorktreeUnreadable(t *testing.T) {
 func TestZadvW17TwoStepHideThenParkLeak(t *testing.T) {
 	f := shellCommitFixture(t, true)
 	wt, admin := advAddWorktree(t, f, "wt-adv-twostep")
-	first := shell(f, advScript(t, f, "rm -f "+filepath.Join(wt, ".git")))
+	first := shell(f, advScript(t, f, "rm -f "+filepath.ToSlash(filepath.Join(wt, ".git"))))
 	// Step 1 is harmless: the worktree's refs are read through its admin dir, so
 	// removing its .git hides nothing, and blocking it would be wrong.
 	if first.IsError || first.Blocked {
@@ -210,7 +212,7 @@ func TestZadvW17WorktreeUnreadableBeforeReadableAfterIsScanned(t *testing.T) {
 	if err := os.Remove(filepath.Join(wt, ".git")); err != nil {
 		t.Fatal(err)
 	}
-	cmd := leakObject + " && git --git-dir=" + admin + " update-ref refs/worktree/leak $c && printf 'gitdir: %s\\n' " + admin + " > " + filepath.Join(wt, ".git")
+	cmd := leakObject + " && git --git-dir=" + admin + " update-ref refs/worktree/leak $c && printf 'gitdir: %s\\n' " + admin + " > " + filepath.ToSlash(filepath.Join(wt, ".git"))
 	res := shell(f, advScript(t, f, cmd))
 	advBlocked(t, res, "worktree repaired and holding a leak")
 }

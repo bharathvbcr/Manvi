@@ -170,13 +170,19 @@ func newVerifyHarness(t *testing.T, criteria []string, configure func(*VerifyDep
 	h.putItem("t", string(encoded))
 
 	checker := passingChecker()
+	// The test binary itself: a file that exists and resolves on every platform
+	// (there is no /bin/sh on Windows).
+	existing, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	deps := VerifyDeps{
 		Client: client, Critic: h.critic,
 		Devmap:      func(string) DevmapClient { return h.devmap },
 		NewVerifier: func(string, string, string) (devcouncil.PathChecker, error) { return checker, nil },
 		// A binary that exists, so the missing-verifier check is not what a
 		// test is accidentally exercising.
-		VerifierBinary: "/bin/sh",
+		VerifierBinary: existing,
 	}
 	if configure != nil {
 		configure(&deps)

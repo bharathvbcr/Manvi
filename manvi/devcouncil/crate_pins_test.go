@@ -1,13 +1,16 @@
 package devcouncil
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -122,27 +125,89 @@ func exportPinnedRust(t testing.TB, sibling, sha string) (string, error) {
 	defer cancel()
 	dir := t.TempDir()
 	archive := exec.CommandContext(ctx, "git", "-C", sibling, "archive", "--format=tar", sha, "rust")
-	extract := exec.CommandContext(ctx, "tar", "-x", "-C", dir)
-	archive.WaitDelay, extract.WaitDelay = 5*time.Second, 5*time.Second
-	var archiveErr, extractErr bytes.Buffer
-	archive.Stderr, extract.Stderr = &archiveErr, &extractErr
+	archive.WaitDelay = 5 * time.Second
+	var archiveErr bytes.Buffer
+	archive.Stderr = &archiveErr
 	pipe, err := archive.StdoutPipe()
 	if err != nil {
 		return "", err
 	}
-	extract.Stdin = pipe
-	if err := extract.Start(); err != nil {
-		return "", fmt.Errorf("tar: %w", err)
+	if err := archive.Start(); err != nil {
+		return "", fmt.Errorf("git archive %s rust in %s: %w", sha, sibling, err)
 	}
-	if err := archive.Run(); err != nil {
-		_ = extract.Process.Kill()
-		_ = extract.Wait()
+	// Extracted in process rather than by a tar program: the tar on a Windows
+	// PATH is the one that reads "C:\\dir" as a host named C, and none of the
+	// tar programs is a thing this test is about.
+	extractErr := untar(pipe, dir)
+	if extractErr != nil {
+		// Unread output would leave git blocked on the pipe until the deadline.
+		_, _ = io.Copy(io.Discard, pipe)
+	}
+	if err := archive.Wait(); err != nil {
 		return "", fmt.Errorf("git archive %s rust in %s: %w\n%s\nrun scripts/fetch-modules.sh to put DevCouncil at the pin", sha, sibling, err, archiveErr.String())
 	}
-	if err := extract.Wait(); err != nil {
-		return "", fmt.Errorf("extract pinned rust/: %w\n%s", err, extractErr.String())
+	if extractErr != nil {
+		return "", fmt.Errorf("extract pinned rust/: %w", extractErr)
 	}
 	return filepath.Join(dir, "rust"), nil
+}
+
+// maxPinnedRustBytes bounds what one pinned file may expand to.
+const maxPinnedRustBytes = 64 << 20
+
+// untar writes the files of the tar stream r under dir. Only regular files,
+// directories and the pax header git archive starts with are accepted, and a
+// name that is absolute or climbs out of dir is refused.
+func untar(r io.Reader, dir string) error {
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := path.Clean(hdr.Name)
+		if hdr.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
+		if path.IsAbs(name) || name == ".." || strings.HasPrefix(name, "../") || strings.Contains(name, ":") {
+			return fmt.Errorf("tar entry %q is not a path under the destination", hdr.Name)
+		}
+		dest := filepath.Join(dir, filepath.FromSlash(name))
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(dest, 0o750); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
+				return err
+			}
+			if err := writeLimited(dest, tr); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("tar entry %q has type %q, which the pinned rust/ tree should not contain", hdr.Name, hdr.Typeflag)
+		}
+	}
+}
+
+func writeLimited(dest string, r io.Reader) (err error) {
+	f, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // a path under this test's own t.TempDir, checked by untar
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+	n, err := io.Copy(f, io.LimitReader(r, maxPinnedRustBytes+1))
+	if err != nil {
+		return err
+	}
+	if n > maxPinnedRustBytes {
+		return fmt.Errorf("%s is larger than %d bytes", dest, maxPinnedRustBytes)
+	}
+	return nil
 }
 
 var modulePinLine = regexp.MustCompile(`^DevCouncil\t[^\t]+\t([0-9a-f]{40})\s*$`)
