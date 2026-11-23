@@ -32,7 +32,7 @@ here is either checked or refused.
 # laptop: mh.pool said the episodes pooled, protocol_diff said they did not.
 PROTOCOL_KEYS = ("max_steps", "max_wall", "num_ctx", "num_predict",
                  "temperature", "top_p", "think", "reasoning_effort",
-                 "share_gpu", "concurrency",
+                 "share_gpu", "concurrency", "shell_env",
                  "env_node", "env_gpu", "env_platform", "env_ollama_version",
                  "env_api_provider", "env_api_endpoint")
 

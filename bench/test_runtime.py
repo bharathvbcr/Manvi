@@ -720,6 +720,27 @@ check("provenance keys are excluded from protocol_diff too",
 check("the allowlist and the denylist agree about every provenance key",
       all(k not in PROTOCOL_KEYS for k in PROVENANCE_KEYS),
       f"{PROVENANCE_KEYS} vs {PROTOCOL_KEYS}")
+# The two sets are one split of the stamp: pool.PROTOCOL_KEYS (an allowlist)
+# and runtime.PROVENANCE_KEYS (a denylist). A key run.py stamps that is in
+# neither is treated as protocol by protocol_diff and ignored by protocol_drift,
+# which is how shell_env came to pool pre-scrub and post-scrub episodes. Every
+# key a run stamps is therefore required to be in exactly one of them.
+import re
+from mh.runtime import protocol_block, serving_env
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")) as _fh:
+    _run_src = _fh.read()
+_stamped = set(re.findall(r'protocol\["(\w+)"\]\s*=', _run_src))
+for _model in ("qwen3.8:27b", "gemini-2.5-pro"):
+    _stamped |= set(protocol_block(1, 1, False, 1, 1, 0.0, False,
+                                   env=serving_env(model=_model)))
+check("the stamp scan found the keys run.py writes",
+      {"max_steps", "shell_env", "env_node", "env_client_node"} <= _stamped,
+      str(sorted(_stamped)))
+for _k in sorted(_stamped):
+    _homes = [n for n, s in (("PROTOCOL_KEYS", PROTOCOL_KEYS),
+                             ("PROVENANCE_KEYS", PROVENANCE_KEYS)) if _k in s]
+    check(f"stamped key {_k} is in exactly one of PROTOCOL_KEYS / PROVENANCE_KEYS",
+          len(_homes) == 1, f"{_k} is in {_homes or 'neither'}")
 # resume_conflicts decided with `stamp != protocol` while reporting with
 # protocol_diff. Once provenance was excluded from the diff the two disagreed:
 # 90 keepable episodes were refused with an empty "differs on " list, and the
