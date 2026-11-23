@@ -124,6 +124,18 @@ func NewScrollback() *Scrollback {
 // DefaultMaxScrollbackBytes is the text a transcript retains by default.
 const DefaultMaxScrollbackBytes = 32 << 20
 
+// entryBytes is what an entry retains, each byte of text once. A streamed
+// entry keeps its text in Body, and its event's Text is the first piece of
+// that same text, so only the body is counted for it. No fixed per-entry
+// overhead is counted: the figure is the text held and nothing else.
+func entryBytes(e *Entry) int {
+	n := eventBytes(e.Event)
+	if e.Body.Len() > 0 {
+		n -= len(e.Event.Text)
+	}
+	return n + e.Body.Len()
+}
+
 // eventBytes is what an event holds that can be large: its text, tool
 // arguments, diagnostic payload and the lists of strings it carries.
 func eventBytes(ev ui.Event) int {
@@ -261,7 +273,7 @@ func (s *Scrollback) Append(ev ui.Event) {
 		}
 	}
 	s.entries = append(s.entries, e)
-	s.bytes += eventBytes(ev) + e.Body.Len()
+	s.bytes += entryBytes(e)
 	s.enforceBounds()
 }
 
@@ -275,11 +287,11 @@ func (s *Scrollback) enforceBounds() {
 	}
 	held := s.bytes
 	for _, e := range s.entries[:drop] {
-		held -= eventBytes(e.Event) + e.Body.Len()
+		held -= entryBytes(e)
 	}
 	for s.MaxBytes > 0 && held > s.MaxBytes && drop < len(s.entries)-1 {
 		e := s.entries[drop]
-		held -= eventBytes(e.Event) + e.Body.Len()
+		held -= entryBytes(e)
 		drop++
 	}
 	if drop == 0 {
