@@ -51,7 +51,7 @@ func verifyBenchSuites(t *testing.T) []string {
 		t.Fatalf("reading verify.sh: %v", err)
 	}
 	suites, err := parseBenchSuites(string(raw), func(s string) bool {
-		st, err := os.Stat(filepath.Join(docRoot, "bench", s))
+		st, err := fs.Stat(os.DirFS(filepath.Join(docRoot, "bench")), s)
 		return err == nil && st.Mode().IsRegular()
 	})
 	if err != nil {

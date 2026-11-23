@@ -1,8 +1,8 @@
 package devcouncil
 
 import (
+	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,7 +16,7 @@ const advPinnedDevCouncil = "../../../DevCouncil"
 
 func advRead(t *testing.T, rel string) string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(advPinnedDevCouncil, rel))
+	raw, err := fs.ReadFile(os.DirFS(advPinnedDevCouncil), rel)
 	if err != nil {
 		t.Fatalf("the pinned DevCouncil archive is required (never skipped): %v", err)
 	}
@@ -220,14 +220,15 @@ func TestAdvB29ResidueDevCouncilTableRowsAreArithmeticallyRight(t *testing.T) {
 // get the shorter deadline and be killed mid-sequence.
 func TestAdvB29ResidueNoCallerReachesDevCouncilDcverifyClient(t *testing.T) {
 	var hits []string
-	err := filepath.WalkDir("../", func(p string, d os.DirEntry, err error) error {
+	tree := os.DirFS("..")
+	err := fs.WalkDir(tree, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || !strings.HasSuffix(p, ".go") {
 			return nil
 		}
-		raw, rerr := os.ReadFile(p)
+		raw, rerr := fs.ReadFile(tree, p)
 		if rerr != nil {
 			return rerr
 		}

@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -124,16 +125,25 @@ func TestAdvB29ResidueArchitecturePackagesAreInsideTheListingBlock(t *testing.T)
 	const prefix = "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/"
 	re := regexp.MustCompile(`"` + regexp.QuoteMeta(prefix) + `([a-z_0-9]+)`)
 	seen := map[string]bool{}
-	filepath.WalkDir(moduleRoot, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+	tree := os.DirFS(moduleRoot)
+	if err := fs.WalkDir(tree, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
-		b, _ := os.ReadFile(p)
-		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+		src, err := fs.ReadFile(tree, p)
+		if err != nil {
+			return err
+		}
+		for _, m := range re.FindAllStringSubmatch(string(src), -1) {
 			seen[m[1]] = true
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walking the module: %v", err)
+	}
 	if len(seen) < 5 {
 		t.Fatalf("only %d packages found", len(seen))
 	}
@@ -158,12 +168,13 @@ func TestAdvB29ResidueArchitectureListingNamesOnlyExistingPackages(t *testing.T)
 		t.Fatal("block not found")
 	}
 	pinned := filepath.Join(moduleRoot, "..", "..", "DevCouncil", "backend", "go_orchestrator")
-	if _, err := os.Stat(pinned); err != nil {
+	pinnedFS := os.DirFS(pinned)
+	if _, err := fs.Stat(pinnedFS, "."); err != nil {
 		t.Fatalf("the pinned module dir must be found, never skipped: %v", err)
 	}
 	for _, m := range regexp.MustCompile(`(?m)^│   ├── ([a-z_0-9]+)/|^│   └── ([a-z_0-9]+)/`).FindAllStringSubmatch(doc[i:i+j], -1) {
 		name := m[1] + m[2]
-		if st, err := os.Stat(filepath.Join(pinned, name)); err != nil || !st.IsDir() {
+		if st, err := fs.Stat(pinnedFS, name); err != nil || !st.IsDir() {
 			t.Errorf("ARCHITECTURE.md lists %s/ but the pinned go_orchestrator has no such directory", name)
 		}
 	}
