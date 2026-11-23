@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ollamaServer mimics the endpoints Ollama actually exposes, including the
@@ -467,5 +468,36 @@ func TestMLXHealthForAnotherModelIsNotBorrowed(t *testing.T) {
 	}
 	if dims.Source != SourceDeclared {
 		t.Fatalf("Source = %q, want the declaration", dims.Source)
+	}
+}
+
+// A server that hangs on its native endpoints has not said it publishes no
+// window; the operator must not be told it has.
+func TestAHungProbeIsNotReportedAsPublishingNoWindow(t *testing.T) {
+	const model = "qwen3.5:4b"
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": model}}})
+		case "/api/show":
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	a := New(Config{BaseURL: srv.URL + "/v1", ContextWindow: 40000, DiscoveryTimeout: 300 * time.Millisecond, DiscoveryTTL: time.Hour}, noCredential)
+	dims := a.Dimensions(context.Background(), model)
+	if dims.ContextWindow != 40000 || dims.Discovered() {
+		t.Fatalf("a hung probe did not fall back to the declaration: %+v", dims)
+	}
+	if strings.Contains(dims.Describe(), "publishes no window") {
+		t.Fatalf("Describe() = %q: a server that never answered was reported as publishing no window", dims.Describe())
 	}
 }

@@ -3,10 +3,14 @@ package local
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // Model dimensions are discovered where the server exposes them and declared
@@ -80,6 +84,11 @@ type Dimensions struct {
 	// Zero unless Source is SourceDeclaredImplausible.
 	ImplausibleWindow int
 	RejectedSource    Source
+	// ProbeFailed records that the server did not answer at least one probe
+	// (a timeout, a refused or dropped connection) and none produced a window,
+	// so the declaration stands for want of an answer, not because the server
+	// was shown to publish none. Only meaningful for a declared window.
+	ProbeFailed bool
 }
 
 // Embedding reports a model the server described as embedding-only. False when
@@ -100,6 +109,9 @@ func (d Dimensions) Describe() string {
 		return fmt.Sprintf("%d tokens (declared; %s reported %d tokens, past the %d-token ceiling, "+
 			"so it was not believed)", d.ContextWindow, d.RejectedSource, d.ImplausibleWindow,
 			maxPlausibleContextWindow)
+	}
+	if !d.Discovered() && d.ProbeFailed {
+		return fmt.Sprintf("%d tokens (declared; the server did not answer the window probes, so what it publishes is unknown)", d.ContextWindow)
 	}
 	if !d.Discovered() {
 		return fmt.Sprintf("%d tokens (declared; this server publishes no window)", d.ContextWindow)
@@ -171,6 +183,8 @@ func (a *Adapter) probeDimensions(ctx context.Context, model string) Dimensions 
 
 	ctx, cancel := context.WithTimeout(ctx, a.cfg.DiscoveryTimeout)
 	defer cancel()
+	log := &probeLog{}
+	ctx = context.WithValue(ctx, probeLogKey{}, log)
 
 	if d, ok := a.probeVLLM(ctx, model); ok {
 		return believable(d, declared)
@@ -184,13 +198,58 @@ func (a *Adapter) probeDimensions(ctx context.Context, model string) Dimensions 
 	if d, ok := a.probeMLX(ctx, model); ok {
 		return believable(d, declared)
 	}
+	if log.failed.Load() {
+		declared.ProbeFailed = true
+	}
 	return declared
 }
+
+// probeLog collects whether any probe of one probeDimensions run could not
+// complete. It rides the context because the probes return only an answer or
+// nothing, and a held caller (endpoints.go) shares them: a probe run without a
+// log records nothing.
+type probeLog struct{ failed atomic.Bool }
+
+type probeLogKey struct{}
+
+// noteProbeFailure records err on the run's log when it means the probe could
+// not run to an answer. An HTTP status is an answer (a 404 says the server is
+// not that kind of server); a transport failure, a timeout, a cancellation or
+// a body that could not be read is not.
+func noteProbeFailure(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+	log, _ := ctx.Value(probeLogKey{}).(*probeLog)
+	if log == nil {
+		return
+	}
+	var te *transport.Error
+	if errors.As(err, &te) && te.Status != 0 {
+		return
+	}
+	log.failed.Store(true)
+}
+
+// unprobedRetry is how long a result for a server that did not answer its
+// probes is kept. It is short because the result is a guess made for want of
+// an answer, and the next caller should ask again soon; it is not zero because
+// a hung server costs every caller DiscoveryTimeout, and a bounded cache is
+// what keeps that from being paid on every call.
+const unprobedRetry = 10 * time.Second
 
 // declaredDimensions is what the operator said, which is the answer whenever
 // the server will not give one.
 func (a *Adapter) declaredDimensions() Dimensions {
 	return Dimensions{ContextWindow: a.cfg.ContextWindow, Source: SourceDeclared}
+}
+
+// unprobedDimensions is the declaration for a caller that got no answer from
+// the server because it never asked: another caller's probe outlasted the wait.
+func (a *Adapter) unprobedDimensions() Dimensions {
+	d := a.declaredDimensions()
+	d.ProbeFailed = true
+	return d
 }
 
 // believable refuses a discovered window past maxPlausibleContextWindow and
@@ -218,6 +277,7 @@ func believable(d, declared Dimensions) Dimensions {
 // from the same endpoint, and asking twice would double every startup.
 func (a *Adapter) probeVLLM(ctx context.Context, model string) (Dimensions, bool) {
 	if _, err := a.discover(ctx); err != nil {
+		noteProbeFailure(ctx, err)
 		return Dimensions{}, false
 	}
 	a.dimMu.Lock()
@@ -430,19 +490,25 @@ func (a *Adapter) nativeRoot() (string, bool) {
 func (a *Adapter) getBoundedAbsolute(ctx context.Context, url string) ([]byte, error) {
 	resp, err := a.Client().Probe(ctx, "GET", url, nil)
 	if err != nil {
+		noteProbeFailure(ctx, err)
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return io.ReadAll(io.LimitReader(resp.Body, maxProbeBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBytes))
+	noteProbeFailure(ctx, err)
+	return body, err
 }
 
 func (a *Adapter) postBoundedAbsolute(ctx context.Context, url string, payload []byte) ([]byte, error) {
 	resp, err := a.Client().Probe(ctx, "POST", url, payload)
 	if err != nil {
+		noteProbeFailure(ctx, err)
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return io.ReadAll(io.LimitReader(resp.Body, maxProbeBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBytes))
+	noteProbeFailure(ctx, err)
+	return body, err
 }
 
 // dimensionsCached returns the discovered dimensions, probing at most once per
@@ -451,7 +517,7 @@ func (a *Adapter) postBoundedAbsolute(ctx context.Context, url string, payload [
 // restarted changes both together.
 func (a *Adapter) dimensionsFor(ctx context.Context, model string) Dimensions {
 	a.dimMu.Lock()
-	if entry, ok := a.dims[model]; ok && a.now().Sub(entry.at) < a.cfg.DiscoveryTTL {
+	if entry, ok := a.dims[model]; ok && a.now().Sub(entry.at) < entry.ttl(a.cfg.DiscoveryTTL) {
 		a.dimMu.Unlock()
 		return entry.dims
 	}
@@ -499,9 +565,9 @@ func (a *Adapter) awaitDimensions(ctx context.Context, model string) Dimensions 
 	for {
 		select {
 		case <-ctx.Done():
-			return a.declaredDimensions()
+			return a.unprobedDimensions()
 		case <-deadline.C:
-			return a.declaredDimensions()
+			return a.unprobedDimensions()
 		case <-tick.C:
 			a.dimMu.Lock()
 			entry, cached := a.dims[model]
@@ -517,7 +583,7 @@ func (a *Adapter) awaitDimensions(ctx context.Context, model string) Dimensions 
 			// the cache makes possible. Re-probing here would reopen the
 			// stampede this function exists to close, so the declaration is the
 			// answer for this call.
-			return a.declaredDimensions()
+			return a.unprobedDimensions()
 		}
 	}
 }
@@ -555,4 +621,13 @@ func (a *Adapter) rememberDimensionsLocked(model string, d Dimensions) {
 type dimEntry struct {
 	dims Dimensions
 	at   time.Time
+}
+
+// ttl is how long the entry may be served: the discovery TTL, or the shorter
+// unprobedRetry for a result the server never answered.
+func (e dimEntry) ttl(discovery time.Duration) time.Duration {
+	if e.dims.ProbeFailed {
+		return min(discovery, unprobedRetry)
+	}
+	return discovery
 }
