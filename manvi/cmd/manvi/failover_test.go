@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -87,6 +88,51 @@ func TestAPermanentFailureDoesNotFailOver(t *testing.T) {
 	}
 	if n := len(gem.requests()); n != 0 {
 		t.Fatalf("the fallback served %d request(s) for a permanent failure", n)
+	}
+}
+
+// When the fallback fails too, the error the caller gets is the fallback's:
+// a permanent failure there must not read as the first provider's retryable
+// outage, so nothing upstream mistakes it for a condition another attempt clears.
+func TestAFailedFallbackReportsItsOwnCause(t *testing.T) {
+	limited := &transport.Error{Provider: anthropic.Name, Status: 429, Attempts: 4, Body: "rate_limit_error"}
+	refused := &transport.Error{Provider: gemini.Name, Status: 400, Attempts: 1, Body: "invalid_request_error"}
+	claude := &downProvider{
+		tierProvider: tierProvider{name: anthropic.Name, reasons: map[string][]string{"parent-model": nil, "c-scout": nil}},
+		err:          limited,
+	}
+	gem := &downProvider{tierProvider: tierProvider{name: gemini.Name, reasons: map[string][]string{"g-scout": nil}}, err: refused}
+	models := llm.NewRegistry()
+	for _, p := range []llm.Provider{claude, gem} {
+		if err := models.Register(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &subAgentRunner{}
+	r.attach(subAgentConfig{
+		provider: claude, models: models, model: "parent-model",
+		tiers:     agents.TierProfile{agents.TierBasic: {Model: "c-scout"}},
+		fallbacks: map[agents.Tier]agents.TierSpec{agents.TierBasic: {Provider: gemini.Name, Model: "g-scout"}},
+		registry:  surfaceRegistry(t),
+	})
+	_, err := r.RunSubAgent(context.Background(), devcouncil.SubAgentRequest{
+		Label: "scout", Prompt: "look", ReadOnly: true, Tier: agents.TierBasic,
+	})
+	if err == nil {
+		t.Fatal("both providers failed and the child reported success")
+	}
+	if len(gem.requests()) == 0 {
+		t.Fatal("the fallback was never tried")
+	}
+	var terr *transport.Error
+	if !errors.As(err, &terr) || terr.Status != 400 || terr.Provider != gemini.Name {
+		t.Fatalf("the wrapped cause = %+v; want the fallback's 400", terr)
+	}
+	if _, down := providerUnavailable(err); down {
+		t.Fatalf("a permanent fallback failure reads as a retryable outage: %v", err)
+	}
+	if !strings.Contains(err.Error(), "http 429") {
+		t.Fatalf("the first failure is missing from the message: %v", err)
 	}
 }
 

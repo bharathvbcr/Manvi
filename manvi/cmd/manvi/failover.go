@@ -85,8 +85,12 @@ func (r *subAgentRunner) failover(ctx context.Context, cfg *subAgentConfig, req 
 	// hands the parent's checkpoint what it changed before it died.
 	merged := mergeAttempts(first.result, second.result)
 	if err != nil {
-		return merged, fmt.Errorf("sub-agent %q: %s (%w), and its tier %s fallback %s failed too: %w",
-			req.Label, what, firstErr, req.Tier, spec.Placement(), err)
+		// Only the fallback's error is wrapped. The first failure is reported as
+		// text: it was a retryable outage, and wrapping it too would let
+		// errors.As find a retryable transport error on a result whose actual
+		// cause — the fallback's — may be permanent.
+		return merged, fmt.Errorf("sub-agent %q: %s (%s), and its tier %s fallback %s failed too: %w",
+			req.Label, what, firstErr.Error(), req.Tier, spec.Placement(), err)
 	}
 	merged.Summary += fmt.Sprintf("\n\n[this sub-agent: %s; re-ran once on the %s tier's fallback %s]",
 		what, req.Tier, spec.Placement())
