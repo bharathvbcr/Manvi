@@ -139,15 +139,19 @@ func exportPinnedRust(t testing.TB, sibling, sha string) (string, error) {
 	// PATH is the one that reads "C:\\dir" as a host named C, and none of the
 	// tar programs is a thing this test is about.
 	extractErr := untar(pipe, dir)
-	if extractErr != nil {
-		// Unread output would leave git blocked on the pipe until the deadline.
-		_, _ = io.Copy(io.Discard, pipe)
-	}
-	if err := archive.Wait(); err != nil {
-		return "", fmt.Errorf("git archive %s rust in %s: %w\n%s\nrun scripts/fetch-modules.sh to put DevCouncil at the pin", sha, sibling, err, archiveErr.String())
-	}
+	// Always drained: a tar reader stops at the archive's end marker, but git
+	// still writes the padding that rounds the stream up to its record size, and
+	// output nobody reads leaves git blocked on the pipe (a Windows pipe holds a
+	// few kilobytes) until the deadline kills it.
+	_, _ = io.Copy(io.Discard, pipe)
+	waitErr := archive.Wait()
+	// The extraction error first: when extraction stops early git is cut off
+	// mid-write and reports its own failure, which is the symptom, not the cause.
 	if extractErr != nil {
 		return "", fmt.Errorf("extract pinned rust/: %w", extractErr)
+	}
+	if waitErr != nil {
+		return "", fmt.Errorf("git archive %s rust in %s: %w\n%s\nrun scripts/fetch-modules.sh to put DevCouncil at the pin", sha, sibling, waitErr, archiveErr.String())
 	}
 	return filepath.Join(dir, "rust"), nil
 }
@@ -188,6 +192,10 @@ func untar(r io.Reader, dir string) error {
 			if err := writeLimited(dest, tr); err != nil {
 				return err
 			}
+		case tar.TypeSymlink, tar.TypeLink:
+			// A link inside a test corpus is not part of what is compared (the
+			// workspace manifests and the member crates are), and a Windows
+			// checkout of it would need a privilege.
 		default:
 			return fmt.Errorf("tar entry %q has type %q, which the pinned rust/ tree should not contain", hdr.Name, hdr.Typeflag)
 		}
