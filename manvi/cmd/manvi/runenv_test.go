@@ -12,7 +12,7 @@ import (
 // spells the setup out again, so a check added to buildRunEnv reaches all
 // three.
 func TestRunAndReflectShareOneRunEnvSetup(t *testing.T) {
-	owned := []string{"agent.PlanEffort(", "checkTiers(", "registerSessionLLM(", "resolveModelFor(", "mainEffort(", "buildProvider("}
+	owned := []string{"agent.PlanEffort(", "checkTiers(", "registerSessionLLM(", "resolveModelFor(", "mainEffort(", "buildProvider(", "buildTeamRegistry("}
 	for _, file := range []string{"run.go", "reflect.go", "verifycritic.go"} {
 		// #nosec G304 -- fixed names in this package's own directory.
 		raw, err := os.ReadFile(file)

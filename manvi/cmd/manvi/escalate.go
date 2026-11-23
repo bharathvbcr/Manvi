@@ -63,7 +63,7 @@ func nextTier(profile agents.TierProfile, from agents.Tier) (agents.Tier, bool) 
 			continue
 		}
 		spec, held := profile[t]
-		if !held || strings.TrimSpace(spec.Model) == "" || spec.Model == current.Model {
+		if !held || strings.TrimSpace(spec.Model) == "" || spec.Same(current) {
 			continue
 		}
 		return t, true
@@ -92,6 +92,8 @@ func (r *subAgentRunner) escalate(ctx context.Context, cfg *subAgentConfig, req 
 		return declined("it was placed on the parent's model, not a tier")
 	case !agents.ParsePlacement(req.ModelSpec, nil).Inherits():
 		return declined("its role is pinned to a model by the operator")
+	case strings.TrimSpace(req.Member) != "":
+		return declined("it runs on team member " + req.Member + ", which the operator placed")
 	case req.Tier == agents.TierAdvisor:
 		return declined("the advisor is the top tier")
 	}

@@ -82,7 +82,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**CLI & Configuration Reference**](CLI_AND_CONFIGURATION.md)  
   Complete CLI subcommand reference, exit codes (`0` through `5`, `10` and `11` for `manvi run`, `6`/`7` for `manvi check`, `8`/`9` for `manvi --version --check`), full flag catalogue, mutability scopes (`human` vs `startup`), `.devcouncil/config.yaml` schema, and posture matrix.
 - [**DevCouncil Native Tool Suite Reference**](TOOLS_REFERENCE.md)  
-  Category summary of all 54 native tools (53 in a repository with no skills), with detailed parameter and permission specifications for Task Lifecycle, Guarded Mutation, Multi-Agent, Override Seam, Verification, Code Graph Navigation, Git Integration, and the External CLI Bridge. The dynamically activated groups (tool discovery, sub-agents, artifacts, questions, MCP) are specified alongside the rest.
+  Category summary of all 55 native tools (54 in a repository with no skills), with detailed parameter and permission specifications for Task Lifecycle, Guarded Mutation, Multi-Agent, Override Seam, Verification, Code Graph Navigation, Git Integration, and the External CLI Bridge. The dynamically activated groups (tool discovery, sub-agents, artifacts, questions, MCP) are specified alongside the rest.
 
 ---
 

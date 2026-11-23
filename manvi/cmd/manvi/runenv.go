@@ -47,6 +47,8 @@ func (e runEnv) subAgentConfig(reg *flags.Registry, pipeline *tools.Registry, na
 		effort:          e.effort,
 		effortCeiling:   e.effortCeiling,
 		tiers:           e.tiers.Profile(),
+		roster:          e.tiers.Roster,
+		fallbacks:       e.tiers.Fallbacks(),
 		registry:        pipeline,
 		native:          native,
 		meter:           meter,
@@ -85,7 +87,11 @@ func buildRunEnv(ctx context.Context, notes io.Writer, reg *flags.Registry, pipe
 			return runEnv{}, err
 		}
 	}
-	models, err := registerSessionLLM(pipeline, provider)
+	team, err := buildTeamRegistry(ctx, reg, resolver, notes, provider, tiers)
+	if err != nil {
+		return runEnv{}, err
+	}
+	models, err := registerSessionLLM(pipeline, team)
 	if err != nil {
 		return runEnv{}, err
 	}

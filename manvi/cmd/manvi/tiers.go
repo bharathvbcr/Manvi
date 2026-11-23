@@ -16,6 +16,8 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
+	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
+	"github.com/bharathvbcr/Manvi/manvi/llm/xai"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
@@ -45,6 +47,20 @@ func tierModelKey(t agents.Tier) string { return tierPrefix + t.String() }
 // tierEffortKey is the setting naming the effort requests at a tier carry.
 func tierEffortKey(t agents.Tier) string { return tierModelKey(t) + ".effort" }
 
+// tierFallbackKey is the setting naming where a child on a tier re-runs, once,
+// when its provider fails with a service condition the transport's own
+// retries could not outlast — rate limited, overloaded, unavailable. It must
+// name its provider: a fallback exists to leave the provider that failed.
+func tierFallbackKey(t agents.Tier) string { return tierModelKey(t) + ".fallback" }
+
+// rosterKey is the setting naming the operator's team: the members a
+// dispatching model may choose by name. It lives under the tier prefix because
+// it is the same kind of decision — which model, and so which price, a child
+// runs at — and so it inherits every scope rule a tier key has: refused from
+// the repository's config.yaml, accepted from the user config, the
+// environment and 'manvi flags set'. See agents.ParseRoster for the grammar.
+const rosterKey = tierPrefix + "roster"
+
 // isTierKey reports whether a config key belongs to the tier namespace. The
 // bare "llm.tier" counts: a scalar there is a typo for one of the keys under it,
 // and refusing it as a tier key says which rule it broke.
@@ -61,9 +77,15 @@ func tierFlagDefs() []flags.Def {
 		defs = append(defs,
 			flags.Def{
 				Key: tierModelKey(t), Kind: flags.KindString, Default: defaults[t].Model, Mutable: flags.HumanOnly,
-				Description: fmt.Sprintf("Model serving the %s tier, a bare id on the session's provider. "+
+				Description: fmt.Sprintf("Model serving the %s tier: a bare id, which runs on the session's provider, "+
+					"or provider/model, which runs on that provider. "+
 					"Operator scope: read from the user config, the environment, or flags set — "+
 					"never from the repository's config.yaml.", t),
+			},
+			flags.Def{
+				Key: tierFallbackKey(t), Kind: flags.KindString, Default: "", Mutable: flags.HumanOnly,
+				Description: fmt.Sprintf("Where a child on the %s tier re-runs, once, when its provider is rate limited, "+
+					"overloaded or unavailable after retries: provider/model. Empty means no fallback. Operator scope.", t),
 			},
 			flags.Def{
 				Key: tierEffortKey(t), Kind: flags.KindString, Default: defaults[t].Effort, Mutable: flags.HumanOnly,
@@ -72,6 +94,13 @@ func tierFlagDefs() []flags.Def {
 			},
 		)
 	}
+	defs = append(defs, flags.Def{
+		Key: rosterKey, Kind: flags.KindString, Default: "", Mutable: flags.HumanOnly,
+		Description: "The team a dispatching model may choose from by name: comma-separated " +
+			"name=tier:provider/model[@effort] entries, for example " +
+			"fable=advisor:anthropic/claude-fable-5-2,scout=basic:gemini/gemini-4-hydrogen. " +
+			"A member is admitted only at or below a role's ceiling, by its own tier. Operator scope, as a tier is.",
+	})
 	return defs
 }
 
@@ -416,23 +445,90 @@ func loadUserConfig(reg *flags.Registry, path, root string) error {
 // from. The keys are what a refusal names, and for the main tier they can be
 // MANVI_MODEL or llm.effort rather than a tier key, because those win.
 type tierRow struct {
-	Tier                          agents.Tier
+	Tier agents.Tier
+	// Provider is the provider the operator named for this tier with
+	// "provider/model", or empty for a bare id, which runs on the session's
+	// provider.
+	Provider                      string
 	Model, ModelKey, ModelFrom    string
 	Effort, EffortKey, EffortFrom string
+	// Fallback is where a child on this tier re-runs when its provider is
+	// unavailable, always naming its provider, and FallbackFrom where it was
+	// set. The zero spec means no fallback.
+	Fallback     agents.TierSpec
+	FallbackFrom string
 	// Ceiling is the session's llm.effort.max as this tier inherits it, set
 	// only once the row has been checked: empty where the tier's model cannot
 	// climb to it.
 	Ceiling string
 }
 
+// active reports whether the session applies this row. A row that names its
+// provider always applies: the operator said where it runs. A bare row applies
+// only where bare ids have always meant something, an anthropic session — the
+// shipped profile is Claude ids, and reading them on a Gemini session would
+// send every child to a model that provider does not serve.
+func (r tierRow) active(table tierTable) bool { return r.Provider != "" || table.Active }
+
+// provider is where the row runs: the provider it names, or the session's.
+func (r tierRow) provider(table tierTable) string {
+	if r.Provider != "" {
+		return r.Provider
+	}
+	return table.Provider
+}
+
+// placement is the row's model in the form Definition.Model uses.
+func (r tierRow) placement() string {
+	return agents.TierSpec{Provider: r.Provider, Model: r.Model}.Placement()
+}
+
 // tierTable is the resolved profile for one session provider.
 type tierTable struct {
 	Provider string
-	// Active is false off anthropic. The profile is catalogued against that
-	// provider only — a session's sub-agents can be placed only on its own
-	// provider — so elsewhere the values are reported and not applied.
+	// Active is whether bare tier ids apply: true on anthropic only, the one
+	// provider the shipped profile is catalogued against. A row that names its
+	// provider applies on any session; see tierRow.active.
 	Active bool
 	Rows   []tierRow
+	// Roster is the operator's team, and RosterFrom where it was set.
+	Roster     agents.Roster
+	RosterFrom string
+}
+
+// applies reports whether any row is applied on this session.
+func (t tierTable) applies() bool {
+	for _, r := range t.Rows {
+		if r.active(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// extraProviders lists the providers this session must build beside its own:
+// every provider an applied row or a team member names, sorted, without the
+// session's provider. They are built because the operator named them — a
+// provider nobody named is never constructed, so a credential nobody asked
+// for is never required and a local server nobody pointed at is never probed.
+func (t tierTable) extraProviders() []string {
+	var out []string
+	add := func(p string) {
+		if p != "" && p != t.Provider && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	for _, r := range t.Rows {
+		if r.active(t) {
+			add(r.Provider)
+		}
+		add(r.Fallback.Provider)
+	}
+	for _, p := range t.Roster.Providers() {
+		add(p)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // row returns the row for a tier; the table always has one per tier.
@@ -445,14 +541,16 @@ func (t tierTable) row(tier agents.Tier) tierRow {
 	return tierRow{Tier: tier}
 }
 
-// Profile is the table as the router reads it, or nil when it does not apply.
+// Profile is the table as the router reads it, or nil when no row applies.
 func (t tierTable) Profile() agents.TierProfile {
-	if !t.Active {
+	if !t.applies() {
 		return nil
 	}
 	profile := agents.TierProfile{}
 	for _, r := range t.Rows {
-		profile[r.Tier] = agents.TierSpec{Model: r.Model, Effort: r.Effort}
+		if r.active(t) {
+			profile[r.Tier] = agents.TierSpec{Provider: r.Provider, Model: r.Model, Effort: r.Effort}
+		}
 	}
 	return profile
 }
@@ -529,9 +627,92 @@ func resolveTiers(reg *flags.Registry, provider string) (tierTable, error) {
 		if err != nil {
 			return tierTable{}, err
 		}
+		if row, err = qualifyRow(row, provider); err != nil {
+			return tierTable{}, err
+		}
+		if row, err = readFallback(reg, row); err != nil {
+			return tierTable{}, err
+		}
 		table.Rows = append(table.Rows, row)
 	}
+	raw, from, err := tierSetting(reg, rosterKey)
+	if err != nil {
+		return tierTable{}, err
+	}
+	if table.Roster, err = agents.ParseRoster(raw); err != nil {
+		return tierTable{}, fmt.Errorf("%s (%s): %w", rosterKey, from, err)
+	}
+	table.RosterFrom = from
 	return table, nil
+}
+
+// readFallback reads a tier's fallback. A value that does not name its
+// provider is refused: the fallback is for leaving a provider that failed, and
+// a bare id would run on the session's provider, which is the one that failed
+// whenever the tier was on it.
+func readFallback(reg *flags.Registry, row tierRow) (tierRow, error) {
+	key := tierFallbackKey(row.Tier)
+	raw, from, err := tierSetting(reg, key)
+	if err != nil || raw == "" {
+		return row, err
+	}
+	provider, model, ok := strings.Cut(raw, "/")
+	provider, model = strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(model)
+	if !ok || provider == "" || model == "" {
+		return row, fmt.Errorf("tier %s: %s=%q (%s) must be provider/model", row.Tier, key, raw, from)
+	}
+	if !knownProvider(provider) {
+		return row, fmt.Errorf("tier %s: %s=%q (%s) names provider %q, which this harness has no adapter for (%s)",
+			row.Tier, key, raw, from, provider, strings.Join(providerNames(), ", "))
+	}
+	row.Fallback, row.FallbackFrom = agents.TierSpec{Provider: provider, Model: model}, from
+	return row, nil
+}
+
+// Fallbacks maps each tier that has a fallback to it.
+func (t tierTable) Fallbacks() map[agents.Tier]agents.TierSpec {
+	out := map[agents.Tier]agents.TierSpec{}
+	for _, r := range t.Rows {
+		if r.Fallback.Model != "" {
+			out[r.Tier] = r.Fallback
+		}
+	}
+	return out
+}
+
+// qualifyRow splits a "provider/model" tier value into its provider and model.
+// A bare value is left as it is and keeps running on the session's provider.
+//
+// The main tier may not move the session: llm.default_provider is the one
+// owner of which provider the dispatching agent runs on, and a main tier that
+// named another one would be a second answer to that question, applied to the
+// children's ladder and not to the parent. Naming the session's own provider
+// is the same as writing the bare id, and is read as that.
+func qualifyRow(row tierRow, session string) (tierRow, error) {
+	provider, model, ok := strings.Cut(row.Model, "/")
+	if !ok {
+		return row, nil
+	}
+	provider, model = strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return row, fmt.Errorf("tier %s: %s=%q (%s) must be a bare model id or provider/model",
+			row.Tier, row.ModelKey, row.Model, row.ModelFrom)
+	}
+	if !knownProvider(provider) {
+		return row, fmt.Errorf("tier %s: %s=%q (%s) names provider %q, which this harness has no adapter for (%s)",
+			row.Tier, row.ModelKey, row.Model, row.ModelFrom, provider, strings.Join(providerNames(), ", "))
+	}
+	row.Model = model
+	if provider == session {
+		return row, nil
+	}
+	if row.Tier == agents.TierMain {
+		return row, fmt.Errorf("tier main: %s=%q (%s) names provider %q, but this session runs on %q: "+
+			"the main tier is the dispatching agent itself, and %s decides its provider",
+			row.ModelKey, provider+"/"+model, row.ModelFrom, provider, session, flags.LLMDefaultProvider)
+	}
+	row.Provider = provider
+	return row, nil
 }
 
 // tierCatalogue is what a profile is checked against: whether the provider
@@ -558,19 +739,38 @@ func (anthropicTiers) PriceOf(model string) (budget.Prices, bool) { return anthr
 // unpriced request, and a profile that routes work to a model it can never
 // meter is a profile that fails mid-fan-out.
 func planTiers(table tierTable, cat tierCatalogue, capped bool, ceiling string) (tierTable, error) {
-	if !table.Active {
+	if !table.applies() && table.Roster.Len() == 0 && len(table.Fallbacks()) == 0 {
 		return table, nil
 	}
 	var errs []error
 	rows := append([]tierRow(nil), table.Rows...)
 	for i, r := range rows {
-		capability, ok := cat.Capability(r.Model)
-		if !ok {
-			errs = append(errs, fmt.Errorf("tier %s: %s=%q (%s) is not in the %s catalogue",
-				r.Tier, r.ModelKey, r.Model, r.ModelFrom, table.Provider))
+		if !r.active(table) {
 			continue
 		}
-		if _, priced := cat.PriceOf(r.Model); capped && !priced {
+		// A row on the session's provider is checked against cat, which the
+		// caller chose for that provider. A row that names another provider
+		// is checked against that provider's own shipped catalogue, and only
+		// an anthropic row can be priced against the cap, which meters
+		// anthropic alone.
+		rowCat, rowCapped := cat, capped
+		if r.Provider != "" {
+			shipped, ok := shippedCatalogue(r.Provider)
+			if !ok {
+				// local serves what its server serves; there is no shipped
+				// list to check against. buildRunEnv checks the row against
+				// the built provider before any child runs.
+				continue
+			}
+			rowCat, rowCapped = shipped, capped && r.Provider == anthropic.Name
+		}
+		capability, ok := rowCat.Capability(r.Model)
+		if !ok {
+			errs = append(errs, fmt.Errorf("tier %s: %s=%q (%s) is not in the %s catalogue",
+				r.Tier, r.ModelKey, r.Model, r.ModelFrom, r.provider(table)))
+			continue
+		}
+		if _, priced := rowCat.PriceOf(r.Model); rowCapped && !priced {
 			errs = append(errs, fmt.Errorf("tier %s: %s=%q (%s) has no price, and %s caps spend: "+
 				"a request a capped run cannot price is refused", r.Tier, r.ModelKey, r.Model, r.ModelFrom,
 				envAnthropicBudget))
@@ -585,12 +785,81 @@ func planTiers(table tierTable, cat tierCatalogue, capped bool, ceiling string) 
 			rows[i].Ceiling = ceiling
 		}
 	}
+	errs = append(errs, planRoster(table.Roster, capped, ceiling)...)
+	for _, r := range table.Rows {
+		if r.Fallback.Model == "" {
+			continue
+		}
+		if shipped, ok := shippedCatalogue(r.Fallback.Provider); ok {
+			if _, served := shipped.Capability(r.Fallback.Model); !served {
+				errs = append(errs, fmt.Errorf("tier %s: %s=%q (%s) is not in the %s catalogue",
+					r.Tier, tierFallbackKey(r.Tier), r.Fallback.Placement(), r.FallbackFrom, r.Fallback.Provider))
+			}
+		}
+	}
 	if len(errs) > 0 {
 		return table, errors.Join(errs...)
 	}
 	table.Rows = rows
 	return table, nil
 }
+
+// planRoster checks every team member the way planTiers checks a row that
+// names its provider: against that provider's shipped catalogue, its effort
+// against the model, and its price when the cap meters it.
+func planRoster(roster agents.Roster, capped bool, ceiling string) []error {
+	var errs []error
+	for _, m := range roster.Members() {
+		cat, ok := shippedCatalogue(m.Spec.Provider)
+		if !ok {
+			if !knownProvider(m.Spec.Provider) {
+				errs = append(errs, fmt.Errorf("%s: member %q names provider %q, which this harness has no adapter for (%s)",
+					rosterKey, m.Name, m.Spec.Provider, strings.Join(providerNames(), ", ")))
+			}
+			continue
+		}
+		capability, ok := cat.Capability(m.Spec.Model)
+		if !ok {
+			errs = append(errs, fmt.Errorf("%s: member %q runs %q, which is not in the %s catalogue",
+				rosterKey, m.Name, m.Spec.Model, m.Spec.Provider))
+			continue
+		}
+		if _, priced := cat.PriceOf(m.Spec.Model); capped && m.Spec.Provider == anthropic.Name && !priced {
+			errs = append(errs, fmt.Errorf("%s: member %q runs %q, which has no price, and %s caps spend",
+				rosterKey, m.Name, m.Spec.Model, envAnthropicBudget))
+		}
+		if _, err := agent.PlanTierEffort(capability, m.Spec.Effort, ceiling); err != nil {
+			errs = append(errs, fmt.Errorf("%s: member %q effort %q on %s: %w",
+				rosterKey, m.Name, m.Spec.Effort, m.Spec.Model, err))
+		}
+	}
+	return errs
+}
+
+// shippedCatalogue is the catalogue a provider ships with, for the providers
+// that have one. local has none: what it serves is whatever its server lists.
+func shippedCatalogue(provider string) (tierCatalogue, bool) {
+	switch provider {
+	case anthropic.Name:
+		return anthropicTiers{}, true
+	case gemini.Name:
+		return staticCatalogue{capability: gemini.Capability}, true
+	case xai.Name:
+		return staticCatalogue{capability: xai.Capability}, true
+	default:
+		return nil, false
+	}
+}
+
+// staticCatalogue is a shipped catalogue with no price table. A model in it is
+// served; none of them is priced, so a cap could not meter one — and no cap
+// meters these providers.
+type staticCatalogue struct {
+	capability func(string) (llm.Capability, bool)
+}
+
+func (s staticCatalogue) Capability(model string) (llm.Capability, bool) { return s.capability(model) }
+func (staticCatalogue) PriceOf(string) (budget.Prices, bool)             { return budget.Prices{}, false }
 
 // checkTiers resolves and checks the profile a session on provider will run,
 // against the shipped catalogue, the spend cap meterAnthropic reads, and the
@@ -642,6 +911,9 @@ func (t tierTable) inactiveOverrides() []string {
 	}
 	var set []string
 	for _, r := range t.Rows {
+		if r.active(t) {
+			continue
+		}
 		if r.ModelFrom != string(flags.OriginDefault) {
 			set = append(set, r.ModelKey)
 		}
@@ -677,9 +949,13 @@ func showTiers(out io.Writer, reg *flags.Registry) error {
 // command returns it, and the dispatcher prints it once, on stderr.
 func writeTierTable(out io.Writer, table tierTable) error {
 	var b strings.Builder
-	if table.Active {
+	switch {
+	case table.Active:
 		fmt.Fprintf(&b, "tier profile on %s\n\n", table.Provider)
-	} else {
+	case table.applies():
+		fmt.Fprintf(&b, "tier profile on %s — bare ids are catalogued against %s only, so only the tiers that "+
+			"name their provider are applied\n\n", table.Provider, anthropic.Name)
+	default:
 		fmt.Fprintf(&b, "tier profile — inactive on %s: it is catalogued against %s only, so these values "+
 			"are reported and not applied\n\n", table.Provider, anthropic.Name)
 	}
@@ -691,10 +967,27 @@ func writeTierTable(out io.Writer, table tierTable) error {
 		if ceiling == "" {
 			ceiling = "-"
 		}
-		fmt.Fprintf(&b, "  %-8s %-18s from %s (%s) · effort %s from %s (%s) · ceiling %s\n",
-			r.Tier, r.Model, r.ModelKey, r.ModelFrom, effort, r.EffortKey, r.EffortFrom, ceiling)
+		applied := ""
+		if !r.active(table) && table.applies() {
+			applied = " · not applied"
+		}
+		if r.Fallback.Model != "" {
+			applied += " · fallback " + r.Fallback.Placement()
+		}
+		fmt.Fprintf(&b, "  %-8s %-18s from %s (%s) · effort %s from %s (%s) · ceiling %s%s\n",
+			r.Tier, r.placement(), r.ModelKey, r.ModelFrom, effort, r.EffortKey, r.EffortFrom, ceiling, applied)
 	}
-	if table.Active {
+	if members := table.Roster.Members(); len(members) > 0 {
+		fmt.Fprintf(&b, "\nteam (%s, %s)\n", rosterKey, table.RosterFrom)
+		for _, m := range members {
+			effort := m.Spec.Effort
+			if effort == "" {
+				effort = "-"
+			}
+			fmt.Fprintf(&b, "  %-12s %-8s %s · effort %s\n", m.Name, m.Tier, m.Placement(), effort)
+		}
+	}
+	if table.applies() {
 		fmt.Fprintf(&b, "\nMANVI_MODEL beats the main tier's model and %s its effort. A tier is set with %s*, "+
 			"in %s, or with 'manvi flags set'; never from the repository's config.yaml.\n",
 			flags.LLMEffort, flags.EnvKey(tierPrefix), userConfigHint())
