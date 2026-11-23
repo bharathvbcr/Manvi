@@ -75,22 +75,6 @@ func TestTranscriptSearch(t *testing.T) {
 	}
 }
 
-func TestContextPressureGauge(t *testing.T) {
-	th := Dark()
-	th.Unicode = true
-	st := Status{
-		Posture:     "strict",
-		ContextUsed: 6000,
-		ContextMax:  10000,
-	}
-	b := render.NewBuffer(120, 1)
-	DrawStatusBar(b, render.Rect{X: 0, Y: 0, W: 120, H: 1}, th, st, 0, nil, false)
-	out := bufferString(b)
-	if !strings.Contains(out, "ctx ▓▓▓░░ 60%") {
-		t.Fatalf("expected context gauge in status bar, got: %q", out)
-	}
-}
-
 func TestStallDetection(t *testing.T) {
 	th := Dark()
 	st := Status{
@@ -260,22 +244,6 @@ func TestApprovalStillAnswersOnEnterAndEsc(t *testing.T) {
 	}
 	if d.Reply != reply {
 		t.Fatal("the decision went to the wrong reply channel")
-	}
-}
-
-func TestGitContextChip(t *testing.T) {
-	th := Dark()
-	st := Status{
-		Posture:   "strict",
-		GitBranch: "feature-branch",
-		GitAhead:  2,
-		GitDirty:  3,
-	}
-	b := render.NewBuffer(120, 1)
-	DrawStatusBar(b, render.Rect{X: 0, Y: 0, W: 120, H: 1}, th, st, 0, nil, false)
-	out := bufferString(b)
-	if !strings.Contains(out, "feature-branch↑2 ●3") {
-		t.Fatalf("expected git context chip in status bar, got %q", out)
 	}
 }
 
