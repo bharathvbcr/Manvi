@@ -279,3 +279,144 @@ func TestHistoryRoundTripKeepsTheDraftsPaste(t *testing.T) {
 		t.Fatalf("history round trip lost the paste: %.60q", p.Value())
 	}
 }
+
+func TestDoublePasteExpandsChipInlineForEditing(t *testing.T) {
+	p := NewPrompt()
+	body := "line1\n" + padTo(220, 'x')
+	p.InsertString("prefix ")
+	chip := p.InsertPaste(body)
+	if chip == "" {
+		t.Fatal("first large paste did not create a chip")
+	}
+	p.InsertString(" suffix")
+	// Position cursor immediately after the chip (before " suffix").
+	p.SetCursor(len([]rune("prefix " + chip)))
+
+	if got := p.InsertPaste(body); got != "" {
+		t.Fatalf("consecutive identical paste returned chip %q, want inline expansion", got)
+	}
+	want := "prefix " + body + " suffix"
+	if got := p.RawValue(); got != want {
+		t.Fatalf("RawValue() = %.60q, want inline %q", got, want)
+	}
+	if got := p.Value(); got != want {
+		t.Fatalf("Value() = %.60q, want %q", got, want)
+	}
+	if got := p.InspectPastes(); len(got) != 0 {
+		t.Fatalf("InspectPastes() = %#v, want empty after inline expansion", got)
+	}
+	// Cursor sits at the end of the expanded body, right before " suffix".
+	p.InsertString("!")
+	if got, wantEdited := p.RawValue(), "prefix "+body+"! suffix"; got != wantEdited {
+		t.Fatalf("after edit at cursor: RawValue() = %.60q, want %.60q", got, wantEdited)
+	}
+
+	// Undo past the edit and past the double-paste expansion must bring the
+	// collapsed chip back and keep Value() expanding to body.
+	if !p.Undo() {
+		t.Fatal("Undo of edit after double-paste failed")
+	}
+	if !p.Undo() {
+		t.Fatal("Undo of double-paste expansion failed")
+	}
+	wantRaw := "prefix " + chip + " suffix"
+	if got := p.RawValue(); got != wantRaw {
+		t.Fatalf("after Undo: RawValue() = %q, want %q", got, wantRaw)
+	}
+	if got := p.Value(); got != want {
+		t.Fatalf("after Undo: Value() = %.60q, want %q", got, want)
+	}
+	if chips := p.InspectPastes(); len(chips) != 1 || chips[0].Label != chip {
+		t.Fatalf("after Undo: InspectPastes() = %#v, want [%q]", chips, chip)
+	}
+
+	// Pasting the same payload again later collapses into a fresh chip.
+	p2 := NewPrompt()
+	_ = p2.InsertPaste(body)
+	_ = p2.InsertPaste(body) // expands inline
+	third := p2.InsertPaste(body)
+	if third == "" {
+		t.Fatal("third paste after inline expansion should collapse into a new chip")
+	}
+	if got, wantV := p2.Value(), body+body; got != wantV {
+		t.Fatalf("Value() after third paste len=%d, want len=%d", len(got), len(wantV))
+	}
+}
+
+func TestDoublePasteRequiresAdjacentIdenticalChip(t *testing.T) {
+	p := NewPrompt()
+	a := padTo(250, 'a')
+	b := padTo(250, 'b')
+
+	c1 := p.InsertPaste(a)
+	p.InsertString(" ")
+	c2 := p.InsertPaste(a) // separated by space: must stay a second chip
+	if c2 == "" || c2 == c1 {
+		t.Fatalf("separated identical paste returned %q (first %q)", c2, c1)
+	}
+	c3 := p.InsertPaste(b) // different payload immediately after c2: stays a chip
+	if c3 == "" {
+		t.Fatal("different payload should not expand previous chip")
+	}
+	chips := p.InspectPastes()
+	if len(chips) != 3 {
+		t.Fatalf("InspectPastes() count = %d, want 3", len(chips))
+	}
+
+	// Dead chip after Clear is never expanded by double-paste.
+	p.Clear()
+	p.InsertString(c1)
+	if got := p.InsertPaste(a); got == "" {
+		t.Fatal("dead chip label typed after Clear was unexpectedly expanded")
+	}
+}
+
+func TestInspectPastesReportsActiveChipsInOrder(t *testing.T) {
+	p := NewPrompt()
+	multi := "alpha\nbeta\n" + padTo(210, 'm')
+	single := padTo(230, 's')
+
+	c1 := p.InsertPaste(multi)
+	p.InsertString(" then ")
+	c2 := p.InsertPaste(single)
+
+	got := p.InspectPastes()
+	if len(got) != 2 {
+		t.Fatalf("InspectPastes() len = %d, want 2", len(got))
+	}
+	if got[0].Label != c1 || got[0].Text != multi || got[0].Lines != 3 || got[0].Chars != len(multi) {
+		t.Fatalf("chip[0] = %#v, want label=%q lines=3 chars=%d", got[0], c1, len(multi))
+	}
+	if got[1].Label != c2 || got[1].Text != single || got[1].Lines != 1 || got[1].Chars != len(single) {
+		t.Fatalf("chip[1] = %#v, want label=%q lines=1 chars=%d", got[1], c2, len(single))
+	}
+
+	// Deleting the second chip removes it from InspectPastes immediately.
+	for range []rune(c2) {
+		p.Backspace()
+	}
+	gotAfter := p.InspectPastes()
+	if len(gotAfter) != 1 || gotAfter[0].Label != c1 {
+		t.Fatalf("InspectPastes() after deleting c2 = %#v, want only %q", gotAfter, c1)
+	}
+}
+
+func TestInsertPasteSanitizesControlsAndCapsSize(t *testing.T) {
+	p := NewPrompt()
+	raw := "first\r\nsecond\rthird\t\x00\x1b[31mred\x7f\u0080\u009b!" + padTo(maxPasteBytes+1024, 'z')
+	chip := p.InsertPaste(raw)
+	if chip == "" {
+		t.Fatal("expected large sanitized paste to create a chip")
+	}
+	got := p.Value()
+	if len(got) > maxPasteBytes {
+		t.Fatalf("sanitized paste len = %d, want <= %d", len(got), maxPasteBytes)
+	}
+	wantPrefix := "first\nsecond\nthird\t[31mred!"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("sanitized paste prefix = %q, want %q", got[:len(wantPrefix)+5], wantPrefix)
+	}
+	if strings.ContainsAny(got, "\r\x00\x1b\x7f\u0080\u009b") {
+		t.Fatal("control characters survived InsertPaste sanitization")
+	}
+}

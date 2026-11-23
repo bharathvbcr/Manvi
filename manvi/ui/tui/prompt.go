@@ -5,9 +5,19 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
+
+// maxPasteBytes bounds any single pasted payload so unbounded clipboard contents
+// cannot exhaust memory.
+const maxPasteBytes = 1 << 20
+
+type undoSnapshot struct {
+	runes  []rune
+	pastes map[string]string
+}
 
 // Prompt is the composer: a text editor with history, word motion, and the
 // trigger detection that drives slash-command and file completion.
@@ -32,7 +42,7 @@ type Prompt struct {
 	// killRing holds text removed by delete-word / delete-line operations.
 	killRing []string
 	// undoStack holds previous buffer snapshots for Ctrl+Z / undo.
-	undoStack [][]rune
+	undoStack []undoSnapshot
 	// pastes tracks the collapsed paste chips of the text being composed, and
 	// their original text. It lives for one composition: Clear (and so Submit)
 	// empties it, SetValue keeps only what the new text still shows, and every
@@ -51,6 +61,15 @@ type Prompt struct {
 	Multiline bool
 	// Placeholder is shown when the buffer is empty.
 	Placeholder string
+}
+
+// PasteChip describes an active collapsed paste chip currently present in the
+// composer buffer.
+type PasteChip struct {
+	Label string
+	Text  string
+	Lines int
+	Chars int
 }
 
 // Rotating placeholder tips for feature discovery.
@@ -91,9 +110,9 @@ func (p *Prompt) Value() string {
 // the text shows are replaced; one that was deleted from the buffer stands for
 // nothing. Where two chips could match at one place the longer wins, which
 // makes that choice a rule rather than an accident.
-func (p *Prompt) expand(s string) (string, bool) {
+func (p *Prompt) sortedChips() []string {
 	if len(p.pastes) == 0 {
-		return s, false
+		return nil
 	}
 	chips := make([]string, 0, len(p.pastes))
 	for chip := range p.pastes {
@@ -105,6 +124,14 @@ func (p *Prompt) expand(s string) (string, bool) {
 		}
 		return chips[i] < chips[j]
 	})
+	return chips
+}
+
+func (p *Prompt) expand(s string) (string, bool) {
+	chips := p.sortedChips()
+	if len(chips) == 0 {
+		return s, false
+	}
 	var b strings.Builder
 	expanded := false
 	for i := 0; i < len(s); {
@@ -152,13 +179,107 @@ func (p *Prompt) forgetAbsentPastes(text string) {
 // RawValue returns the literal runes in the buffer without expanding paste chips.
 func (p *Prompt) RawValue() string { return string(p.runes) }
 
-// InsertPaste inserts text, collapsing large pastes (>200 chars) into a compact chip.
+// InspectPastes returns the active collapsed paste chips currently present in
+// the composer buffer, in left-to-right appearance order.
+func (p *Prompt) InspectPastes() []PasteChip {
+	out := []PasteChip{}
+	chips := p.sortedChips()
+	if len(chips) == 0 {
+		return out
+	}
+	s := string(p.runes)
+	for i := 0; i < len(s); {
+		if s[i] == '[' {
+			if chip := matchChip(s[i:], chips); chip != "" {
+				text := p.pastes[chip]
+				out = append(out, PasteChip{
+					Label: chip,
+					Text:  text,
+					Lines: strings.Count(text, "\n") + 1,
+					Chars: len(text),
+				})
+				i += len(chip)
+				continue
+			}
+		}
+		i++
+	}
+	return out
+}
+
+// expandConsecutivePaste replaces a collapsed chip immediately before the
+// cursor with its raw inline text when the exact same payload (>200 chars) is
+// pasted a second time consecutively.
+func (p *Prompt) expandConsecutivePaste(s string) bool {
+	if len(p.pastes) == 0 {
+		return false
+	}
+	before := string(p.runes[:p.cursor])
+	for _, chip := range p.sortedChips() {
+		if p.pastes[chip] != s || !strings.HasSuffix(before, chip) {
+			continue
+		}
+		chipLen := len([]rune(chip))
+		start := p.cursor - chipLen
+		p.saveUndo()
+		rs := []rune(s)
+		tail := append([]rune(nil), p.runes[p.cursor:]...)
+		p.runes = append(append(p.runes[:start], rs...), tail...)
+		p.cursor = start + len(rs)
+		delete(p.pastes, chip)
+		if len(p.pastes) == 0 {
+			p.pastes = nil
+		}
+		return true
+	}
+	return false
+}
+
+// sanitizePasteText normalizes CRLF/CR line endings to LF, strips C0/DEL/C1
+// control characters (preserving \n and \t), and caps the payload to maxPasteBytes.
+func sanitizePasteText(s string) string {
+	if len(s) > maxPasteBytes {
+		cut := maxPasteBytes
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case r == '\r':
+			if i < len(s) && s[i] == '\n' {
+				i++
+			}
+			b.WriteByte('\n')
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+			// Strip C0, DEL, and C1 control characters.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// InsertPaste inserts text, collapsing large pastes (>200 chars) into a compact
+// chip. Pasting the exact same large payload consecutively while its chip sits
+// immediately before the cursor expands that chip inline for quick editing.
 func (p *Prompt) InsertPaste(s string) string {
+	s = sanitizePasteText(s)
 	if len(s) <= 200 {
 		p.InsertString(s)
 		return ""
 	}
 	p.forgetAbsentPastes(string(p.runes))
+	if p.expandConsecutivePaste(s) {
+		return ""
+	}
 	if p.pastes == nil {
 		p.pastes = make(map[string]string)
 	}
@@ -214,6 +335,9 @@ func (p *Prompt) Clear() {
 	// the next prompt that merely mentions the chip's words, which re-sends
 	// whatever was pasted, a credential included.
 	p.pastes = nil
+	for i := range p.undoStack {
+		p.undoStack[i].pastes = nil
+	}
 }
 
 func (p *Prompt) saveUndo() {
@@ -226,7 +350,17 @@ func (p *Prompt) saveUndo() {
 	if len(p.runes) == 0 && len(p.undoStack) == 0 {
 		return
 	}
-	snapshot := append([]rune(nil), p.runes...)
+	var pastesCopy map[string]string
+	if len(p.pastes) > 0 {
+		pastesCopy = make(map[string]string, len(p.pastes))
+		for k, v := range p.pastes {
+			pastesCopy[k] = v
+		}
+	}
+	snapshot := undoSnapshot{
+		runes:  append([]rune(nil), p.runes...),
+		pastes: pastesCopy,
+	}
 	p.undoStack = append(p.undoStack, snapshot)
 	if len(p.undoStack) > 50 {
 		p.undoStack = p.undoStack[len(p.undoStack)-50:]
@@ -250,7 +384,15 @@ func (p *Prompt) Undo() bool {
 	}
 	prev := p.undoStack[len(p.undoStack)-1]
 	p.undoStack = p.undoStack[:len(p.undoStack)-1]
-	p.runes = append([]rune(nil), prev...)
+	p.runes = append([]rune(nil), prev.runes...)
+	if len(prev.pastes) > 0 {
+		p.pastes = make(map[string]string, len(prev.pastes))
+		for k, v := range prev.pastes {
+			p.pastes[k] = v
+		}
+	} else {
+		p.pastes = nil
+	}
 	if p.cursor > len(p.runes) {
 		p.cursor = len(p.runes)
 	}
