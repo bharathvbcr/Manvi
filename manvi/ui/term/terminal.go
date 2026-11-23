@@ -47,12 +47,13 @@ type Terminal struct {
 
 	profile render.Profile
 	unicode bool
-	// mouse, motion, paste, and focus record what was enabled, so teardown disables
-	// exactly what setup turned on.
+	// mouse, motion, paste, focus, and kitty record what was enabled, so
+	// teardown disables exactly what setup turned on.
 	mouse  bool
 	motion bool
 	paste  bool
 	focus  bool
+	kitty  bool
 
 	// status is the title and progress indicator this run has written, so
 	// both can be taken back. See status.go.
@@ -135,8 +136,22 @@ type Options struct {
 	BracketedPaste bool
 	// Focus enables focus in/out reporting (CSI ?1004h).
 	Focus bool
+	// KittyKeyboard pushes Kitty keyboard disambiguation mode (CSI >1u) so
+	// Shift+Enter, Ctrl+Shift+letter, and Tab vs Ctrl+I arrive unambiguously on
+	// modern terminals; terminals that do not support it ignore the sequence.
+	KittyKeyboard bool
 	// Title, when set, is written to the window title and restored on exit.
 	Title string
+}
+
+// Started reports whether the terminal is currently owned in raw mode.
+func (t *Terminal) Started() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.started
 }
 
 // Start puts the terminal into raw mode and applies the options.
@@ -189,6 +204,10 @@ func (t *Terminal) Start(opts Options) error {
 	if opts.Focus {
 		b.WriteString("\x1b[?1004h")
 		t.focus = true
+	}
+	if opts.KittyKeyboard {
+		b.WriteString("\x1b[>1u")
+		t.kitty = true
 	}
 	b.WriteString("\x1b[?25l") // hide the cursor; the painter places it
 	if _, err := io.WriteString(t.out, b.String()); err != nil {
@@ -247,6 +266,10 @@ func (t *Terminal) restoreLocked() error {
 	}
 
 	var b strings.Builder
+	if t.kitty {
+		b.WriteString("\x1b[<u")
+		t.kitty = false
+	}
 	if t.focus {
 		b.WriteString("\x1b[?1004l")
 		t.focus = false
@@ -328,7 +351,7 @@ func (t *Terminal) Suspend() error {
 	}
 
 	t.mu.Lock()
-	saved, mouse, paste := t.saved, t.mouse, t.paste
+	saved, mouse, motion, paste, focus, kitty := t.saved, t.mouse, t.motion, t.paste, t.focus, t.kitty
 	// The tab must not go on saying an agent is running while the process is
 	// stopped and a shell has the terminal. Settling also forgets what was
 	// written, so the first frame after the resume writes both again.
@@ -343,7 +366,25 @@ func (t *Terminal) Suspend() error {
 
 	// Hand the terminal back before stopping. A process suspended while the tty
 	// is raw leaves the shell with no echo and no line editing.
-	_, _ = io.WriteString(t.out, "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l"+settle)
+	var down strings.Builder
+	if kitty {
+		down.WriteString("\x1b[<u")
+	}
+	if focus {
+		down.WriteString("\x1b[?1004l")
+	}
+	if paste {
+		down.WriteString("\x1b[?2004l")
+	}
+	if motion {
+		down.WriteString("\x1b[?1003l")
+	}
+	if mouse {
+		down.WriteString("\x1b[?1006l\x1b[?1002l\x1b[?1000l")
+	}
+	down.WriteString("\x1b[0m\x1b[?25h\x1b[?1049l")
+	down.WriteString(settle)
+	_, _ = io.WriteString(t.out, down.String())
 	if err := setState(t.in.Fd(), saved); err != nil {
 		return err
 	}
@@ -371,8 +412,17 @@ func (t *Terminal) Suspend() error {
 	if mouse {
 		b.WriteString("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
 	}
+	if motion {
+		b.WriteString("\x1b[?1003h")
+	}
 	if paste {
 		b.WriteString("\x1b[?2004h")
+	}
+	if focus {
+		b.WriteString("\x1b[?1004h")
+	}
+	if kitty {
+		b.WriteString("\x1b[>1u")
 	}
 	b.WriteString("\x1b[?25l")
 	if _, err := io.WriteString(t.out, b.String()); err != nil {

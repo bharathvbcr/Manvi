@@ -76,6 +76,17 @@ type Scrollback struct {
 	searchQuery string
 	matches     []int
 	matchIdx    int
+
+	// StackWork groups runs of intermediate work entries (thoughts, tool calls,
+	// tool results, sub-agent activity) within a turn into one collapsible
+	// workCapsule row, while keeping policy/failure/grant rows pinned visibly.
+	StackWork bool
+	// expandedCapsules records capsule start indices opened by the operator.
+	expandedCapsules map[int]bool
+	// sel holds an active cell-level mouse drag selection in layout-row space.
+	sel TextSelection
+	// hoverEntry is the entry currently under the mouse pointer, or -1.
+	hoverEntry int
 }
 
 // rowRef points a rendered row back at the entry that produced it.
@@ -89,6 +100,9 @@ type rowRef struct {
 	// belongs to the layout and not to the entry's own rows, so an entry renders
 	// the same wherever it sits and the row caches never hold a spacer.
 	gap bool
+	// capsuleStart is the start entry index of a workCapsule header row, or -1
+	// for normal rows.
+	capsuleStart int
 }
 
 // layoutSlot is the flattened row index at one width and theme.
@@ -97,9 +111,10 @@ type rowRef struct {
 // entry, and rebuilding every row of a long transcript for it — once per frame
 // for the length of a turn — was the bulk of what a frame cost.
 type layoutSlot struct {
-	rows  []rowRef
-	width int
-	theme string
+	rows      []rowRef
+	width     int
+	theme     string
+	stackWork bool
 	// valid is how many leading entries rows still describes correctly. Every
 	// change to an entry's rendering lowers it to that entry's index; a layout
 	// pass re-renders from there to the end and leaves the prefix alone.
@@ -109,7 +124,7 @@ type layoutSlot struct {
 
 // NewScrollback builds an empty transcript.
 func NewScrollback() *Scrollback {
-	return &Scrollback{follow: true, selected: -1, MaxEntries: 5000, barCol: -1}
+	return &Scrollback{follow: true, selected: -1, hoverEntry: -1, MaxEntries: 5000, barCol: -1}
 }
 
 // ScrollbarCol is the screen column of the last frame's scrollbar, or -1 when
@@ -251,6 +266,16 @@ func (s *Scrollback) Append(ev ui.Event) {
 				s.selected = -1
 			}
 		}
+		if len(s.expandedCapsules) > 0 {
+			shifted := make(map[int]bool, len(s.expandedCapsules))
+			for idx, open := range s.expandedCapsules {
+				if open && idx >= drop {
+					shifted[idx-drop] = true
+				}
+			}
+			s.expandedCapsules = shifted
+		}
+		s.sel.Clear()
 	}
 }
 
@@ -386,6 +411,21 @@ func gapBefore(prev, cur *Entry) bool {
 func (s *Scrollback) rows(th Theme, width int) []rowRef {
 	slot := s.slotFor(th.Name, width)
 	if slot.valid < len(s.entries) {
+		// When StackWork is active, a new work entry can change the header
+		// summary of an open work run that started earlier, so step valid back
+		// to the start of that contiguous work run.
+		if s.StackWork && slot.valid > 0 && slot.valid <= len(s.entries) {
+			back := slot.valid
+			if back == len(s.entries) {
+				back--
+			}
+			for back > 0 && isWorkEntry(s.entries[back-1].Event.Kind) {
+				back--
+			}
+			if back < slot.valid {
+				slot.valid = back
+			}
+		}
 		// Rows are grouped by entry in order, so the stale ones are a suffix.
 		keep := len(slot.rows)
 		for keep > 0 && slot.rows[keep-1].entry >= slot.valid {
@@ -400,6 +440,52 @@ func (s *Scrollback) rows(th Theme, width int) []rowRef {
 			above--
 		}
 		for i := slot.valid; i < len(s.entries); i++ {
+			if s.StackWork && isWorkEntry(s.entries[i].Event.Kind) {
+				end := i + 1
+				for end < len(s.entries) && isWorkEntry(s.entries[end].Event.Kind) {
+					end++
+				}
+				cap := buildWorkCapsule(s.entries, i, end)
+				if cap.visibleCount(s.entries) >= 2 {
+					if above >= 0 && gapBefore(s.entries[above], s.entries[i]) && !blankTail(out) {
+						out = append(out, rowRef{entry: i, gap: true, capsuleStart: -1})
+					}
+					expanded := s.expandedCapsules[i]
+					out = append(out, rowRef{
+						entry:        i,
+						line:         cap.headerLine(th, width, expanded),
+						first:        true,
+						capsuleStart: i,
+					})
+					if !expanded {
+						// Safety invariant: always show pinned blocks/failures/grants/degraded/warns.
+						for _, pi := range cap.pinned {
+							for j, l := range s.entries[pi].Lines(th, width) {
+								out = append(out, rowRef{entry: pi, line: l, first: j == 0, capsuleStart: -1})
+							}
+						}
+					} else {
+						for k := i; k < end; k++ {
+							if s.entries[k].absorbed {
+								continue
+							}
+							for j, l := range s.entries[k].Lines(th, width) {
+								out = append(out, rowRef{entry: k, line: l, first: j == 0, capsuleStart: -1})
+							}
+						}
+					}
+					above = end - 1
+					for above >= i && s.entries[above].absorbed {
+						above--
+					}
+					if above < i {
+						above = i
+					}
+					i = end - 1
+					continue
+				}
+			}
+
 			if s.entries[i].absorbed {
 				continue
 			}
@@ -407,10 +493,10 @@ func (s *Scrollback) rows(th Theme, width int) []rowRef {
 			// a line break leaves one, and two blank rows read as a section
 			// break the transcript does not have.
 			if above >= 0 && gapBefore(s.entries[above], s.entries[i]) && !blankTail(out) {
-				out = append(out, rowRef{entry: i, gap: true})
+				out = append(out, rowRef{entry: i, gap: true, capsuleStart: -1})
 			}
 			for j, l := range s.entries[i].Lines(th, width) {
-				out = append(out, rowRef{entry: i, line: l, first: j == 0})
+				out = append(out, rowRef{entry: i, line: l, first: j == 0, capsuleStart: -1})
 			}
 			above = i
 		}
@@ -443,7 +529,7 @@ func (s *Scrollback) slotFor(theme string, width int) *layoutSlot {
 	s.useTick++
 	pick := -1
 	for i := range s.slots {
-		if s.slots[i].used && s.slots[i].width == width && s.slots[i].theme == theme {
+		if s.slots[i].used && s.slots[i].width == width && s.slots[i].theme == theme && s.slots[i].stackWork == s.StackWork {
 			pick = i
 			break
 		}
@@ -455,7 +541,7 @@ func (s *Scrollback) slotFor(theme string, width int) *layoutSlot {
 		}
 		// The row slice is reused rather than reallocated; a slot changes
 		// width on a resize, and the rows it held are all replaced.
-		s.slots[pick] = layoutSlot{rows: s.slots[pick].rows[:0], width: width, theme: theme, used: true}
+		s.slots[pick] = layoutSlot{rows: s.slots[pick].rows[:0], width: width, theme: theme, stackWork: s.StackWork, used: true}
 	}
 	s.slotUse[pick] = s.useTick
 	return &s.slots[pick]
@@ -467,7 +553,7 @@ func (s *Scrollback) slotFor(theme string, width int) *layoutSlot {
 func (s *Scrollback) retain(theme string, w1, w2 int) {
 	for i := range s.slots {
 		sl := &s.slots[i]
-		if sl.used && (sl.theme != theme || (sl.width != w1 && sl.width != w2)) {
+		if sl.used && (sl.theme != theme || sl.stackWork != s.StackWork || (sl.width != w1 && sl.width != w2)) {
 			s.slots[i] = layoutSlot{}
 		}
 	}
@@ -605,23 +691,146 @@ func (s *Scrollback) SelectDelta(n int, th Theme) {
 // SelectNone clears the selection and returns to following.
 func (s *Scrollback) SelectNone() { s.selected = -1 }
 
-// SelectAt selects whichever entry owns a screen row, for a mouse click.
-//
-// It reads the layout the last frame was built from rather than rebuilding one,
-// so the row the operator clicked is the row that was on screen.
-func (s *Scrollback) SelectAt(y int) bool {
+// RowAt maps a screen Y coordinate to a layout row index, returning false if
+// outside the rendered transcript rows.
+func (s *Scrollback) RowAt(y int) (int, bool) {
 	if s.view.H == 0 || y < s.view.Y || y >= s.view.Bottom() {
-		return false
+		return -1, false
 	}
 	idx := s.scroll + (y - s.view.Y - s.pad)
 	if s.dropped > 0 {
 		idx--
 	}
 	if idx < 0 || idx >= len(s.layout) {
+		return -1, false
+	}
+	return idx, true
+}
+
+// ColAt maps a screen X coordinate to a viewport-relative column clamped to
+// the transcript body width.
+func (s *Scrollback) ColAt(x int) int {
+	col := x - s.view.X
+	if col < 0 {
+		return 0
+	}
+	if s.viewW > 0 && col >= s.viewW {
+		return s.viewW - 1
+	}
+	return col
+}
+
+// SelectAt selects whichever entry owns a screen row, for a mouse click.
+//
+// It reads the layout the last frame was built from rather than rebuilding one,
+// so the row the operator clicked is the row that was on screen.
+func (s *Scrollback) SelectAt(y int) bool {
+	idx, ok := s.RowAt(y)
+	if !ok {
 		return false
 	}
 	s.selected = s.layout[idx].entry
 	return true
+}
+
+// CapsuleAt reports the capsule start index if screen row y is a capsule header,
+// or -1 otherwise.
+func (s *Scrollback) CapsuleAt(y int) int {
+	idx, ok := s.RowAt(y)
+	if !ok {
+		return -1
+	}
+	return s.layout[idx].capsuleStart
+}
+
+// ToggleCapsule opens or closes the work capsule starting at startIdx.
+func (s *Scrollback) ToggleCapsule(startIdx int) bool {
+	if startIdx < 0 || startIdx >= len(s.entries) {
+		return false
+	}
+	if s.expandedCapsules == nil {
+		s.expandedCapsules = map[int]bool{}
+	}
+	s.expandedCapsules[startIdx] = !s.expandedCapsules[startIdx]
+	s.changed(startIdx)
+	return true
+}
+
+// ToggleStackWork switches between compact stacked work capsules and the full
+// verbose work stream (Ctrl+O), returning the new StackWork value.
+func (s *Scrollback) ToggleStackWork() bool {
+	s.StackWork = !s.StackWork
+	s.touch()
+	return s.StackWork
+}
+
+// HoverAt updates the hovered entry under screen point (x, y) and reports
+// whether it changed.
+func (s *Scrollback) HoverAt(x, y int) bool {
+	next := -1
+	if s.Contains(x, y) {
+		if idx, ok := s.RowAt(y); ok {
+			next = s.layout[idx].entry
+		}
+	}
+	if next == s.hoverEntry {
+		return false
+	}
+	s.hoverEntry = next
+	return true
+}
+
+// BeginDrag starts a cell-level text selection at screen point (x, y).
+func (s *Scrollback) BeginDrag(x, y int) bool {
+	row, ok := s.RowAt(y)
+	if !ok {
+		s.sel.Clear()
+		return false
+	}
+	s.sel.Begin(row, s.ColAt(x))
+	return true
+}
+
+// UpdateDrag extends a cell-level selection as the pointer moves.
+func (s *Scrollback) UpdateDrag(x, y int) bool {
+	if !s.sel.Dragging {
+		return false
+	}
+	row, ok := s.RowAt(y)
+	if !ok {
+		if len(s.layout) == 0 {
+			return false
+		}
+		if y < s.view.Y {
+			row = s.scroll
+		} else {
+			row = min(s.scroll+s.view.H-1, len(s.layout)-1)
+		}
+		if row < 0 {
+			row = 0
+		}
+	}
+	return s.sel.Update(row, s.ColAt(x))
+}
+
+// EndDrag completes a drag and returns the extracted plain text if a non-empty
+// selection was dragged.
+func (s *Scrollback) EndDrag() string {
+	if !s.sel.End() {
+		return ""
+	}
+	return s.sel.Extract(s.layout)
+}
+
+// ClearSelection clears any active drag selection.
+func (s *Scrollback) ClearSelection() { s.sel.Clear() }
+
+// DragSelectedText returns the current drag-selected text, or empty if none.
+func (s *Scrollback) DragSelectedText() string {
+	if !s.sel.Active {
+		return ""
+	}
+	return s.sel.Extract(s.layout)
 }
 
 // Contains reports whether a screen point falls inside the last drawn viewport.
@@ -665,8 +874,15 @@ func (s *Scrollback) revealSelected(th Theme) {
 	s.follow = s.scroll >= maxScroll(viewport, len(rows))
 }
 
-// ToggleFold folds or unfolds the selected entry.
+// ToggleFold folds or unfolds the selected entry (or its work capsule header).
 func (s *Scrollback) ToggleFold() bool {
+	if s.StackWork && s.selected >= 0 {
+		for _, r := range s.layout {
+			if r.capsuleStart == s.selected {
+				return s.ToggleCapsule(s.selected)
+			}
+		}
+	}
 	e := s.Selected()
 	if e == nil || !e.Foldable {
 		return false
@@ -677,8 +893,22 @@ func (s *Scrollback) ToggleFold() bool {
 	return true
 }
 
-// SetFoldAll folds or unfolds everything foldable.
+// SetFoldAll folds or unfolds everything foldable (and collapses/expands work capsules).
 func (s *Scrollback) SetFoldAll(folded bool) {
+	if s.StackWork {
+		if folded {
+			s.expandedCapsules = nil
+		} else {
+			if s.expandedCapsules == nil {
+				s.expandedCapsules = map[int]bool{}
+			}
+			for _, r := range s.layout {
+				if r.capsuleStart >= 0 {
+					s.expandedCapsules[r.capsuleStart] = true
+				}
+			}
+		}
+	}
 	for _, e := range s.entries {
 		if e.Foldable {
 			e.Folded = folded
@@ -901,6 +1131,14 @@ func (s *Scrollback) Draw(b *render.Buffer, r render.Rect, th Theme, focused boo
 			if focused && rows[i].first {
 				b.SetString(r.X, y, th.Glyphs().Caret, render.Style{Fg: th.Accent, Bg: th.Selection})
 			}
+		} else if s.hoverEntry >= 0 && rows[i].entry == s.hoverEntry && rows[i].capsuleStart >= 0 {
+			// Gentle hover wash on interactive capsule headers so they read as clickable.
+			band := render.Rect{X: body.X, Y: y, W: body.W, H: 1}
+			b.BlendBackground(band, th.Selection, 0.25)
+		}
+		if c0, c1, ok := s.sel.RowSpan(i, body.W); ok {
+			band := render.Rect{X: body.X + c0, Y: y, W: c1 - c0 + 1, H: 1}
+			b.BlendBackground(band, th.Info, 0.45)
 		}
 		row++
 	}

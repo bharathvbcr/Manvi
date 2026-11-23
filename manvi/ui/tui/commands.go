@@ -15,7 +15,10 @@ import (
 var uiCommands = []CommandSpec{
 	{Name: "settings", Summary: "browse every setting, its value, and where the value came from"},
 	{Name: "sessions", Summary: "switch between open sessions"},
-	{Name: "theme", Summary: "choose a colour palette"},
+	{Name: "inspector", Summary: "toggle the right-hand thinking, steps, diffs, and info drawer (Ctrl+B)"},
+	{Name: "compact", Summary: "toggle stacked turn work capsules vs full verbose stream (Ctrl+O)"},
+	{Name: "copy", Summary: "open the smart copy menu for replies, code blocks, diffs, and thinking"},
+	{Name: "theme", Summary: "choose a colour palette (dark, light, terminal, plain)"},
 	{Name: "help", Summary: "show keyboard shortcuts and help"},
 	{Name: "clear", Summary: "clear this transcript"},
 	{Name: "quit", Summary: "leave manvi"},
@@ -219,6 +222,36 @@ func (a *App) runCommand(name, args string) []Effect {
 	case "theme":
 		a.overlay = ThemeOverlay(a.Theme.Name)
 		return nil
+	case "inspector":
+		if v != nil && v.Inspector != nil {
+			v.Inspector.Toggle()
+			if v.Inspector.Open {
+				a.setNotice("inspector open (Ctrl+B to toggle)", StatusInfo)
+			} else {
+				if v.Focus == CtxInspector {
+					v.Focus = CtxPrompt
+				}
+				a.setNotice("inspector closed", StatusInfo)
+			}
+		}
+		return nil
+	case "compact":
+		if v != nil {
+			stacked := v.Scroll.ToggleStackWork()
+			if stacked {
+				a.setNotice("work capsules stacked (Ctrl+O expands all)", StatusInfo)
+			} else {
+				a.setNotice("full verbose work stream (Ctrl+O stacks capsules)", StatusInfo)
+			}
+		}
+		return nil
+	case "copy":
+		if ov := CopyOverlay(v); ov != nil {
+			a.overlay = ov
+		} else {
+			a.setNotice("nothing in this transcript to copy yet", StatusWarn)
+		}
+		return nil
 	case "settings":
 		return a.openSettings()
 	}
@@ -268,36 +301,64 @@ func (a *App) refreshCompletion() {
 		return
 	}
 	trigger := v.Prompt.ActiveTrigger()
-	if trigger.Kind != '/' {
+	switch trigger.Kind {
+	case '/':
+		var items []Item
+		for _, spec := range a.menuCommands() {
+			status := StatusNeutral
+			if spec.Mutating {
+				status = StatusWarn
+			}
+			// The usage hint, which CommandSpec.Args documents itself as being
+			// "shown in the dropdown" and was shown only in the palette. A command
+			// whose arguments are invisible where it is chosen is a command whose
+			// arguments do not exist as far as the operator is concerned.
+			detail := spec.Summary
+			if spec.Args != "" {
+				detail = spec.Args + "   " + detail
+			}
+			items = append(items, Item{
+				Label: spec.Name, Detail: detail, Value: spec.Name, Status: status,
+			})
+		}
+		o := NewOverlay(OverlayComplete, "commands", items, false)
+		o.Trigger = trigger
+		o.SetFilter(trigger.Query)
+		if o.Empty() {
+			a.overlay = nil
+			return
+		}
+		a.overlay = o
+	case '@':
+		fc, ok := a.Host.(FileCompleter)
+		if !ok {
+			if a.overlay != nil && a.overlay.Kind == OverlayComplete {
+				a.overlay = nil
+			}
+			return
+		}
+		files := fc.Files(trigger.Query)
+		if len(files) == 0 {
+			if a.overlay != nil && a.overlay.Kind == OverlayComplete {
+				a.overlay = nil
+			}
+			return
+		}
+		items := make([]Item, 0, len(files))
+		for _, f := range files {
+			items = append(items, Item{Label: f, Detail: "file", Value: f, Status: StatusInfo})
+		}
+		o := NewOverlay(OverlayComplete, "files", items, false)
+		o.Trigger = trigger
+		o.SetFilter(trigger.Query)
+		if o.Empty() {
+			a.overlay = nil
+			return
+		}
+		a.overlay = o
+	default:
 		if a.overlay != nil && a.overlay.Kind == OverlayComplete {
 			a.overlay = nil
 		}
-		return
 	}
-	var items []Item
-	for _, spec := range a.menuCommands() {
-		status := StatusNeutral
-		if spec.Mutating {
-			status = StatusWarn
-		}
-		// The usage hint, which CommandSpec.Args documents itself as being
-		// "shown in the dropdown" and was shown only in the palette. A command
-		// whose arguments are invisible where it is chosen is a command whose
-		// arguments do not exist as far as the operator is concerned.
-		detail := spec.Summary
-		if spec.Args != "" {
-			detail = spec.Args + "   " + detail
-		}
-		items = append(items, Item{
-			Label: spec.Name, Detail: detail, Value: spec.Name, Status: status,
-		})
-	}
-	o := NewOverlay(OverlayComplete, "commands", items, false)
-	o.Trigger = trigger
-	o.SetFilter(trigger.Query)
-	if o.Empty() {
-		a.overlay = nil
-		return
-	}
-	a.overlay = o
 }

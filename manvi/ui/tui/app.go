@@ -68,6 +68,9 @@ type App struct {
 	// environment by the runner; left on in tests, where every effect is a
 	// deterministic function of tick.
 	fx bool
+	// adaptiveWork enables stacked Turn Work Capsules and wide-screen
+	// Inspector auto-open for live interactive sessions.
+	adaptiveWork bool
 
 	// tabs and tabRow are the session strip as the last frame drew it, for
 	// pointer hit-testing; overlayRect is the same record for an open
@@ -172,6 +175,12 @@ func (a *App) leaveCurrent() {
 // AddSession registers a session and makes it active.
 func (a *App) AddSession(id, title string) *AgentView {
 	v := NewAgentView(id, title)
+	if a.adaptiveWork {
+		v.Scroll.StackWork = true
+		if a.width >= 132 && v.Inspector != nil {
+			v.Inspector.Open = true
+		}
+	}
 	v.Status = Status{Sessions: len(a.views) + 1}
 	a.views = append(a.views, v)
 	a.setActive(len(a.views) - 1)
@@ -417,6 +426,17 @@ func (a *App) Dispatch(act Action) []Effect {
 	case ActionRelease:
 		// Whatever drag the press began ends here.
 		a.dragBar = false
+		if v := a.Current(); v != nil && t.Button == 1 {
+			if text := v.Scroll.EndDrag(); text != "" {
+				lines := strings.Count(text, "\n") + 1
+				unit := "line"
+				if lines != 1 {
+					unit = "lines"
+				}
+				a.setNotice("copied "+itoa(lines)+" "+unit+" ("+itoa(len(text))+" bytes)", StatusInfo)
+				return []Effect{EffectCopy{Text: text}}
+			}
+		}
 		return nil
 	}
 	return nil
@@ -587,9 +607,10 @@ func (a *App) dismiss() []Effect {
 		a.mode = ModeSession
 		return nil
 	}
-	if v != nil && v.Focus == CtxScrollback {
+	if v != nil && (v.Focus == CtxScrollback || v.Focus == CtxInspector) {
 		v.Focus = CtxPrompt
 		v.Scroll.SelectNone()
+		v.Scroll.ClearSelection()
 		return nil
 	}
 	return a.cancel()

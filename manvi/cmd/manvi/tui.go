@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -579,6 +581,44 @@ func (h *harnessHost) session(id string) (*tuiSession, error) {
 // than here, because a cancelled turn's task is still checked out to this
 // session and taking it away mid-edit would be worse than holding it.
 func (h *harnessHost) Cancel(string) {}
+
+// Files implements tui.FileCompleter, supplying workspace-relative file paths
+// for @-mention completion in the composer. Skips hidden/vendor/build trees
+// and bounds the walk so completion stays instantaneous on large repositories.
+func (h *harnessHost) Files(query string) []string {
+	root, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	const maxFiles = 200
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if p != root && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "target" || name == "tmp") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if q == "" || strings.Contains(strings.ToLower(rel), q) {
+			out = append(out, rel)
+			if len(out) >= maxFiles {
+				return fs.SkipAll
+			}
+		}
+		return nil
+	})
+	return out
+}
 
 // Command runs a harness command, with its output going to the session's
 // transcript instead of stdout.

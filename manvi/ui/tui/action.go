@@ -140,6 +140,9 @@ type (
 	EffectCloseSession struct{ SessionID string }
 	// EffectCopy puts text on the system clipboard.
 	EffectCopy struct{ Text string }
+	// EffectPasteClipboard reads text from the local system clipboard and
+	// delivers it back as an ActionPaste.
+	EffectPasteClipboard struct{}
 	// EffectSuspend performs a Ctrl+Z.
 	EffectSuspend struct{}
 	// EffectRedraw forces a full repaint, after something else wrote to the tty.
@@ -154,8 +157,9 @@ func (EffectCommand) effect()      {}
 func (EffectDecide) effect()       {}
 func (EffectNewSession) effect()   {}
 func (EffectCloseSession) effect() {}
-func (EffectCopy) effect()         {}
-func (EffectSuspend) effect()      {}
+func (EffectCopy) effect()           {}
+func (EffectPasteClipboard) effect() {}
+func (EffectSuspend) effect()        {}
 func (EffectRedraw) effect()       {}
 func (EffectQuit) effect()         {}
 
@@ -186,6 +190,12 @@ type Host interface {
 	// CloseSession releases whatever the session held — a lease, most
 	// importantly, which outlives the process if it is not given back.
 	CloseSession(ctx context.Context, sessionID string) error
+}
+
+// FileCompleter is an optional extension on Host that supplies repository file
+// paths for @-mention completion in the composer.
+type FileCompleter interface {
+	Files(query string) []string
 }
 
 // CommandSpec describes a slash command.

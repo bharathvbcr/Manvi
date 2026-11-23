@@ -3,7 +3,6 @@ package tui
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -247,8 +246,9 @@ const (
 
 // Run drives the UI until the operator quits or ctx is cancelled.
 func (r *Runner) Run(ctx context.Context) (err error) {
+	r.app.adaptiveWork = true
 	if err := r.term.Start(term.Options{
-		AltScreen: true, Mouse: true, Motion: true, BracketedPaste: true, Focus: true, Title: r.cfg.Title,
+		AltScreen: true, Mouse: true, Motion: true, BracketedPaste: true, Focus: true, KittyKeyboard: true, Title: r.cfg.Title,
 	}); err != nil {
 		return err
 	}
@@ -294,6 +294,7 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 
 	w, h := r.term.Size()
 	r.painter = render.NewPainter(w, h, r.term.Profile())
+	r.painter.SetSynchronized(true)
 	// Through apply rather than straight to Dispatch, so apply is the only way
 	// an action reaches the app. A second door is a second place for the
 	// cleaning that happens there to be skipped.
@@ -746,7 +747,17 @@ func (r *Runner) runEffect(ctx context.Context, e Effect) {
 		}()
 
 	case EffectCopy:
-		r.copyToClipboard(t.Text)
+		r.copyToClipboard(ctx, t.Text)
+
+	case EffectPasteClipboard:
+		go func() {
+			text, err := readNativeClipboard(ctx, os.Getenv)
+			if err != nil || text == "" {
+				r.post(ActionNotice{Text: "clipboard empty or unavailable — use terminal paste (Cmd+V)", Status: StatusWarn})
+				return
+			}
+			r.post(ActionPaste{Text: text})
+		}()
 
 	case EffectSuspend:
 		if err := r.term.Suspend(); err != nil {
@@ -850,22 +861,24 @@ func (r *Runner) reportPanics() {
 // truncate silently, so the cap is applied here where it can be reported.
 const osc52Limit = 96 * 1024
 
-// copyToClipboard writes the selection with OSC 52.
+// copyToClipboard writes the selection to the clipboard.
 //
-// OSC 52 rather than a platform clipboard binary because the harness is
-// routinely run over ssh, where pbcopy and xclip put text on the wrong machine's
-// clipboard — the one the operator is not looking at.
-func (r *Runner) copyToClipboard(text string) {
-	truncated := false
-	if len(text) > osc52Limit {
-		text = text[:osc52Limit]
-		truncated = true
+// In a live local terminal (not over SSH), it writes the full untruncated text
+// to the native OS clipboard (pbcopy / wl-copy / xclip / xsel). It also emits
+// OSC 52 (automatically wrapped in tmux/screen DCS passthrough when nested) so
+// remote SSH and multiplexer sessions work seamlessly.
+func (r *Runner) copyToClipboard(ctx context.Context, text string) {
+	nativeOK := false
+	if r.term.Started() {
+		if _, err := writeNativeClipboard(ctx, text, os.Getenv); err == nil {
+			nativeOK = true
+		}
 	}
-	encoded := base64.StdEncoding.EncodeToString([]byte(text))
-	_, _ = fmt.Fprintf(r.term.Out(), "\x1b]52;c;%s\x07", encoded)
+	seq, truncated := osc52Sequence(text, os.Getenv)
+	_, _ = io.WriteString(r.term.Out(), seq)
 	// The painter believes it owns the screen, and this wrote past it.
 	r.painter.Invalidate()
-	if truncated {
+	if truncated && !nativeOK {
 		r.loopPost(ActionNotice{
 			Text:   "copied the first 96KB — the selection was larger",
 			Status: StatusWarn,

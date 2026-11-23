@@ -45,7 +45,13 @@ type Painter struct {
 	// painted records that at least one frame has been written, so the first
 	// call cannot be mistaken for an idle one.
 	painted bool
+	// synchronized wraps non-empty frames in DEC 2026 synchronized output
+	// (\x1b[?2026h ... \x1b[?2026l) so terminals that support it avoid tearing.
+	synchronized bool
 }
+
+// SetSynchronized enables or disables DEC 2026 synchronized output wrapping.
+func (p *Painter) SetSynchronized(on bool) { p.synchronized = on }
 
 // NewPainter builds a painter for a screen of the given size.
 func NewPainter(w, h int, p Profile) *Painter {
@@ -98,6 +104,9 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 	p.scratch.Reset()
 	b := &p.scratch
 
+	if p.synchronized {
+		b.WriteString("\x1b[?2026h")
+	}
 	// The cursor is hidden for the duration of the paint. Without this it
 	// visibly races across the screen following the writes, which on a frame
 	// with many small changes looks like flicker.
@@ -197,6 +206,9 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 	// and which makes the diffing above pointless.
 	if p.painted && !p.full && !changed && cur == p.lastCursor {
 		return nil
+	}
+	if p.synchronized {
+		b.WriteString("\x1b[?2026l")
 	}
 
 	p.full = false

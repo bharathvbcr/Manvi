@@ -166,7 +166,12 @@ func (p *Prompt) InsertPaste(s string) string {
 	// free now may be one an earlier paste of this prompt held and Undo can
 	// bring back.
 	p.pasteSeq++
-	chip := fmt.Sprintf("[pasted %d chars #%d]", len(s), p.pasteSeq)
+	var chip string
+	if lines := strings.Count(s, "\n") + 1; lines > 1 {
+		chip = fmt.Sprintf("[pasted %d lines · %d chars #%d]", lines, len(s), p.pasteSeq)
+	} else {
+		chip = fmt.Sprintf("[pasted %d chars #%d]", len(s), p.pasteSeq)
+	}
 	// Inserted before it is registered: the insert's own edit forgets chips the
 	// buffer does not show yet, and this one is not in it until the insert.
 	p.InsertString(chip)
@@ -474,6 +479,49 @@ func (p *Prompt) MoveStart() { p.cursor = 0 }
 
 // MoveBufferEnd goes to the end of the whole buffer.
 func (p *Prompt) MoveBufferEnd() { p.cursor = len(p.runes) }
+
+// MoveLine moves the cursor vertically by delta (-1 up, +1 down) across
+// explicit lines in a multi-line draft, preserving column offset where
+// possible. It returns false when already on the first (delta < 0) or last
+// (delta > 0) line so callers can fall back to history navigation.
+func (p *Prompt) MoveLine(delta int) bool {
+	if delta == 0 || len(p.runes) == 0 {
+		return false
+	}
+	curStart := p.lineStart()
+	col := p.cursor - curStart
+	if delta < 0 {
+		if curStart == 0 {
+			return false
+		}
+		prevEnd := curStart - 1 // points at '\n'
+		prevStart := prevEnd
+		for prevStart > 0 && p.runes[prevStart-1] != '\n' {
+			prevStart--
+		}
+		target := prevStart + col
+		if target > prevEnd {
+			target = prevEnd
+		}
+		p.cursor = target
+		return true
+	}
+	curEnd := p.lineEnd()
+	if curEnd >= len(p.runes) {
+		return false
+	}
+	nextStart := curEnd + 1
+	nextEnd := nextStart
+	for nextEnd < len(p.runes) && p.runes[nextEnd] != '\n' {
+		nextEnd++
+	}
+	target := nextStart + col
+	if target > nextEnd {
+		target = nextEnd
+	}
+	p.cursor = target
+	return true
+}
 
 func (p *Prompt) wordStart() int {
 	i := p.cursor

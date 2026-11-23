@@ -603,6 +603,16 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 			if len(head) > 0 {
 				add(head.Truncate(body))
 			}
+			// When unfolding a successful file edit whose raw tool text is only
+			// a confirmation line ("patched a.go (N bytes)"), render the
+			// synthesized unified/side-by-side diff alongside what the tool said.
+			if !ev.IsError && e.call != nil && confirms(e.call.Event, text) {
+				if ed, ok := extractFileEdit(e.call.Event, 0); ok {
+					for _, l := range renderEditDiff(ed, th, inner, 0) {
+						add(quote(l))
+					}
+				}
+			}
 			shown, rest := capRendered(text)
 			if rest == "" {
 				// The line break a command's output ends with is not a row.
@@ -1362,15 +1372,19 @@ var codeKeywords = map[string]bool{
 	"self": true, "async": true, "await": true, "select": true, "from": true,
 	"where": true, "insert": true, "update": true, "delete": true, "match": true,
 	"nil": true, "null": true, "true": true, "false": true, "go": true, "defer": true,
+	"chan": true, "map": true, "default": true, "enum": true, "trait": true,
+	"export": true, "function": true, "extends": true, "implements": true, "try": true,
+	"catch": true, "finally": true, "throw": true, "yield": true, "with": true,
 	"SELECT": true, "FROM": true, "WHERE": true, "INSERT": true, "UPDATE": true,
 	"DELETE": true, "JOIN": true, "CREATE": true, "TABLE": true, "GROUP": true, "ORDER": true,
 }
 
 // hasInlineMarkup reports whether a line holds anything parseInlineSpans would
-// style: a code span or bold. A line without any is one span in the base style,
-// and is the only kind whose rows an open-line cache may keep (see settled).
+// style: a code span, bold, italic, strikethrough, or markdown link. A line
+// without any is one span in the base style, and is the only kind whose rows an
+// open-line cache may keep (see settled).
 func hasInlineMarkup(line string) bool {
-	return strings.Contains(line, "`") || strings.Contains(line, "**")
+	return strings.ContainsAny(line, "`*~[")
 }
 
 func parseInlineSpans(line string, th Theme, baseStyle render.Style) render.Line {
@@ -1391,13 +1405,14 @@ func parseInlineSpans(line string, th Theme, baseStyle render.Style) render.Line
 	}
 
 	for i < len(runes) {
-		if runes[i] == '`' {
-			flush(baseStyle)
+		switch {
+		case runes[i] == '`':
 			j := i + 1
 			for j < len(runes) && runes[j] != '`' {
 				j++
 			}
 			if j < len(runes) {
+				flush(baseStyle)
 				code := string(runes[i+1 : j])
 				// The informational colour, not the brand's red: red text in the
 				// middle of a sentence reads as the part that went wrong.
@@ -1405,17 +1420,60 @@ func parseInlineSpans(line string, th Theme, baseStyle render.Style) render.Line
 				i = j + 1
 				continue
 			}
-		} else if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
-			flush(baseStyle)
+		case i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*':
 			j := i + 2
 			for j+1 < len(runes) && !(runes[j] == '*' && runes[j+1] == '*') {
 				j++
 			}
-			if j+1 < len(runes) {
+			if j+1 < len(runes) && j > i+2 {
+				flush(baseStyle)
 				boldText := string(runes[i+2 : j])
 				res = res.Append(boldText, baseStyle.With(render.Bold))
 				i = j + 2
 				continue
+			}
+		case i+1 < len(runes) && runes[i] == '~' && runes[i+1] == '~':
+			j := i + 2
+			for j+1 < len(runes) && !(runes[j] == '~' && runes[j+1] == '~') {
+				j++
+			}
+			if j+1 < len(runes) && j > i+2 {
+				flush(baseStyle)
+				strikeText := string(runes[i+2 : j])
+				res = res.Append(strikeText, baseStyle.With(render.Strike))
+				i = j + 2
+				continue
+			}
+		case runes[i] == '*' && (i+1 >= len(runes) || runes[i+1] != '*'):
+			j := i + 1
+			for j < len(runes) && runes[j] != '*' {
+				j++
+			}
+			if j < len(runes) && j > i+1 && !unicode.IsSpace(runes[i+1]) && !unicode.IsSpace(runes[j-1]) {
+				flush(baseStyle)
+				italicText := string(runes[i+1 : j])
+				res = res.Append(italicText, baseStyle.With(render.Italic))
+				i = j + 1
+				continue
+			}
+		case runes[i] == '[':
+			// Markdown link: [label](url)
+			closeBr := i + 1
+			for closeBr < len(runes) && runes[closeBr] != ']' && runes[closeBr] != '[' {
+				closeBr++
+			}
+			if closeBr+2 < len(runes) && runes[closeBr] == ']' && runes[closeBr+1] == '(' {
+				closePar := closeBr + 2
+				for closePar < len(runes) && runes[closePar] != ')' && !unicode.IsSpace(runes[closePar]) {
+					closePar++
+				}
+				if closePar < len(runes) && runes[closePar] == ')' && closeBr > i+1 && closePar > closeBr+2 {
+					flush(baseStyle)
+					label := string(runes[i+1 : closeBr])
+					res = res.Append(label, th.Status(StatusInfo).With(render.Underline))
+					i = closePar + 1
+					continue
+				}
 			}
 		}
 		cur.WriteRune(runes[i])
@@ -1425,69 +1483,93 @@ func parseInlineSpans(line string, th Theme, baseStyle render.Style) render.Line
 	return res
 }
 
+// highlightCodeLine performs a single-pass lexical highlight over raw so
+// keywords, strings, inline comments, and numbers all highlight cleanly on the
+// same line instead of strings suppressing keyword highlighting.
 func highlightCodeLine(raw string, th Theme, lang string) render.Line {
+	commentStyle := render.Style{Fg: th.FgSubtle, Bg: th.Bg, Attrs: render.Italic}
 	trimmed := strings.TrimSpace(raw)
-	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
-		return render.Styled(raw, render.Style{Fg: th.FgSubtle, Bg: th.Bg, Attrs: render.Italic})
+	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") ||
+		strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
+		return render.Styled(raw, commentStyle)
 	}
 
-	if strings.Contains(raw, "\"") || strings.Contains(raw, "'") {
-		var line render.Line
-		inQuote := false
-		var quoteChar rune
-		var cur strings.Builder
-		for _, r := range raw {
-			if !inQuote && (r == '"' || r == '\'') {
-				if cur.Len() > 0 {
-					line = line.Append(cur.String(), render.Style{Fg: th.Fg, Bg: th.Bg})
-					cur.Reset()
-				}
-				inQuote = true
-				quoteChar = r
-				cur.WriteRune(r)
-			} else if inQuote && r == quoteChar {
-				cur.WriteRune(r)
-				line = line.Append(cur.String(), render.Style{Fg: th.FgMuted, Bg: th.Bg})
-				cur.Reset()
-				inQuote = false
-			} else {
-				cur.WriteRune(r)
-			}
-		}
-		if cur.Len() > 0 {
-			style := render.Style{Fg: th.Fg, Bg: th.Bg}
-			if inQuote {
-				style = render.Style{Fg: th.FgMuted, Bg: th.Bg}
-			}
-			line = line.Append(cur.String(), style)
-		}
-		return line
-	}
+	strStyle := render.Style{Fg: th.FgMuted, Bg: th.Bg}
+	kwStyle := render.Style{Fg: th.Info, Bg: th.Bg, Attrs: render.Bold}
+	identStyle := render.Style{Fg: th.Fg, Bg: th.Bg}
+	punctStyle := render.Style{Fg: th.FgMuted, Bg: th.Bg}
+
+	hashComment := lang == "python" || lang == "py" || lang == "bash" || lang == "sh" || lang == "shell" || lang == "yaml" || lang == "yml" || lang == "toml"
+	dashComment := lang == "sql"
 
 	var line render.Line
-	var cur strings.Builder
-	flushWord := func() {
-		if cur.Len() == 0 {
-			return
+	runes := []rune(raw)
+	for i := 0; i < len(runes); {
+		r := runes[i]
+		// Inline comments to end of line.
+		if (r == '/' && i+1 < len(runes) && runes[i+1] == '/') ||
+			(hashComment && r == '#') ||
+			(dashComment && r == '-' && i+1 < len(runes) && runes[i+1] == '-') {
+			line = line.Append(string(runes[i:]), commentStyle)
+			break
 		}
-		w := cur.String()
-		cur.Reset()
-		if codeKeywords[w] {
-			line = line.Append(w, render.Style{Fg: th.Info, Bg: th.Bg, Attrs: render.Bold})
-		} else {
-			line = line.Append(w, render.Style{Fg: th.Fg, Bg: th.Bg})
+		// Quoted strings (with backslash escape handling).
+		if r == '"' || r == '\'' || r == '`' {
+			quote := r
+			j := i + 1
+			for j < len(runes) {
+				if runes[j] == '\\' && quote != '`' && j+1 < len(runes) {
+					j += 2
+					continue
+				}
+				if runes[j] == quote {
+					j++
+					break
+				}
+				j++
+			}
+			line = line.Append(string(runes[i:j]), strStyle)
+			i = j
+			continue
 		}
+		// Identifiers and keywords.
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
+			j := i + 1
+			for j < len(runes) && ((runes[j] >= 'a' && runes[j] <= 'z') || (runes[j] >= 'A' && runes[j] <= 'Z') || (runes[j] >= '0' && runes[j] <= '9') || runes[j] == '_') {
+				j++
+			}
+			w := string(runes[i:j])
+			if codeKeywords[w] {
+				line = line.Append(w, kwStyle)
+			} else {
+				line = line.Append(w, identStyle)
+			}
+			i = j
+			continue
+		}
+		// Numeric literals.
+		if r >= '0' && r <= '9' {
+			j := i + 1
+			for j < len(runes) && ((runes[j] >= '0' && runes[j] <= '9') || runes[j] == '.' || runes[j] == '_' || runes[j] == 'x' || (runes[j] >= 'a' && runes[j] <= 'f') || (runes[j] >= 'A' && runes[j] <= 'F')) {
+				j++
+			}
+			line = line.Append(string(runes[i:j]), identStyle)
+			i = j
+			continue
+		}
+		// Whitespace / punctuation runs.
+		j := i + 1
+		for j < len(runes) {
+			nr := runes[j]
+			if (nr >= 'a' && nr <= 'z') || (nr >= 'A' && nr <= 'Z') || (nr >= '0' && nr <= '9') ||
+				nr == '_' || nr == '"' || nr == '\'' || nr == '`' || nr == '/' || nr == '#' || nr == '-' {
+				break
+			}
+			j++
+		}
+		line = line.Append(string(runes[i:j]), punctStyle)
+		i = j
 	}
-
-	for _, r := range raw {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
-			cur.WriteRune(r)
-		} else {
-			flushWord()
-			line = line.Append(string(r), render.Style{Fg: th.FgMuted, Bg: th.Bg})
-		}
-	}
-	flushWord()
 	return line
 }
 
@@ -1585,6 +1667,7 @@ const (
 	mdOrdered
 	mdQuote
 	mdRule
+	mdTable
 )
 
 // mdPrefixSpan is how much of a line kind reads: the longest literal it tests
@@ -1635,6 +1718,8 @@ func (st *mdState) kind(raw string) mdKind {
 		return mdBullet
 	case strings.HasPrefix(trimmed, "> "):
 		return mdQuote
+	case len(trimmed) >= 3 && strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|"):
+		return mdTable
 	case orderedMarker(trimmed) > 0:
 		return mdOrdered
 	}
@@ -1685,8 +1770,10 @@ func orderedMarker(s string) int {
 // by its absence anywhere in it; a marker that arrives later takes the line
 // out of this class, and it goes back to the full layout.
 func (st *mdState) settled(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
 	return !st.inCode &&
-		len(strings.TrimSpace(raw)) >= mdPrefixSpan &&
+		len(trimmed) >= mdPrefixSpan &&
+		!strings.HasPrefix(trimmed, "|") &&
 		st.kind(raw) == mdParagraph &&
 		!hasInlineMarkup(raw)
 }
@@ -1770,6 +1857,9 @@ func (st *mdState) line(out []render.Line, raw string, th Theme, width int) []re
 			out = append(out, bar.Concat(r))
 		}
 		return out
+
+	case mdTable:
+		return append(out, renderTableRow(trimmed, th, width)...)
 	}
 
 	if st.pre {
@@ -1796,6 +1886,57 @@ func codeRows(out []render.Line, l render.Line, th Theme, width int) []render.Li
 		out = append(out, rule.Concat(r).Pad(width, render.Style{Bg: th.Bg}).Truncate(width))
 	}
 	return out
+}
+
+// renderTableRow formats a single GFM pipe-table row cleanly, turning divider
+// rows (|---|---|) into crisp hairline rules and styling cell dividers in the
+// theme's rule colour while keeping line-local streaming parity.
+func renderTableRow(trimmed string, th Theme, width int) []render.Line {
+	inner := strings.TrimPrefix(strings.TrimSuffix(trimmed, "|"), "|")
+	cells := strings.Split(inner, "|")
+	ruleStyle := render.Style{Fg: th.ruleColor(), Bg: th.Bg}
+
+	isDivider := len(cells) > 0
+	for _, c := range cells {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			isDivider = false
+			break
+		}
+		for _, r := range c {
+			if r != '-' && r != ':' {
+				isDivider = false
+				break
+			}
+		}
+		if !isDivider {
+			break
+		}
+	}
+	if isDivider {
+		glyph := "─"
+		if !th.Unicode {
+			glyph = "-"
+		}
+		n := width
+		if n > 64 {
+			n = 64
+		}
+		return []render.Line{render.Styled(strings.Repeat(glyph, n), ruleStyle)}
+	}
+
+	sep := " │ "
+	if !th.Unicode {
+		sep = " | "
+	}
+	var line render.Line
+	for idx, cell := range cells {
+		if idx > 0 {
+			line = line.Append(sep, ruleStyle)
+		}
+		line = line.Concat(parseInlineSpans(strings.TrimSpace(cell), th, th.Base()))
+	}
+	return line.Wrap(width)
 }
 
 // diffLine styles a line of a unified diff on a surface, as it was written: the
