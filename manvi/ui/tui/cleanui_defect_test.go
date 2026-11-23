@@ -112,9 +112,7 @@ func TestANarrowStatusBarKeepsTheModel(t *testing.T) {
 	th := Dark()
 	th.Unicode = true
 	st := Status{
-		Posture: "strict", Model: "claude-opus-5-5", Provider: "anthropic",
-		GitBranch: "feature/long-branch-name", GitDirty: 3,
-		ContextUsed: 62000, ContextMax: 200000, Steps: 4,
+		Posture: "strict", Model: "claude-opus-5-5",
 		InputTokens: 18234, OutputTokens: 912, Grants: 1,
 	}
 	b := render.NewBuffer(60, 1)
