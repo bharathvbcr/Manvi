@@ -314,6 +314,13 @@ func validateContinuation(msg llm.Message, steps []json.RawMessage) error {
 		if step.Type == "" {
 			return errors.New("gemini: continuation step has no type")
 		}
+		// A step this build has no reading for cannot be compared with the
+		// journaled message, and replaying it would send the provider content the
+		// journal never held. Refused by name, so the adapter that has fallen
+		// behind the wire is the thing the reader is pointed at.
+		if !knownStepType(step.Type) {
+			return fmt.Errorf("gemini: continuation holds a step of unknown type %q; this adapter cannot verify it against the journaled message, so the turn is refused rather than replayed", step.Type)
+		}
 		if step.Type == TypeFunctionCall {
 			calls = append(calls, llm.ToolCallBlock{ID: llm.CallID(step.ID), Name: step.Name, Arguments: step.Arguments})
 		}
@@ -335,6 +342,18 @@ func validateContinuation(msg llm.Message, steps []json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+// knownStepType reports whether a model step is one the adapter reads: the
+// three it requests and journals. The adapter sends no hosted tools, so no
+// other step is expected back.
+func knownStepType(t string) bool {
+	switch t {
+	case StepThought, StepModelOutput, StepFunctionCall:
+		return true
+	default:
+		return false
+	}
 }
 
 func equalArguments(a, b json.RawMessage) bool {

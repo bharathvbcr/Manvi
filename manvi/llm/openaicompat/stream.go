@@ -616,31 +616,44 @@ func (s *stream) Response() (llm.Response, error) {
 		if acc.id == "" {
 			acc.id = synthesizeCallID("local")
 		}
-		if acc.name == "" {
-			// No name means nothing was asked for: there is no call here to
-			// recover, and inventing one would run a tool at random.
-			s.malformed = append(s.malformed, MalformedCall{
-				ID:     llm.CallID(acc.id),
-				Reason: "the stream carried arguments for a tool call that never named a function",
-			})
-			continue
+		// Local servers rewrite their arguments often enough that the repaired
+		// text, not the wire's, is what the rule judges. Empty arguments stay
+		// empty: whether an empty payload may be believed is the rule's call,
+		// because only it knows whether the output limit ended the stream.
+		raw := acc.args.String()
+		args := raw
+		if strings.TrimSpace(raw) != "" {
+			repairedArgs, repaired := sanitizeJSONArgumentsReport(raw)
+			if repaired {
+				s.repaired = true
+			}
+			args = string(repairedArgs)
 		}
-		args, repaired := sanitizeJSONArgumentsReport(acc.args.String())
-		if repaired {
-			s.repaired = true
-		}
-		if !json.Valid(args) {
+		// What a complete call is, is decided once for every adapter; see
+		// llm.SettleCall. This wire never frames a call, so the stream's own
+		// terminal frame (already required above) is all the framing there is.
+		settled := llm.SettleCall(llm.CallEvidence{
+			ID: llm.CallID(acc.id), Name: acc.name, Arguments: args,
+			Framing: llm.FramingNone, Stop: s.stopReason,
+		})
+		if settled.Verdict != llm.CallComplete {
+			// Reported rather than refused, on this wire only. A local server
+			// truncates far more readily than a hosted one (mlx-vlm stops at 2048
+			// output tokens by default), and returning an error ended the whole
+			// turn on a response that merely ran out of room, discarding every
+			// completed step with it. Carried through as a malformed call, the
+			// loop hands the model a result it can act on.
+			reason := settled.Reason
+			if settled.Verdict == llm.CallUnusable {
+				reason = "the tool call " + reason
+			}
 			s.malformed = append(s.malformed, MalformedCall{
-				ID:   llm.CallID(acc.id),
-				Name: acc.name,
-				Reason: fmt.Sprintf(
-					"the arguments were cut off mid-value and are not valid JSON (%s)",
-					truncateForMessage(acc.args.String())),
+				ID: llm.CallID(acc.id), Name: acc.name, Reason: reason,
 			})
 			continue
 		}
 		msg.Content = append(msg.Content, llm.ToolCallBlock{
-			ID: llm.CallID(acc.id), Name: acc.name, Arguments: args,
+			ID: llm.CallID(acc.id), Name: acc.name, Arguments: settled.Arguments,
 		})
 	}
 

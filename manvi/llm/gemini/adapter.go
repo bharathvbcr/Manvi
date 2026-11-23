@@ -548,10 +548,10 @@ type (
 		TotalOutputTokens int `json:"total_output_tokens"`
 		ThoughtTokens     int `json:"total_thought_tokens"`
 		// TotalCachedTokens is the Interactions API field (aistudio.google.com/api-reference/interactions-api,
-		// read 2026-11-09). CachedContentTokenCount is the generateContent usageMetadata
-		// name this adapter read before; it stays as a fallback until a live response settles it.
-		TotalCachedTokens       int `json:"total_cached_tokens,omitempty"`
-		CachedContentTokenCount int `json:"cached_content_token_count,omitempty"`
+		// read 2026-11-09). generateContent's cached_content_token_count is not read: no
+		// recorded fixture or response in this repository carries it, and this API does not
+		// document it.
+		TotalCachedTokens int `json:"total_cached_tokens,omitempty"`
 	}
 	wireEventInteraction = struct {
 		Status string          `json:"status"`
@@ -874,9 +874,6 @@ func (s *stream) apply(kind string, ev wireEvent) (llm.Chunk, bool, error) {
 				s.usage.OutputTokens = u.TotalOutputTokens
 				s.usage.ReasoningTokens = u.ThoughtTokens
 				s.usage.CacheReadTokens = u.TotalCachedTokens
-				if s.usage.CacheReadTokens == 0 {
-					s.usage.CacheReadTokens = u.CachedContentTokenCount
-				}
 			}
 			s.stopReason = mapStatus(ev.Interaction.Status)
 		}
@@ -1222,65 +1219,31 @@ func (s *stream) Response() (llm.Response, error) {
 		cut       []*callAccumulator
 	)
 	for _, acc := range s.order {
-		// A call is complete only when the stream framed it with step.stop, or
-		// when what arrived is a whole JSON object. One that was never closed and
-		// carries no argument bytes is a call whose arguments did not arrive, and
-		// turning it into `{}` runs the tool on arguments nobody sent.
-		unclosedAndEmpty := !acc.sealed && acc.args.Len() == 0
-		args := json.RawMessage(acc.args.String())
-		if len(args) == 0 {
-			args = json.RawMessage("{}")
-		}
-		// Checked as an object, not merely as valid JSON. A tool's arguments are
-		// an object by definition — every schema this harness sends declares
-		// "type":"object" — and the looser check let a bare JSON string through
-		// as if it were one. What reached the tool was a quoted string, and the
-		// tool reported a decode failure against its own schema, which reads as
-		// the model having sent nonsense rather than as the adapter having
-		// failed to unwrap the wire form.
-		if (unclosedAndEmpty || !isJSONObject(args)) && stop == llm.StopMaxTokens {
+		// What a complete call is, is decided once for every adapter; see
+		// llm.SettleCall. This wire closes a call with step.stop but accepts a
+		// whole JSON object without it, so an unclosed call with no argument
+		// bytes is the one case the framing decides.
+		settled := llm.SettleCall(llm.CallEvidence{
+			ID: llm.CallID(acc.id), Name: acc.name, Arguments: acc.args.String(),
+			Closed: acc.sealed, Framing: llm.FramingOptional, IDOptional: true, Stop: stop,
+		})
+		switch settled.Verdict {
+		case llm.CallCutByLimit:
 			// The model ran out of output budget in the middle of the call. The
 			// turn survives: the call is reported as malformed, the loop tells the
 			// model it was cut off, and it can ask for less. Returning an error
 			// here discarded the prose and every completed step of the turn with
-			// it. The anthropic adapter settles the same case the same way.
-			//
-			// A call with no name still cannot be routed or told back to the
-			// model, so that stays an error, as it does there.
-			if acc.name == "" {
-				return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
-			}
+			// it.
 			malformed = append(malformed, llm.MalformedCall{
-				ID:   llm.CallID(acc.id),
-				Name: acc.name,
-				Reason: fmt.Sprintf(
-					"the arguments were cut off by the output limit after %d bytes and are not a complete JSON object",
-					acc.args.Len()),
+				ID: llm.CallID(acc.id), Name: acc.name, Reason: settled.Reason,
 			})
 			cut = append(cut, acc)
 			continue
-		}
-		if unclosedAndEmpty {
-			return llm.Response{}, fmt.Errorf(
-				"gemini: tool call %q was never closed by step.stop and carried no arguments; "+
-					"it was not dispatched", acc.name)
-		}
-		if !isJSONObject(args) {
-			// Named as unusable rather than as incomplete. Truncation is the
-			// common cause and it is not the only one — arguments that are two
-			// concatenated objects are complete and still unusable — and
-			// telling a reader the stream was cut off when it was not sends
-			// them to investigate the wrong half of the system.
-			return llm.Response{}, fmt.Errorf(
-				"gemini: tool call %q arrived with arguments that are not a JSON object, so it was not "+
-					"dispatched — the stream was cut off mid-call, or the server framed two calls as "+
-					"one: %q", acc.name, args)
-		}
-		if acc.name == "" {
-			return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
+		case llm.CallUnusable:
+			return llm.Response{}, fmt.Errorf("gemini: tool call %q (id %q) %s", acc.name, acc.id, settled.Reason)
 		}
 		calls = append(calls, llm.ToolCallBlock{
-			ID: llm.CallID(acc.id), Name: acc.name, Arguments: args,
+			ID: llm.CallID(acc.id), Name: acc.name, Arguments: settled.Arguments,
 		})
 	}
 

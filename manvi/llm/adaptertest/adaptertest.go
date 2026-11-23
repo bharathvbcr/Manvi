@@ -229,3 +229,94 @@ func AssertTruncatedCallIsNeverDispatched(t *testing.T, c TruncationCase) {
 		t.Fatalf("%s: error %v but %d call(s) were still returned: %s", c.Name, err, len(calls), calls[0].Arguments)
 	}
 }
+
+// SettlementExpect is what every adapter owes one kind of call at settlement.
+// The expectations are about the outcome, not the surface: a hosted wire may
+// refuse a response outright where a local server reports the same call as
+// malformed (see llm.CallUnusable), and what no adapter may do is run it.
+type SettlementExpect int
+
+const (
+	// ExpectCutCall: the response settles, StopMaxTokens, with the call
+	// reported as exactly one MalformedCall and nothing dispatched. The
+	// output limit is the model's own, and the turn survives it.
+	ExpectCutCall SettlementExpect = iota
+	// ExpectNoDispatch: no call is dispatched. The response is refused or the
+	// call is reported as malformed; both are the rule, neither runs a tool.
+	ExpectNoDispatch
+	// ExpectRunnableCalls: every dispatched call can be routed and answered: a
+	// name, an id, and arguments that are a JSON object.
+	ExpectRunnableCalls
+	// ExpectUnknownNamed: the unrecognised block or step type is named, in
+	// Decoding.UnknownKinds on a settled response or in the error that refuses
+	// one. What it carried is never dropped without a trace.
+	ExpectUnknownNamed
+)
+
+// SettlementCase is one stream scripted through one adapter.
+type SettlementCase struct {
+	Name     string
+	Provider func(baseURL string) llm.Provider
+	Request  llm.Request
+	Body     string
+	Expect   SettlementExpect
+	// Unknown is the type name ExpectUnknownNamed looks for.
+	Unknown string
+}
+
+// AssertSettlement drives c through its adapter and holds the outcome to the
+// one rule for "what is a complete call". It is stated here so the wires are
+// held to one assertion rather than to three that drift.
+func AssertSettlement(t *testing.T, c SettlementCase) {
+	t.Helper()
+	server := NewServer(t, c.Body)
+	stream, err := c.Provider(server.URL).Stream(Ctx(), c.Request)
+	if err != nil {
+		t.Fatalf("%s: stream refused before it began: %v", c.Name, err)
+	}
+	_, resp, err := Drain(stream)
+	calls := resp.Message.ToolCalls()
+	switch c.Expect {
+	case ExpectCutCall:
+		if err != nil {
+			t.Fatalf("%s: a call cut off by the output limit killed the turn: %v", c.Name, err)
+		}
+		if resp.StopReason != llm.StopMaxTokens || len(calls) != 0 || len(resp.Malformed) != 1 {
+			t.Fatalf("%s: stop=%s calls=%+v malformed=%+v; want max_tokens, no call, one malformed call",
+				c.Name, resp.StopReason, calls, resp.Malformed)
+		}
+	case ExpectNoDispatch:
+		if err == nil && len(resp.Malformed) == 0 {
+			t.Fatalf("%s: settled cleanly with calls=%+v and nothing malformed; the call was neither refused nor reported", c.Name, calls)
+		}
+		if len(calls) != 0 {
+			t.Fatalf("%s: err=%v but %d call(s) were dispatched: %+v", c.Name, err, len(calls), calls)
+		}
+	case ExpectRunnableCalls:
+		if err != nil {
+			t.Fatalf("%s: %v", c.Name, err)
+		}
+		if len(calls) == 0 {
+			t.Fatalf("%s: no call settled", c.Name)
+		}
+		for _, call := range calls {
+			args := strings.TrimSpace(string(call.Arguments))
+			if call.ID == "" || call.Name == "" || !strings.HasPrefix(args, "{") {
+				t.Fatalf("%s: dispatched a call that cannot be routed and answered: %+v", c.Name, call)
+			}
+		}
+	case ExpectUnknownNamed:
+		if err != nil {
+			if !strings.Contains(err.Error(), c.Unknown) {
+				t.Fatalf("%s: refused without naming %q: %v", c.Name, c.Unknown, err)
+			}
+			return
+		}
+		for _, kind := range resp.Decoding.UnknownKinds {
+			if kind == c.Unknown {
+				return
+			}
+		}
+		t.Fatalf("%s: settled with the %q type dropped and no report of it: %+v", c.Name, c.Unknown, resp.Decoding)
+	}
+}
