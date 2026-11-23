@@ -203,9 +203,14 @@ One rule, identical for every component, implemented in
 `manvi/cmd/manvi/toolbinary.go`:
 
 1. `MANVI_<NAME>_BINARY`, if set. An explicit path always wins.
-2. `PATH`. This is the normal case for an installed DevCouncil.
-3. A sibling cargo build directory, release before debug. A development
-   convenience, not the intended deployment.
+2. `PATH`. This is the normal case for an installed DevCouncil. A release
+   build looks in the directory holding the `manvi` binary first, and takes a
+   `PATH` entry only when its resolved path is outside the project root and
+   the working directory.
+3. Developer builds only: a cargo build tree (`crates/target`, `rust/target`,
+   `DevCouncil/rust/target`) found by walking up from the binary's own
+   directory, release before debug. A development convenience, not the
+   intended deployment.
 4. The bare name, so the failure is a clear `exec` error rather than a silent
    skip.
 
