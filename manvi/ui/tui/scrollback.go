@@ -414,11 +414,8 @@ func (s *Scrollback) rows(th Theme, width int) []rowRef {
 		// When StackWork is active, a new work entry can change the header
 		// summary of an open work run that started earlier, so step valid back
 		// to the start of that contiguous work run.
-		if s.StackWork && slot.valid > 0 && slot.valid <= len(s.entries) {
+		if s.StackWork && slot.valid > 0 {
 			back := slot.valid
-			if back == len(s.entries) {
-				back--
-			}
 			for back > 0 && isWorkEntry(s.entries[back-1].Event.Kind) {
 				back--
 			}
@@ -430,6 +427,12 @@ func (s *Scrollback) rows(th Theme, width int) []rowRef {
 		keep := len(slot.rows)
 		for keep > 0 && slot.rows[keep-1].entry >= slot.valid {
 			keep--
+		}
+		if (s.sel.Active || s.sel.Dragging) && (s.viewW == 0 || width == s.viewW) {
+			_, _, r1, _ := s.sel.Bounds()
+			if keep <= r1 {
+				s.sel.Clear()
+			}
 		}
 		out := slot.rows[:keep]
 		// The entry above, for the spacing: the nearest one that is drawn. A
@@ -650,42 +653,140 @@ func maxScroll(viewport, total int) int {
 	return total - viewport
 }
 
-// SelectDelta moves the selection by n entries and scrolls it into view.
+func isEntryPinned(e *Entry) bool {
+	if e.absorbed {
+		return false
+	}
+	switch e.Status() {
+	case StatusBlock, StatusGranted, StatusDegraded, StatusWarn:
+		return true
+	}
+	return false
+}
+
+// capsuleRange returns the [start, end) entry range of the work capsule that
+// encloses idx when StackWork is active and the run has at least 2 visible
+// entries.
+func (s *Scrollback) capsuleRange(idx int) (start, end int, ok bool) {
+	if !s.StackWork || idx < 0 || idx >= len(s.entries) || !isWorkEntry(s.entries[idx].Event.Kind) {
+		return -1, -1, false
+	}
+	start = idx
+	for start > 0 && isWorkEntry(s.entries[start-1].Event.Kind) {
+		start--
+	}
+	end = idx + 1
+	for end < len(s.entries) && isWorkEntry(s.entries[end].Event.Kind) {
+		end++
+	}
+	visible := 0
+	for k := start; k < end; k++ {
+		if !s.entries[k].absorbed {
+			visible++
+			if visible >= 2 {
+				return start, end, true
+			}
+		}
+	}
+	return -1, -1, false
+}
+
+// capsuleOf returns the start entry index of the work capsule enclosing idx,
+// or -1 if idx is not inside a stacked work capsule.
+func (s *Scrollback) capsuleOf(idx int) int {
+	start, _, ok := s.capsuleRange(idx)
+	if !ok {
+		return -1
+	}
+	return start
+}
+
+// selectable reports whether entry idx currently has a visible row that
+// keyboard navigation can land on. Collapsed capsules expose their header row
+// (at capsule start) and any safety-pinned rows inside them.
+func (s *Scrollback) selectable(idx int) bool {
+	if idx < 0 || idx >= len(s.entries) {
+		return false
+	}
+	if start, _, ok := s.capsuleRange(idx); ok {
+		if idx == start {
+			return true
+		}
+		if s.expandedCapsules[start] {
+			return !s.entries[idx].absorbed
+		}
+		return isEntryPinned(s.entries[idx])
+	}
+	return !s.entries[idx].absorbed
+}
+
+func (s *Scrollback) snapSelected(primaryDir int) {
+	for _, dir := range []int{primaryDir, -primaryDir} {
+		for i := s.selected; i >= 0 && i < len(s.entries); i += dir {
+			if s.selectable(i) {
+				s.selected = i
+				return
+			}
+		}
+	}
+	s.selected = -1
+}
+
+// SelectDelta moves the selection by n visible stops and scrolls it into view.
+// Collapsed work capsules are traversed as header + pinned stops without
+// auto-expanding them; only search and explicit Enter expand capsules.
 func (s *Scrollback) SelectDelta(n int, th Theme) {
 	if len(s.entries) == 0 {
 		return
 	}
 	if s.selected < 0 {
-		// Entering selection from the bottom selects the newest entry, which is
-		// what the operator was already looking at.
-		s.selected = len(s.entries) - 1
-	} else {
-		s.selected += n
-	}
-	if s.selected < 0 {
-		s.selected = 0
+		// Entering selection from the bottom selects the newest selectable
+		// entry, which is what the operator was already looking at.
+		for i := len(s.entries) - 1; i >= 0; i-- {
+			if s.selectable(i) {
+				s.selected = i
+				s.revealSelected(th)
+				return
+			}
+		}
+		return
 	}
 	if s.selected >= len(s.entries) {
 		s.selected = len(s.entries) - 1
 	}
-	// A call absorbed by its result has no row to select. The selection goes on
-	// in the direction it was moving, and turns back only at the end of the
-	// transcript.
-	step := 1
-	if n <= 0 {
-		step = -1
-	}
-	for _, dir := range []int{step, -step} {
-		i := s.selected
-		for i >= 0 && i < len(s.entries) && s.entries[i].absorbed {
-			i += dir
+	if n == 0 {
+		if !s.selectable(s.selected) {
+			s.snapSelected(-1)
 		}
-		if i >= 0 && i < len(s.entries) {
-			s.selected = i
+		if s.selected >= 0 {
+			s.revealSelected(th)
+		}
+		return
+	}
+	dir := 1
+	steps := n
+	if n < 0 {
+		dir = -1
+		steps = -n
+	}
+	cur := s.selected
+	for step := 0; step < steps; step++ {
+		next := cur + dir
+		for next >= 0 && next < len(s.entries) && !s.selectable(next) {
+			next += dir
+		}
+		if next < 0 || next >= len(s.entries) {
 			break
 		}
+		cur = next
 	}
-	s.revealSelected(th)
+	s.selected = cur
+	if !s.selectable(s.selected) {
+		s.snapSelected(dir)
+	}
+	if s.selected >= 0 {
+		s.revealSelected(th)
+	}
 }
 
 // SelectNone clears the selection and returns to following.
@@ -745,13 +846,19 @@ func (s *Scrollback) CapsuleAt(y int) int {
 
 // ToggleCapsule opens or closes the work capsule starting at startIdx.
 func (s *Scrollback) ToggleCapsule(startIdx int) bool {
-	if startIdx < 0 || startIdx >= len(s.entries) {
+	start, end, ok := s.capsuleRange(startIdx)
+	if !ok || start != startIdx {
 		return false
 	}
 	if s.expandedCapsules == nil {
 		s.expandedCapsules = map[int]bool{}
 	}
-	s.expandedCapsules[startIdx] = !s.expandedCapsules[startIdx]
+	open := !s.expandedCapsules[startIdx]
+	s.expandedCapsules[startIdx] = open
+	if !open && s.selected > start && s.selected < end && !s.selectable(s.selected) {
+		s.selected = start
+	}
+	s.sel.Clear()
 	s.changed(startIdx)
 	return true
 }
@@ -760,6 +867,12 @@ func (s *Scrollback) ToggleCapsule(startIdx int) bool {
 // verbose work stream (Ctrl+O), returning the new StackWork value.
 func (s *Scrollback) ToggleStackWork() bool {
 	s.StackWork = !s.StackWork
+	if s.StackWork && s.selected >= 0 && !s.selectable(s.selected) {
+		if capStart := s.capsuleOf(s.selected); capStart >= 0 {
+			s.selected = capStart
+		}
+	}
+	s.sel.Clear()
 	s.touch()
 	return s.StackWork
 }
@@ -791,7 +904,8 @@ func (s *Scrollback) BeginDrag(x, y int) bool {
 	return true
 }
 
-// UpdateDrag extends a cell-level selection as the pointer moves.
+// UpdateDrag extends a cell-level selection as the pointer moves, autoscrolling
+// when dragged past the top or bottom edge of the viewport.
 func (s *Scrollback) UpdateDrag(x, y int) bool {
 	if !s.sel.Dragging {
 		return false
@@ -801,13 +915,27 @@ func (s *Scrollback) UpdateDrag(x, y int) bool {
 		if len(s.layout) == 0 {
 			return false
 		}
-		if y < s.view.Y {
+		switch {
+		case y < s.view.Y:
+			s.ScrollBy(-1)
 			row = s.scroll
-		} else {
-			row = min(s.scroll+s.view.H-1, len(s.layout)-1)
+			if s.dropped > 0 {
+				row--
+			}
+		case y >= s.view.Bottom():
+			s.ScrollBy(1)
+			row = s.scroll + s.view.H - 1
+			if s.dropped > 0 {
+				row--
+			}
+		default:
+			row = 0
 		}
 		if row < 0 {
 			row = 0
+		}
+		if row >= len(s.layout) {
+			row = len(s.layout) - 1
 		}
 	}
 	return s.sel.Update(row, s.ColAt(x))
@@ -876,12 +1004,8 @@ func (s *Scrollback) revealSelected(th Theme) {
 
 // ToggleFold folds or unfolds the selected entry (or its work capsule header).
 func (s *Scrollback) ToggleFold() bool {
-	if s.StackWork && s.selected >= 0 {
-		for _, r := range s.layout {
-			if r.capsuleStart == s.selected {
-				return s.ToggleCapsule(s.selected)
-			}
-		}
+	if s.StackWork && s.selected >= 0 && s.capsuleOf(s.selected) == s.selected {
+		return s.ToggleCapsule(s.selected)
 	}
 	e := s.Selected()
 	if e == nil || !e.Foldable {
@@ -889,6 +1013,7 @@ func (s *Scrollback) ToggleFold() bool {
 	}
 	e.Folded = !e.Folded
 	e.foldSet = true
+	s.sel.Clear()
 	s.changed(s.selected)
 	return true
 }
@@ -902,9 +1027,10 @@ func (s *Scrollback) SetFoldAll(folded bool) {
 			if s.expandedCapsules == nil {
 				s.expandedCapsules = map[int]bool{}
 			}
-			for _, r := range s.layout {
-				if r.capsuleStart >= 0 {
-					s.expandedCapsules[r.capsuleStart] = true
+			for i := 0; i < len(s.entries); i++ {
+				if start, end, ok := s.capsuleRange(i); ok && start == i {
+					s.expandedCapsules[start] = true
+					i = end - 1
 				}
 			}
 		}
@@ -915,6 +1041,12 @@ func (s *Scrollback) SetFoldAll(folded bool) {
 			e.foldSet = true
 		}
 	}
+	if folded && s.selected >= 0 && !s.selectable(s.selected) {
+		if capStart := s.capsuleOf(s.selected); capStart >= 0 {
+			s.selected = capStart
+		}
+	}
+	s.sel.Clear()
 	s.touch()
 }
 
@@ -989,13 +1121,31 @@ func (s *Scrollback) SetSearch(query string, th Theme) bool {
 			}
 		}
 	}
-	s.selected = s.matches[s.matchIdx]
-	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
-		s.entries[s.selected].Folded = false
-		s.changed(s.selected)
+	s.revealMatch(s.matches[s.matchIdx], th)
+	return true
+}
+
+// revealMatch selects idx, expanding any enclosing collapsed work capsule and
+// unfolding the entry if folded so the matched text is visible on screen.
+func (s *Scrollback) revealMatch(idx int, th Theme) {
+	s.selected = idx
+	if idx < 0 || idx >= len(s.entries) {
+		return
+	}
+	if capStart := s.capsuleOf(idx); capStart >= 0 && !s.expandedCapsules[capStart] {
+		if s.expandedCapsules == nil {
+			s.expandedCapsules = map[int]bool{}
+		}
+		s.expandedCapsules[capStart] = true
+		s.sel.Clear()
+		s.changed(capStart)
+	}
+	if s.entries[idx].Foldable && s.entries[idx].Folded {
+		s.entries[idx].Folded = false
+		s.sel.Clear()
+		s.changed(idx)
 	}
 	s.revealSelected(th)
-	return true
 }
 
 // NextMatch jumps to the next search match.
@@ -1004,12 +1154,7 @@ func (s *Scrollback) NextMatch(th Theme) bool {
 		return false
 	}
 	s.matchIdx = (s.matchIdx + 1) % len(s.matches)
-	s.selected = s.matches[s.matchIdx]
-	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
-		s.entries[s.selected].Folded = false
-		s.changed(s.selected)
-	}
-	s.revealSelected(th)
+	s.revealMatch(s.matches[s.matchIdx], th)
 	return true
 }
 
@@ -1019,12 +1164,7 @@ func (s *Scrollback) PrevMatch(th Theme) bool {
 		return false
 	}
 	s.matchIdx = (s.matchIdx - 1 + len(s.matches)) % len(s.matches)
-	s.selected = s.matches[s.matchIdx]
-	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
-		s.entries[s.selected].Folded = false
-		s.changed(s.selected)
-	}
-	s.revealSelected(th)
+	s.revealMatch(s.matches[s.matchIdx], th)
 	return true
 }
 
@@ -1071,6 +1211,9 @@ func (s *Scrollback) Draw(b *render.Buffer, r render.Rect, th Theme, focused boo
 		s.barCol = r.Right() - 1
 	}
 
+	if s.viewW > 0 && body.W != s.viewW {
+		s.sel.Clear()
+	}
 	s.view, s.viewW = body, body.W
 	if s.follow {
 		s.scroll = maxScroll(r.H, total)

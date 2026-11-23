@@ -16,7 +16,7 @@ var uiCommands = []CommandSpec{
 	{Name: "settings", Summary: "browse every setting, its value, and where the value came from"},
 	{Name: "sessions", Summary: "switch between open sessions"},
 	{Name: "inspector", Summary: "toggle the right-hand thinking, steps, diffs, and info drawer (Ctrl+B)"},
-	{Name: "compact", Summary: "toggle stacked turn work capsules vs full verbose stream (Ctrl+O)"},
+	{Name: "stack", Summary: "toggle stacked turn work capsules vs full verbose stream (Ctrl+O)"},
 	{Name: "copy", Summary: "open the smart copy menu for replies, code blocks, diffs, and thinking"},
 	{Name: "theme", Summary: "choose a colour palette (dark, light, terminal, plain)"},
 	{Name: "help", Summary: "show keyboard shortcuts and help"},
@@ -235,7 +235,7 @@ func (a *App) runCommand(name, args string) []Effect {
 			}
 		}
 		return nil
-	case "compact":
+	case "stack", "compact":
 		if v != nil {
 			stacked := v.Scroll.ToggleStackWork()
 			if stacked {

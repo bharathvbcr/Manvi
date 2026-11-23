@@ -340,6 +340,9 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		pad := (area.W - 104) / 2
 		area = area.Pad(0, pad, 0, pad)
 	}
+	if drawerRect.Empty() && v.Focus == CtxInspector {
+		v.Focus = CtxPrompt
+	}
 
 	// A run that is not strict says so on a row of its own, directly above
 	// where the operator types: it is the one statement on screen that changes
