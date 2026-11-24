@@ -164,6 +164,46 @@
       "why": "Case-insensitive volumes only."
     },
     {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestOddlyNamedSecretFilesAreDeniedLive",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "harness.exec_containment is a darwin seatbelt seam (sandbox-exec); Linux has no sandbox-exec, so requireSeatbelt skips the live check there; it can run only on macOS."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestContainmentStopsRecursiveReadersLive",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "harness.exec_containment is a darwin seatbelt seam (sandbox-exec); Linux has no sandbox-exec, so requireSeatbelt skips the live check there; it can run only on macOS."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestExecCommandRunsContainedLive",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "harness.exec_containment is a darwin seatbelt seam (sandbox-exec); Linux has no sandbox-exec, so requireSeatbelt skips the live check there; it can run only on macOS."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestContainmentStopsRenameAndLinkLive",
+      "os": [
+        "ubuntu-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "harness.exec_containment is a darwin seatbelt seam (sandbox-exec); Linux has no sandbox-exec, so requireSeatbelt skips the live check there; it can run only on macOS."
+    },
+    {
       "test": "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/path",
       "os": [
         "ubuntu-latest",
