@@ -48,8 +48,9 @@ under **Unreleased** in the same commit as the code.
   environment, temp directory and write roots (the model's shell, the shell
   verifier and both RPC verifier children): an exact-name allow-listed
   environment, a private HOME and TMPDIR under one runner-private
-  `mh-runner-<pid>-<rand>` parent. `.env*` files and symlinks anywhere in the
-  work tree are guard roots under a bounded scan. The protocol stamp records
+  `mh-runner-<pid>-<rand>` parent. `.env*` files and symlinks in the work tree
+  are guard roots under a bounded scan that leaves out `bench/.work` (the model's
+  workspace root) and the runner's `mh-runner-*` temp parents. The protocol stamp records
   `shell_env: scrubbed`, so cells run before this report drift. `test_adv_b25.py`
   joins the verify gate; its host-touching probes need `MH_ADV_HOST_PROBES=1`.
 - **b26-benchres:** bench: the runner kills every process an episode started, not
@@ -65,8 +66,10 @@ under **Unreleased** in the same commit as the code.
   named (the refusal says `manvi use local --base-url <addr>`); a user config
   with more than one hard link is refused; `anthropic-account` strips an
   inherited `ANTHROPIC_BASE_URL` and refuses a marker that is a symlink or is
-  reached through one; `ui.Sanitize` marks Unicode format characters and
-  U+2028/2029.
+  reached through one; `ui.Sanitize` marks bidi controls, U+2028/2029 and stray
+  tag characters and keeps exactly the format runes the render buffer keeps (one
+  ZWJ/ZWNJ after a letter, mark or pictograph, and well-formed flag tag
+  sequences), so Persian and Indic text is not shown with literal escapes.
 - **b26-subject:** approvals show the whole subject and an over-long one is
   deny-only; a key aimed at a withdrawn card is consumed, not applied; the model's
   lease label is stored as `agent:<label>`; each child session gets a
@@ -117,8 +120,10 @@ under **Unreleased** in the same commit as the code.
   dropped; `notarytool submit --wait` is bounded by `--timeout 30m`.
 - **b31-computer:** computer-use masking folds width, case and separators across
   text fields, masks the sensitive input node, adds 16-bit PNG parity, and
-  approval takes its own capture; sensitive controls without bounds fail closed.
-  New exported `EffectivePolicy`.
+  approval takes its own capture; sensitive controls without bounds fail closed,
+  while a sensitive control lying wholly outside the captured surface no longer
+  fails the capture (`sensitivePixelRect` gives it an empty rectangle). New
+  exported `EffectivePolicy`.
 - **b31-settle:** one settlement rule decides whether a provider tool call is
   complete (a 0-byte call under length, content_filter or a missing finish no
   longer runs `{}`), with one conformance table; Gemini stops reading the
@@ -127,9 +132,15 @@ under **Unreleased** in the same commit as the code.
   owner counts as gone; every admitted attempt of a `Stream` call is kept; `llm/local` backs off exponentially when a server stays
   down; `geminiproxy` records only a request label and an error class and opens
   its capture without following links. **Budget ledgers written by this version
-  (records carry `owner` and `owner_start`) are refused by older Manvi binaries;
+  (records carry `owner` and `owner_start`) are refused by older Manvi binaries
+  once the ledger holds a record with owner fields;
   the schema version stays 2.** Upgrade every Manvi that shares a ledger
   together, for example a GitPulse-bundled `manvi` alongside a CLI `manvi`.
+- **Land fixes:** `shell_env` is now a pooling key, so bench cells mixing
+  pre-scrub and post-scrub episodes refuse to pool; the lease owner of a spawned
+  sub-agent is `agent:<sanitised label, at most 48 characters>`, as for checkout;
+  `anthropic-account` builds on Windows and fails closed on a marker that is not
+  a regular file.
 
 ### Added
 
