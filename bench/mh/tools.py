@@ -427,7 +427,6 @@ def _model_writable_roots(*starts):
     for start in starts:
         if start:
             roots.add(os.path.realpath(os.path.join(os.path.realpath(start), ".work")))
-    roots.update(_RUNNER_PARENTS.values())
     return frozenset(roots)
 
 
@@ -444,24 +443,13 @@ def _walk_env_files(top, skip=frozenset()):
     that cap raises GitGuardError: a partial guard set leaves the .env files past
     the cap readable, and an episode run on it would look the same as one run on
     a complete scan. A symlink named .env* is
-    included without being followed; the profile resolves it to its target. A
-    symlink whose target is an existing directory outside top is the exception:
-    it is not an .env file, and guarding it would deny that whole directory
-    (/opt/homebrew, /usr) to every shell, so it is left out. A link to a file
-    outside top (a real secret kept elsewhere) and a dangling link stay guarded.
-    Directories in `skip` (the model's workspace root, see
+    included without being followed; the profile resolves it to its target, so an
+    operator's `.env.d -> ~/secrets/` guards that directory. Only a model can
+    plant a link that denies something it should not, and it can write only
+    where the walk does not look: directories in `skip` (the model's workspace root, see
     _model_writable_roots) and runner parents are neither entered nor counted.
     """
     found, dirs = set(), 0
-    top_prefix = top.rstrip(os.sep) + os.sep
-
-    def outside_directory_link(p):
-        if not os.path.islink(p):
-            return False
-        real = os.path.realpath(p)
-        return (os.path.isdir(real) and real != top
-                and not real.startswith(top_prefix))
-
     skip_names = {os.path.basename(s) for s in skip}
 
     def skipped(dp, n):
@@ -483,10 +471,10 @@ def _walk_env_files(top, skip=frozenset()):
                      f"directories ({dirs} directories visited, more remain), so "
                      f"the .env files past it would be unguarded")
         for n in fns:
-            if n.startswith(".env") and not outside_directory_link(os.path.join(dp, n)):
+            if n.startswith(".env"):
                 found.add(os.path.join(dp, n))
         for n in dns:
-            if n.startswith(".env") and not outside_directory_link(os.path.join(dp, n)):
+            if n.startswith(".env"):
                 found.add(os.path.join(dp, n))
         dns[:] = [n for n in dns if n not in ENV_GUARD_PRUNE
                   and not n.startswith(".env")
@@ -506,16 +494,22 @@ def env_file_guards(*starts):
     .env* is never something the model needs, and telling tracked from untracked
     would need a git call whose failure would have to mean "guard nothing". An
     unreadable directory raises GitGuardError for the same reason the git guard
-    does. Results are cached per work tree for the life of the process.
+    does. Results are cached per (work tree, skipped directories) for the life of
+    the process.
     """
     found = set()
     for start in starts:
         if not start:
             continue
         top = _checkout_top(os.path.realpath(start))
-        if top not in _ENV_GUARD_CACHE:
-            _ENV_GUARD_CACHE[top] = _walk_env_files(top, _model_writable_roots(*starts))
-        found.update(_ENV_GUARD_CACHE[top][0])
+        # Keyed by the skip set as well as the work tree: the walk's result
+        # depends on which directories it leaves out, and that comes from the
+        # starts, so two calls over one checkout can differ.
+        skip = _model_writable_roots(*starts)
+        key = (top, skip)
+        if key not in _ENV_GUARD_CACHE:
+            _ENV_GUARD_CACHE[key] = _walk_env_files(top, skip)
+        found.update(_ENV_GUARD_CACHE[key][0])
     return tuple(sorted(found))
 
 

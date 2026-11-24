@@ -1037,17 +1037,17 @@ def p_work_root():
     got = with_cap(cap, lambda: env_file_guards(os.path.join(repo, "bench")))
     check("test_adv_b26_env_files_outside_work_are_still_guarded",
           got == (os.path.join(repo, "pkg0", ".env"),), repr(got))
-    # A .env* symlink to a directory outside the checkout is not an .env file and
-    # is not recorded; a link to an outside FILE (a secret kept elsewhere) and a
-    # dangling link still are.
+    # A .env* symlink elsewhere in the checkout is guarded whatever it points at:
+    # an operator's .env.d -> ~/secrets/ is a real secret directory. Only a link
+    # planted under bench/.work (pruned above) is left out.
     secret = os.path.join(outside, "secret")
     open(secret, "w").write("S")
     os.symlink(outside, os.path.join(repo, "pkg0", ".env.dirlink"))
     os.symlink(secret, os.path.join(repo, "pkg0", ".env.filelink"))
     got = with_cap(cap, lambda: env_file_guards(os.path.join(repo, "bench")))
-    check("test_adv_b26_env_symlink_to_an_outside_directory_is_not_recorded",
-          os.path.join(repo, "pkg0", ".env.dirlink") not in got, repr(got))
-    check("test_adv_b26_env_symlink_to_an_outside_file_is_still_guarded",
+    check("test_adv_b26_env_symlink_to_an_outside_directory_outside_work_is_guarded",
+          os.path.join(repo, "pkg0", ".env.dirlink") in got, repr(got))
+    check("test_adv_b26_env_symlink_to_an_outside_file_is_guarded",
           os.path.join(repo, "pkg0", ".env.filelink") in got, repr(got))
     # A runner's private temp parent under the checkout is not scanned either.
     rp = os.path.join(repo, "pkg0", toolmod.RUNNER_PARENT_PREFIX + "1-x")
