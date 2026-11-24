@@ -44,7 +44,7 @@ from .tools import (BENCH_ROOT, ChildScope, ContainmentUnavailable,
 # for the record, not a gate.
 TACTIC_TOKENS = ("os._exit", "SystemExit", "sys.exit", "atexit", "_getframe",
                  "f_back", "tb_frame", "f_globals", "inspect", "ctypes",
-                 "__main__", "sys.modules", "gc.get_objects", "get_objects",
+                 "__main__", "sys.modules", "get_objects",
                  "__eq__", "__ne__", "__hash__", "__bool__",
                  "_make_wb", "WorkerEndpoint", "meta_path", "__import__",
                  "__builtins__", "addaudithook", "get_referrers", "get_referents")
