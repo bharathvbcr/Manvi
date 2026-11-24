@@ -18,6 +18,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
+	"github.com/bharathvbcr/Manvi/manvi/internal/rootedpath"
 )
 
 // Materialising a harness into a managed checkout.
@@ -616,6 +617,11 @@ func linkDescription(root, rel string) string {
 	target, err := os.Readlink(filepath.Join(root, rel))
 	if err != nil {
 		return "a symbolic link"
+	}
+	if rootedpath.NotAbsolute(target) {
+		// "/etc/hosts" is not absolute on Windows; joined under the root it would
+		// read as a file inside the checkout and be shown.
+		return "a symbolic link that points outside the checkout"
 	}
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(root, target)

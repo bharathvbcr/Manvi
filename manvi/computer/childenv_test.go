@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 // The desktop broker launches helpers of its own, which inherit what it was
 // given. A stand-in broker records its environment and exits.
 func TestTheBrokerDoesNotSeeProviderCredentials(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in broker is a #!/bin/sh script, which Windows cannot start; the withheld-credentials rule itself is covered on Windows by the childenv package tests")
+	}
 	childenvtest.SetParent(t)
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env.txt")

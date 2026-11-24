@@ -15,12 +15,15 @@ const envDoc = docRoot + "/docs/CLI_AND_CONFIGURATION.md"
 
 // envExempt are platform conventions: names the operating system or the shell
 // define, which this harness reads but does not own. The document still says
-// what the harness does with the terminal ones; these four are not worth a row.
+// what the harness does with the terminal ones; these are not worth a row.
+// PATHEXT is the Windows list of extensions that make a file a program; the
+// tool-binary search reads it the way the OS resolver does.
 var envExempt = map[string]bool{
-	"HOME":   true,
-	"TMPDIR": true,
-	"USER":   true,
-	"PATH":   true,
+	"HOME":    true,
+	"TMPDIR":  true,
+	"USER":    true,
+	"PATH":    true,
+	"PATHEXT": true,
 	// llm/adaptertest is test support compiled as production code; TEST_KEY is
 	// a placeholder credential name no operator ever sets.
 	"TEST_KEY": true,

@@ -3,6 +3,7 @@ package devcouncil
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -83,8 +84,8 @@ func TestCommitGoesOnWhenSecretFilesExceedTheTotalCap(t *testing.T) {
 // that hashes every secret file at once ("answered 1 ids for 2 files"), and with
 // it every commit. Git holds its blobs, so it is judged by them.
 func TestCommitGoesOnWhenATrackedSecretFileIsUnreadable(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a mode-0 file")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("a mode-0 file is unreadable only off Windows (permission bits do not stop a read there) and not to root")
 	}
 	f := scanFixture(t)
 	trackSecret(t, f, "secrets/locked.txt", prodBody)
@@ -106,8 +107,8 @@ func TestCommitGoesOnWhenATrackedSecretFileIsUnreadable(t *testing.T) {
 // nothing at all. It is a note now, and the commit still goes through because
 // the agent cannot cure a directory it cannot open.
 func TestCommitNotesAnUntrackedDirectoryGitCouldNotOpen(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a mode-0 directory")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("a mode-0 directory is unopenable only off Windows (permission bits do not stop a read there) and not to root")
 	}
 	lock := func(t *testing.T, f *fixture, rel string) {
 		t.Helper()

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -102,6 +103,9 @@ func TestCheckRefusesAnOperandTheGateCannotVerifyAsAHardBlock(t *testing.T) {
 // because its lease has an expiry no one can parse, so the report read as a
 // complete account of a store that had withheld a task.
 func TestWatchNamesALeaseTheStoreCouldNotRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("seeds an unparseable lease through the sqlite3 shell, which windows-latest does not ship and this job installs nothing from the network to get")
+	}
 	binary := testsupport.DCStore(t)
 	db := filepath.Join(t.TempDir(), "state.sqlite")
 	t.Setenv("MANVI_STORE_BINARY", binary)

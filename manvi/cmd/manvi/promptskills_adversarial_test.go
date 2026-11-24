@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -253,6 +254,9 @@ func TestAdvDescriptionCannotForgeASection(t *testing.T) {
 // Attack 5a. An unreadable skills directory is a fault with no section, and the
 // turn still has its prompt.
 func TestAdvUnreadableSkillsDirIsAFaultNotASection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0 makes a directory unreadable only through unix mode bits; Windows ignores them, so the directory stays readable")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory modes")
 	}

@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,9 @@ func sameAsInRepo(t *testing.T, candidate, marker string) {
 // Attack 1: every spelling that reaches the repository file, checked against the
 // kernel.
 func TestZAdvW9SecondKernelSpellingsAreInside(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the scenario puts a '..' after a symlink, which POSIX resolves through the link and Windows folds out of the path text before following any link, so the kernel cannot open the file this test says it names")
+	}
 	base := advBase(t)
 	repo := filepath.Join(base, "repo")
 	out := filepath.Join(base, "out")
@@ -141,6 +145,9 @@ func TestZAdvW9SecondKernelSpellingsAreInside(t *testing.T) {
 
 // The dangling chain checked BEFORE the target exists, then the kernel's create.
 func TestZAdvW9SecondDanglingChainBeforeCreate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the scenario puts a '..' after a symlink, which POSIX resolves through the link and Windows folds out of the path text before following any link, so the kernel cannot open the file this test says it names")
+	}
 	base := advBase(t)
 	repo := filepath.Join(base, "repo")
 	out := filepath.Join(base, "out")
@@ -393,6 +400,9 @@ func TestZAdvW9SecondRaceSwapLinkAndDir(t *testing.T) {
 const propSeed = 20261107
 
 func TestZAdvW9SecondPropertyAgainstKernel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the oracle is POSIX '..'-through-a-symlink resolution, which Windows does not perform (it folds '..' out of the path text first), so the property disagrees with the kernel by construction; the 4000 symlinked trees also exceeded the 20-minute package bound there")
+	}
 	cases := 4000
 	if testing.Short() {
 		cases = 500

@@ -310,7 +310,8 @@ func lockEntry(cPath string) (func(), error) {
 			_ = f.Close()
 			return func() { _ = os.Remove(lockPath) }, nil
 		}
-		if !errors.Is(err, fs.ErrExist) {
+		exists := errors.Is(err, fs.ErrExist)
+		if !exists && !lockHeldElsewhere(err) {
 			return nil, fmt.Errorf("artifacts: locking %s: %w", filepath.Base(cPath), err)
 		}
 		if info, statErr := os.Lstat(lockPath); statErr == nil && time.Since(info.ModTime()) > lockStaleAfter {
@@ -318,6 +319,12 @@ func lockEntry(cPath string) (func(), error) {
 			continue
 		}
 		if time.Now().After(deadline) {
+			if !exists {
+				// Still refused after the whole wait with an error that is
+				// not "exists": that is a denial, not a contender, and it is
+				// reported as the denial it is.
+				return nil, fmt.Errorf("artifacts: locking %s: %w", filepath.Base(cPath), err)
+			}
 			return nil, fmt.Errorf("artifacts: %q is %w for more than %s", filepath.Base(cPath), ErrLocked, lockWait)
 		}
 		var jitter [1]byte

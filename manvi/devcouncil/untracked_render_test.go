@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,14 @@ func trickyUntrackedTree(t *testing.T, root string) {
 		"[brackets].go":           "package main // glob\n",
 		"*star.go":                "package main // star\n",
 		"a/b/c/deep.txt":          "deep\n",
+	}
+	for name := range files {
+		// A Windows file system cannot hold these names, which are the point of
+		// the tree on every other one (how git quotes them in a header), so the
+		// tree there is the rest of it.
+		if runtime.GOOS == "windows" && strings.ContainsAny(name, "\"\\\t\n*<>|?:") {
+			delete(files, name)
+		}
 	}
 	for name, body := range files {
 		write(t, root, name, body)

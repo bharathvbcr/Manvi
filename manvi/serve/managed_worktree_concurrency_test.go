@@ -22,7 +22,9 @@ import (
 func TestManagedRunnerParallelDistinctWorktreesAndSameCheckoutBusy(t *testing.T) {
 	wtA := scanRepo(t, map[string]string{"CLAUDE.md": "rules\n"})
 	wtBRaw := filepath.Join(t.TempDir(), "lane-b")
-	addCmd := exec.CommandContext(t.Context(), "git", "worktree", "add", "--detach", wtBRaw, "HEAD") //nolint:gosec // G204: literal git; wtBRaw is a path under t.TempDir()
+	// core.autocrlf off: a Windows git defaults it on, and the checkout would then
+	// hold CRLF where the test restores and compares exact bytes.
+	addCmd := exec.CommandContext(t.Context(), "git", "-c", "core.autocrlf=false", "worktree", "add", "--detach", wtBRaw, "HEAD") //nolint:gosec // G204: literal git; wtBRaw is a path under t.TempDir()
 	addCmd.Dir = wtA
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v\n%s", err, out)

@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,7 +100,7 @@ func TestEntryNameIsDeterministicBoundedAndContained(t *testing.T) {
 	}
 	for _, cue := range []string{"../../etc/passwd", "a/b", "..", "\x00", "???", ""} {
 		n := EntryName("lib", cue)
-		if filepath.Dir(n) != "lessons/lib" || strings.Contains(filepath.Base(n), "..") {
+		if path.Dir(n) != "lessons/lib" || strings.Contains(path.Base(n), "..") {
 			t.Errorf("cue %q escaped: %q", cue, n)
 		}
 	}

@@ -152,7 +152,7 @@ func e2eBinary(t *testing.T) string {
 			e2eBinaryErr = err
 			return
 		}
-		bin := filepath.Join(dir, "manvi")
+		bin := filepath.Join(dir, exe("manvi"))
 		// #nosec G204 -- every argument is a literal in this file except bin,
 		// which is a path this function just made under os.MkdirTemp.
 		cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "./cmd/manvi")

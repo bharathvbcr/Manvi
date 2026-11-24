@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1268,6 +1269,9 @@ func TestAWhollyFailedFanOutIsAnErrorResult(t *testing.T) {
 // task that was in fact held by a lease nobody could read: the empty answer of a
 // check that could not finish, read as the answer of one that did.
 func TestNextTaskNamesALeaseTheStoreCouldNotRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("seeds an unparseable lease through the sqlite3 shell, which windows-latest does not ship and this job installs nothing from the network to get")
+	}
 	f := newFixture(t)
 	insertTask(t, f.db, "TASK-BAD", `[]`)
 	seed := "INSERT INTO task_leases (id,task_id,owner,lease_token,status,created_at,expires_at) " +

@@ -2,6 +2,7 @@ package devcouncil
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
@@ -97,6 +98,9 @@ func TestW21MainWorktreeLiteralPathInASingleWorktreeCheckout(t *testing.T) {
 // C3: a symlinked admin directory is not a directory to os.ReadDir's entry, and
 // was skipped silently; git resolves worktrees/evil/ORIG_HEAD through it.
 func TestProbeSymlinkedAdminDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the symlink is made by the shell's ln -s, which needs a privilege and a layout a Windows runner does not give it")
+	}
 	f := shellCommitFixture(t, true)
 	outside := filepath.Join(t.TempDir(), "evil")
 	write(t, f.root, "park.sh", parkLeak+"mkdir -p "+outside+" $d/worktrees\nln -s "+outside+" $d/worktrees/evil\necho $c > "+outside+"/ORIG_HEAD\n")

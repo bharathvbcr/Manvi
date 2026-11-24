@@ -9,8 +9,8 @@ import (
 
 func TestManagedMcpServersResolvesConfiguredExecutables(t *testing.T) {
 	dir := t.TempDir()
-	gp := filepath.Join(dir, "gitpulse-mcp")
-	dm := filepath.Join(dir, "devmap")
+	gp := filepath.Join(dir, exe("gitpulse-mcp"))
+	dm := filepath.Join(dir, exe("devmap"))
 	nonExec := filepath.Join(dir, "non-exec-devmap")
 	for _, p := range []string{gp, dm} {
 		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // executable stand-in in t.TempDir
@@ -49,9 +49,9 @@ func TestManagedMcpServersResolvesConfiguredExecutables(t *testing.T) {
 // Manvi keeps navigating with MANVI_MAP_BINARY, and gitpulse is unaffected.
 func TestManagedMcpDevmapOptOutLeavesTheNavigationBinaryAlone(t *testing.T) {
 	dir := t.TempDir()
-	gp := filepath.Join(dir, "gitpulse-mcp")
-	dm := filepath.Join(dir, "devmap")
-	other := filepath.Join(dir, "devmap-mcp-only")
+	gp := filepath.Join(dir, exe("gitpulse-mcp"))
+	dm := filepath.Join(dir, exe("devmap"))
+	other := filepath.Join(dir, exe("devmap-mcp-only"))
 	off := filepath.Join(dir, "off")
 	for _, p := range []string{gp, dm, other} {
 		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // executable stand-in in t.TempDir
@@ -91,8 +91,8 @@ func TestManagedMcpDevmapOptOutLeavesTheNavigationBinaryAlone(t *testing.T) {
 // mode keeps both.
 func TestManagedMcpInspectSessionsGetOnlyDevmap(t *testing.T) {
 	dir := t.TempDir()
-	gp := filepath.Join(dir, "gitpulse-mcp")
-	dm := filepath.Join(dir, "devmap")
+	gp := filepath.Join(dir, exe("gitpulse-mcp"))
+	dm := filepath.Join(dir, exe("devmap"))
 	for _, p := range []string{gp, dm} {
 		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // executable stand-in in t.TempDir
 			t.Fatal(err)

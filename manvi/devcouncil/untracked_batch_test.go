@@ -2,8 +2,12 @@ package devcouncil
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -21,7 +25,12 @@ func batchTree(t *testing.T) (string, []string) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"link-to-dir", "q\"uote.go", `back\slash.go`, "tab\tname.go", "new\nline.go"} {
-		if err := os.Remove(filepath.Join(root, name)); err != nil {
+		if runtime.GOOS == "windows" && strings.ContainsAny(name, "\"\\\t\n") {
+			continue // not a legal file name there, so it was never created
+		}
+		// Absent where the platform could not create the name (see
+		// trickyUntrackedTree).
+		if err := os.Remove(filepath.Join(root, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			t.Fatal(err)
 		}
 	}
@@ -76,9 +85,15 @@ func TestBatchRenderDeclinesWhatItCannotAttribute(t *testing.T) {
 
 	escaped := newGitRepo(t)
 	write(t, escaped, "plain.go", "package p\n")
-	write(t, escaped, "q\"uote.go", "package p\n")
-	if _, _, ok := renderUntrackedBatch(ctx, escaped, untrackedPaths(t, escaped), 1<<30); ok {
-		t.Error("a path git escapes in its header was rendered by the batch")
+	// A name git writes escaped in a diff header. Only a quote or a control
+	// character in the name gets that on every platform, and Windows allows
+	// neither in a file name, so the escaped-header scenario cannot be built
+	// there; the entry-point comparison below still runs over the tree.
+	if runtime.GOOS != "windows" {
+		write(t, escaped, "q\"uote.go", "package p\n")
+		if _, _, ok := renderUntrackedBatch(ctx, escaped, untrackedPaths(t, escaped), 1<<30); ok {
+			t.Error("a path git escapes in its header was rendered by the batch")
+		}
 	}
 	// And the public entry point still answers for both, as the loop did.
 	for _, root := range []string{nested, escaped, dirLink} {
