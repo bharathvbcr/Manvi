@@ -576,6 +576,27 @@
         "go-test"
       ],
       "why": "Known-open (card ft-efcfd01a): the settlement fix it pins needs agent/loop.go, which the w24-verdicts-b lane holds; the test skips unconditionally until that lands."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/geminiproxy.TestAdvB31OpsTransportErrorsOfEveryKindOmitTheKey/tls_handshake_to_http",
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Environment-dependent (b31-llmops): the subtest skips when the host answers the plain-HTTP request to a TLS listener with an HTTP status instead of a transport failure (not a 502), which depends on the host's network stack."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestCloneHelperProcess",
+      "os": [
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "A re-exec helper, not a test of its own: the clone tests run it as a child under the seatbelt profile, and it skips when the suite reaches it directly. Defined only in containment_clone_darwin_test.go, so only macOS runs it."
     }
   ],
   "fuzz_floors": [

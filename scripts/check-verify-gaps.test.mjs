@@ -89,6 +89,8 @@ test("the macos verdict CI produced is fully expected", () => {
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestRealClaudeBinaryStreamJSONHandshake",
     "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed",
     "github.com/bharathvbcr/Manvi/manvi/internal/treefile.TestCheckAliasLeavesBothSpellingsOfAnExistingPairReachable",
+    "github.com/bharathvbcr/Manvi/manvi/cmd/geminiproxy.TestAdvB31OpsTransportErrorsOfEveryKindOmitTheKey/tls_handshake_to_http",
+    "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestCloneHelperProcess",
     "github.com/bharathvbcr/Manvi/manvi/artifacts.TestZadvHelperProcess",
     "github.com/bharathvbcr/Manvi/manvi/bootstrap.TestZadvHelperProcess",
     "github.com/bharathvbcr/Manvi/manvi/internal/treefile.TestZadvHelperProcess",
