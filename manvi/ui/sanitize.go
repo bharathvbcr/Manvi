@@ -168,7 +168,7 @@ func markerFor(r rune) string {
 // characters U+E0000 block) and the line and paragraph separators U+2028 and
 // U+2029, which a terminal or a log viewer may treat as a line break. Each is
 // shown as a visible escape, except the format runes the render buffer itself
-// keeps (render.FormatKept): a joiner that shapes a script or builds an emoji
+// keeps (render.FormatScanner): a joiner that shapes a script or builds an emoji
 // sequence, and a well-formed flag tag sequence. Bidi controls, U+2028 and
 // U+2029 are marked in every context.
 func isInvisibleFormat(r rune) bool {

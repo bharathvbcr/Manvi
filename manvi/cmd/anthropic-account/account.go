@@ -267,12 +267,20 @@ func symlinkedBelow(dir, home string) (string, error) {
 // readSmall reads a marker file and nothing else that happens to sit at its path.
 //
 // The marker chooses which Console organisation is billed, and it lives in a
-// directory a repository controls. So it is opened O_NOFOLLOW (a symlink is a
-// refusal, not a redirect to a file the repository does not own), O_NONBLOCK
-// (opening a named pipe for reading otherwise waits for a writer forever, and
-// the launcher with it), and the opened descriptor is checked to be a regular
-// file before a byte is read. The check is on the descriptor, not the path, so
-// nothing can be swapped in between the check and the read.
+// directory a repository controls. So it is opened through openMarker. On Unix
+// that is O_NOFOLLOW (a symlink is a refusal, not a redirect to a file the
+// repository does not own) and O_NONBLOCK (opening a named pipe for reading
+// otherwise waits for a writer forever, and the launcher with it), and the
+// opened descriptor is checked to be a regular file before a byte is read. That
+// check is on the descriptor, not the path, so nothing can be swapped in between
+// the check and the read.
+//
+// On Windows openMarker is an Lstat followed by an Open, so a link swapped in
+// between the two is not caught by the open itself (a time-of-check to
+// time-of-use window the platform has no O_NOFOLLOW to close). It still fails
+// closed: a symlink or any entry that is not a regular file is refused before
+// the open, and the opened handle is checked to be a regular file before a byte
+// is read.
 func readSmall(path string, limit int64) ([]byte, error) {
 	f, err := openMarker(path)
 	if err != nil {
