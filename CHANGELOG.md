@@ -59,6 +59,19 @@ under **Unreleased** in the same commit as the code.
   `grid.py` re-exec themselves to drop them); the runner refuses a workspace
   root outside every protected root; a capped `.env` scan refuses the episode;
   the shell profile denies the cfprefsd, pasteboard and notification mach lookups.
+- **b32-benchverify:** bench: the checker/worker RPC link of the verifier fails
+  closed on a malformed message. A reply without a value, of an unknown kind, or
+  with a bad tree, handle or error report, and a request without an integer
+  `rid`, ends the checker with the transport exit code instead of surfacing as
+  a `KeyError` or `TypeError` that a hidden test's `except Exception` could
+  swallow. On the worker, `len`, iteration, `next` and item access on an object
+  the checker exported raise a readable `TypeError` rather than ending the
+  verification with a transport failure; the checker still serves only call,
+  getattr and setattr. The accepted limits (non-builtin equality, checker-side
+  truthiness, the short-circuit comparison oracle) are documented in
+  `bench/mh/rpc.py` and pinned by `stress_test.py` C6, which also gains positive
+  controls for the always-equal payload. No product behaviour or exit status
+  changed.
 - **b26-storeleak:** `manvi` closes the store client it opens for the lease and
   watch builds, and the `storeguard.NoNewChildren` test helper fails a test that leaves a
   `dcstore` child behind.
