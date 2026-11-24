@@ -82,6 +82,11 @@ test("the macos verdict CI produced is fully expected", () => {
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAgyRealBinaryACPHandshakeAndCrossProcessResume",
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestRealClaudeBinaryStreamJSONHandshake",
     "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed",
+    // Since the 2026-11-23 land (ft-efcfd01a): three known-open settlement tests
+    // that skip unconditionally until agent/loop.go is free.
+    "github.com/bharathvbcr/Manvi/manvi/agent.TestOpenB31SettleMergeDecodingKeepsUnknownKinds",
+    "github.com/bharathvbcr/Manvi/manvi/agent.TestOpenB31SettleLoopReportsUnknownKindsOnTheOutcomeAndLog",
+    "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestOpenB31SettleOutcomeNoticeNamesUnknownKinds",
   ];
   const log = [
     "PASS with gates that did not run:",
