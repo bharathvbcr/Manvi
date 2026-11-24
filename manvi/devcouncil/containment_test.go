@@ -156,6 +156,9 @@ func ruleSet(block string) []string {
 // more and no fewer, over a tree built from DevCouncil's own fold fixture (the
 // rows its Go and Rust engines are held to) plus ordinary files.
 func TestProfileDeniesExactlyWhatTheMatcherMatches(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the seatbelt profile exists only on macOS (containment.go refuses elsewhere), and this test matches native paths against its slash-separated subpaths")
+	}
 	_, self, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot locate test source")
