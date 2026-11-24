@@ -457,6 +457,39 @@
         "go-test"
       ],
       "why": "Asserts behaviour on a case-insensitive volume. The Linux runner's filesystem is case-sensitive, so a case-variant spelling names a different path and the test skips; macos-latest (APFS) runs it. Unmasked 2026-11-19, when this leg stopped failing at go test before the skip check."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/agent.TestOpenB31SettleMergeDecodingKeepsUnknownKinds",
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Known-open (card ft-efcfd01a): the settlement fix it pins needs agent/loop.go, which the w24-verdicts-b lane holds; the test skips unconditionally until that lands."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/agent.TestOpenB31SettleLoopReportsUnknownKindsOnTheOutcomeAndLog",
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Known-open (card ft-efcfd01a): the settlement fix it pins needs agent/loop.go, which the w24-verdicts-b lane holds; the test skips unconditionally until that lands."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestOpenB31SettleOutcomeNoticeNamesUnknownKinds",
+      "os": [
+        "ubuntu-latest",
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Known-open (card ft-efcfd01a): the settlement fix it pins needs agent/loop.go, which the w24-verdicts-b lane holds; the test skips unconditionally until that lands."
     }
   ],
   "fuzz_floors": [
