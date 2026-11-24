@@ -266,10 +266,6 @@ func renderEditDiff(ed fileEdit, th Theme, width int, maxLines int) []render.Lin
 
 	// Unified diff with line numbers.
 	rule := render.Styled(g.VBar+" ", render.Style{Fg: th.ruleColor(), Bg: th.Bg})
-	bodyW := width - rule.Width()
-	if bodyW < 10 {
-		bodyW = 10
-	}
 	limit := len(ops)
 	clipped := 0
 	if maxLines > 0 && limit > maxLines {

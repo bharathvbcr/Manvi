@@ -15,8 +15,8 @@ func TestReaderCloseAndWaitYieldsPipeWithoutStealingNextWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pr.Close()
-	defer pw.Close()
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
 
 	r := NewReader(pr)
 	go r.Run()
@@ -141,8 +141,8 @@ func TestReaderCloseAndWaitTimesOutBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pr.Close()
-	defer pw.Close()
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
 
 	sp := &stuckPoller{gate: make(chan struct{})}
 	t.Cleanup(sp.close)

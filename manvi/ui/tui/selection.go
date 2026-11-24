@@ -127,9 +127,7 @@ func (s TextSelection) Extract(rows []rowRef) string {
 		}
 		seg := sliceColumns(text, sc, ec)
 		seg = strings.TrimRight(seg, " ")
-		if strings.HasPrefix(seg, "│ ") {
-			seg = strings.TrimPrefix(seg, "│ ")
-		}
+		seg = strings.TrimPrefix(seg, "│ ")
 		out = append(out, seg)
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))

@@ -121,12 +121,13 @@ func (c *workCapsule) countTool(ev ui.Event, succeeded bool) {
 		c.edits++
 		if succeeded {
 			fields := callArgs(ev)
-			if name == "patch_file" {
+			switch name {
+			case "patch_file":
 				if a, r, ok := editSize(fields); ok {
 					c.added += a
 					c.removed += r
 				}
-			} else if name == "write_file" {
+			case "write_file":
 				if content, _ := fields["content"].(string); content != "" {
 					c.added += strings.Count(strings.TrimRight(content, "\n"), "\n") + 1
 				}

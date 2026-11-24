@@ -1439,7 +1439,7 @@ func parseInlineSpans(line string, th Theme, baseStyle render.Style) render.Line
 			}
 		case i+1 < len(runes) && runes[i] == '~' && runes[i+1] == '~':
 			j := i + 2
-			for j+1 < len(runes) && !(runes[j] == '~' && runes[j+1] == '~') {
+			for j+1 < len(runes) && (runes[j] != '~' || runes[j+1] != '~') {
 				j++
 			}
 			if j+1 < len(runes) && j > i+2 {

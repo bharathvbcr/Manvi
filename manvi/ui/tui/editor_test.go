@@ -436,7 +436,7 @@ func TestCopyToClipboardAvoidsTruncatingLocalAndFallsBack(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		app, _ := newTestApp()
 		r := &Runner{
@@ -466,7 +466,7 @@ func TestCopyToClipboardAvoidsTruncatingLocalAndFallsBack(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		app, _ := newTestApp()
 		r := &Runner{
@@ -491,7 +491,7 @@ func TestCopyToClipboardAvoidsTruncatingLocalAndFallsBack(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		app, _ := newTestApp()
 		r := &Runner{
@@ -544,7 +544,7 @@ func TestTermRunExternalSafetyOnUnstartedAndNil(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	tr := term.New(f, f)
 	sentinel := errors.New("editor aborted")

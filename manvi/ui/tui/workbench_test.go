@@ -208,7 +208,7 @@ func TestAtMentionFileCompletionWorks(t *testing.T) {
 		files: []string{"manvi/ui/tui/approval.go", "manvi/ui/tui/app.go", "README.md"},
 	}
 	a := NewApp(Dark(), h)
-	a.AddSession("S1", "session one")
+	_ = a.AddSession("S1", "session one")
 
 	for _, r := range "check @appr" {
 		a.Dispatch(ActionRune{Runes: []rune{r}})
@@ -514,7 +514,7 @@ func TestWideDashboardShowsSplitLivePreviewPaneAndFallsBackNarrow(t *testing.T) 
 		v1.Apply(ui.Event{Kind: ui.KindNotice, Text: "transcript row " + itoa(i)})
 	}
 
-	a.AddSession("S2", "blocked-session")
+	_ = a.AddSession("S2", "blocked-session")
 	v2 := a.views[1]
 	v2.Status.Posture = "dev"
 	v2.Status.Model = "gpt-5"

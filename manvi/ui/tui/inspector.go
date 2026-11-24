@@ -557,12 +557,13 @@ func (ins *Inspector) drawStepsTab(b *render.Buffer, r render.Rect, th Theme, en
 			continue
 		}
 		row := e.Summary(th, r.W-2)
-		if e.Event.Kind == ui.KindToolResult {
+		switch e.Event.Kind {
+		case ui.KindToolResult:
 			head := e.resultHead(th)
 			if len(head) > 0 {
 				row = e.outcomeRow(head, e.text(), th, r.W-2, th.Muted())
 			}
-		} else if e.Event.Kind == ui.KindToolStart {
+		case ui.KindToolStart:
 			state := callRunning
 			if e.result != nil {
 				if e.result.Event.IsError {
