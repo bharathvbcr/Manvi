@@ -219,7 +219,7 @@ func TestAChildCannotReachAnySubAgentDispatchTool(t *testing.T) {
 
 	offered := offeredTools(t, p)
 	for _, dispatch := range []string{invokeTool, spawnSubagentsTool,
-		"devcouncil_define_subagent", "devcouncil_send_message", "devcouncil_manage_subagents"} {
+		"devcouncil_define_subagent", "devcouncil_send_message", "devcouncil_manage_subagents", "devcouncil_debate"} {
 		if offered[dispatch] {
 			t.Errorf("a child was offered %s", dispatch)
 		}

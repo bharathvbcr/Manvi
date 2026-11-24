@@ -59,8 +59,9 @@ func showAgents(out io.Writer, reg *flags.Registry) error {
 	fmt.Fprintf(&b, "\nA role's tier is the dearest it runs on. A dispatch may route it lower: a read-only "+
 		"child goes to lite, or to basic in a fan-out of %d or more, and only a verdict reaches advisor.\n",
 		agents.BasicFanoutWidth)
-	if profile == nil {
-		fmt.Fprintf(&b, "Tiers resolve on anthropic only; on %s every child runs on the session's model.\n", provider)
+	if !table.Active {
+		fmt.Fprintf(&b, "Bare tier ids resolve on anthropic only; on %s a tier applies only when it names its provider "+
+			"(%s<tier>: provider/model), and a child on any other tier runs on the session's model.\n", provider, tierPrefix)
 	}
 	_, err = io.WriteString(out, b.String())
 	return err
@@ -69,7 +70,7 @@ func showAgents(out io.Writer, reg *flags.Registry) error {
 // tierModel is the model a tier resolves to, or what a child on it inherits.
 func tierModel(profile agents.TierProfile, tier agents.Tier) string {
 	if spec, ok := profile[tier]; ok && spec.Model != "" {
-		return spec.Model
+		return spec.Placement()
 	}
 	return "the session's model"
 }

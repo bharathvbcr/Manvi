@@ -92,6 +92,81 @@ func buildProvider(ctx context.Context, name string, reg *flags.Registry, resolv
 	}
 }
 
+// buildTeamRegistry is the provider registry a session's children are placed
+// against: the session's own adapter, and every provider the operator's tiers
+// and team name, each built here by buildProvider like the first.
+//
+// It builds only what was named. A provider no tier and no member names is
+// never constructed, so its credential is never required and — for local — no
+// server is probed. A provider that was named and cannot be built refuses the
+// session, naming the provider: a team whose scouts silently ran on the parent
+// because their provider had no key would bill the wrong account and report
+// nothing.
+//
+// Once every adapter exists, each row and member that names a provider is
+// checked against the adapter itself. For anthropic, gemini and xai that
+// repeats what planTiers checked against the shipped catalogue; for local it is
+// the only check there is, because what a local server serves is known only by
+// asking it.
+func buildTeamRegistry(ctx context.Context, reg *flags.Registry, resolver *credentials.Resolver, notes io.Writer,
+	session llm.Provider, table tierTable) (*llm.Registry, error) {
+	registry := llm.NewRegistry()
+	if err := registry.Register(session); err != nil {
+		return nil, err
+	}
+	for _, name := range table.extraProviders() {
+		p, err := buildProvider(ctx, name, reg, resolver, notes, "")
+		if err != nil {
+			return nil, fmt.Errorf("provider %s, named by the tier profile or team (%s): %w", name, flags.EnvKey(tierPrefix), err)
+		}
+		if err := registry.Register(p); err != nil {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(os.Getenv(envAnthropicBudget)) != "" {
+		var unmetered []string
+		for _, name := range registry.Names() {
+			if name != anthropic.Name {
+				unmetered = append(unmetered, name)
+			}
+		}
+		if len(unmetered) > 0 && notes != nil {
+			if _, err := fmt.Fprintf(notes, "manvi: %s caps anthropic spend only; children on %s are not metered by it\n",
+				envAnthropicBudget, strings.Join(unmetered, ", ")); err != nil {
+				return nil, err
+			}
+		}
+	}
+	var errs []error
+	served := func(what, provider, model string) {
+		p, ok := registry.Get(provider)
+		if !ok {
+			errs = append(errs, fmt.Errorf("%s runs on provider %q, which this session did not build", what, provider))
+			return
+		}
+		if _, ok := p.Capability(model); !ok {
+			errs = append(errs, fmt.Errorf("%s runs %q, which provider %q does not serve", what, model, provider))
+		}
+	}
+	for _, r := range table.Rows {
+		if r.active(table) && r.Provider != "" {
+			served(fmt.Sprintf("tier %s (%s)", r.Tier, r.ModelKey), r.Provider, r.Model)
+		}
+	}
+	for _, m := range table.Roster.Members() {
+		served(fmt.Sprintf("team member %q (%s)", m.Name, rosterKey), m.Spec.Provider, m.Spec.Model)
+	}
+	for _, r := range table.Rows {
+		if r.Fallback.Model != "" {
+			served(fmt.Sprintf("tier %s fallback (%s)", r.Tier, tierFallbackKey(r.Tier)), r.Fallback.Provider, r.Fallback.Model)
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return registry, nil
+}
+
 // armAnthropicFallback gives the adapter the second key when one is set. An
 // unset fallback is the ordinary case and changes nothing; a set one with a
 // malformed workspace is refused here, as the primary's is, rather than found

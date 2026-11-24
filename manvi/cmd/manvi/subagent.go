@@ -52,7 +52,13 @@ type subAgentConfig struct {
 	// tiers is where each tier runs on this session's provider. Nil, or a tier
 	// missing from it, means a child on that tier inherits the parent's model:
 	// tiers are only resolved where a profile has been set for the provider.
-	tiers           agents.TierProfile
+	tiers agents.TierProfile
+	// roster is the operator's team: the members a dispatching model may name
+	// for a child. A request that names one carries it in Member; see place.
+	roster agents.Roster
+	// fallbacks is where a child on each tier re-runs, once, when its
+	// provider is unavailable; see failover.
+	fallbacks       map[agents.Tier]agents.TierSpec
 	registry        *tools.Registry
 	coreToolsOnly   bool
 	assertInvariant bool
@@ -106,6 +112,50 @@ func (r *subAgentRunner) attach(cfg subAgentConfig) {
 	r.cfg = &cfg
 }
 
+// TeamRoster is the roster the runner was last attached with; see
+// devcouncil.TeamView. An unattached runner has no team.
+func (r *subAgentRunner) TeamRoster() agents.Roster {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.cfg == nil {
+		return agents.Roster{}
+	}
+	return r.cfg.roster
+}
+
+// TierPlacement is where a tier runs under the attached profile, or "" when
+// the profile does not hold it and a child on it inherits the parent.
+func (r *subAgentRunner) TierPlacement(t agents.Tier) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.cfg == nil {
+		return ""
+	}
+	return r.cfg.tiers[t].Placement()
+}
+
+// TierModel is the provider and model a child on t runs on; the parent's when
+// the profile does not hold t.
+func (r *subAgentRunner) TierModel(t agents.Tier) (string, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.cfg == nil {
+		return "", ""
+	}
+	parent := ""
+	if r.cfg.provider != nil {
+		parent = r.cfg.provider.Name()
+	}
+	spec, held := r.cfg.tiers[t]
+	if !held || strings.TrimSpace(spec.Model) == "" {
+		return parent, r.cfg.model
+	}
+	if spec.Provider != "" {
+		return spec.Provider, spec.Model
+	}
+	return parent, spec.Model
+}
+
 // childPlacement is where one child runs and the reasoning effort it runs at.
 type childPlacement struct {
 	provider      llm.Provider
@@ -154,6 +204,9 @@ func (r *subAgentRunner) place(cfg *subAgentConfig, req devcouncil.SubAgentReque
 
 	spec := agents.ParsePlacement(req.ModelSpec, known)
 	if spec.Inherits() {
+		if strings.TrimSpace(req.Member) != "" {
+			return r.placeOnMember(cfg, req)
+		}
 		return r.placeOnTier(cfg, req)
 	}
 
@@ -217,17 +270,60 @@ func (r *subAgentRunner) placeOnTier(cfg *subAgentConfig, req devcouncil.SubAgen
 	if !ok || strings.TrimSpace(spec.Model) == "" {
 		return inherit, nil
 	}
-	capability, served := cfg.provider.Capability(spec.Model)
+	return r.placeOnSpec(cfg, req, spec, "tier "+req.Tier.String())
+}
+
+// placeOnMember resolves a child the dispatching model put on a named team
+// member. The dispatch side already held the member's tier to the role's
+// ceiling; this side finds where the member runs, from the roster it was
+// attached with, so a member the operator removed since the dispatch was
+// checked is refused rather than run on whatever the name used to mean.
+func (r *subAgentRunner) placeOnMember(cfg *subAgentConfig, req devcouncil.SubAgentRequest) (childPlacement, error) {
+	m, ok := cfg.roster.Member(req.Member)
+	if !ok {
+		return childPlacement{}, fmt.Errorf("sub-agent %q cannot run: team member %q is not on this session's roster (%s)",
+			req.Label, req.Member, rosterKey)
+	}
+	return r.placeOnSpec(cfg, req, m.Spec, fmt.Sprintf("team member %q", m.Name))
+}
+
+// placeOnSpec places a child on a tier spec or a member's spec: on the provider
+// the spec names, or the session's when it names none, at the spec's effort or
+// the parent's where the model accepts it. what names the spec's source for a
+// refusal.
+func (r *subAgentRunner) placeOnSpec(cfg *subAgentConfig, req devcouncil.SubAgentRequest, spec agents.TierSpec,
+	what string) (childPlacement, error) {
+	inherit := childPlacement{
+		provider: cfg.provider, model: cfg.model,
+		effort: cfg.effort, effortCeiling: cfg.effortCeiling,
+	}
+	provider := cfg.provider
+	if name := strings.TrimSpace(spec.Provider); name != "" && name != cfg.provider.Name() {
+		var held bool
+		if cfg.models != nil {
+			provider, held = cfg.models.Get(name)
+		}
+		if !held {
+			names := []string{}
+			if cfg.models != nil {
+				names = cfg.models.Names()
+			}
+			return childPlacement{}, fmt.Errorf(
+				"sub-agent %q cannot run: %s is %q on provider %q, which this session did not build (have %v)",
+				req.Label, what, spec.Model, name, names)
+		}
+	}
+	capability, served := provider.Capability(spec.Model)
 	if !served {
 		return childPlacement{}, fmt.Errorf(
-			"sub-agent %q cannot run: tier %s is %q, which provider %q does not serve",
-			req.Label, req.Tier, spec.Model, cfg.provider.Name())
+			"sub-agent %q cannot run: %s is %q, which provider %q does not serve",
+			req.Label, what, spec.Model, provider.Name())
 	}
 	effort := spec.Effort
 	if effort == "" && cfg.effort != "" && capability.Validate(llm.Request{Effort: cfg.effort}) == nil {
 		effort = cfg.effort
 	}
-	if spec.Model == cfg.model && effort == cfg.effort {
+	if provider.Name() == cfg.provider.Name() && spec.Model == cfg.model && effort == cfg.effort {
 		return inherit, nil
 	}
 	// The one answer to what ceiling this tier inherits: startup checked the
@@ -235,10 +331,10 @@ func (r *subAgentRunner) placeOnTier(cfg *subAgentConfig, req devcouncil.SubAgen
 	// under the profile, not that the profile was never checked.
 	plan, err := agent.PlanTierEffort(capability, effort, cfg.effortCeiling)
 	if err != nil {
-		return childPlacement{}, fmt.Errorf("sub-agent %q cannot run: tier %s on %q: %w",
-			req.Label, req.Tier, spec.Model, err)
+		return childPlacement{}, fmt.Errorf("sub-agent %q cannot run: %s on %q: %w",
+			req.Label, what, spec.Model, err)
 	}
-	placed := childPlacement{provider: cfg.provider, model: spec.Model, effort: effort}
+	placed := childPlacement{provider: provider, model: spec.Model, effort: effort}
 	if plan.Escalates() {
 		placed.effortCeiling = cfg.effortCeiling
 	}
@@ -308,6 +404,9 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		return devcouncil.SubAgentResult{}, err
 	}
 	first, err := r.attempt(ctx, cfg, req)
+	if spec, ok := r.failoverFor(ctx, cfg, req, err); ok {
+		return r.failover(ctx, cfg, req, first, err, spec)
+	}
 	if first.evidence == "" {
 		return first.result, err
 	}
@@ -392,10 +491,10 @@ func (r *subAgentRunner) attempt(ctx context.Context, cfg *subAgentConfig, req d
 	// Appended to the summary rather than logged, because the dispatching model
 	// is this turn's only reader: the child's own session log is not persisted.
 	for _, n := range outcomeNotices(outcome, maxSubAgentSteps) {
-		summary += "\n\n[this sub-agent: " + n.Text + "]"
+		summary = devcouncil.AppendSubAgentNote(summary, n.Text)
 	}
 	for _, n := range child.notes {
-		summary += "\n\n[this sub-agent: " + n + "]"
+		summary = devcouncil.AppendSubAgentNote(summary, n)
 	}
 
 	result.Summary = summary

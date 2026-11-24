@@ -79,12 +79,12 @@ func (r *Registry) fallbackPlane() *subagentPlane {
 }
 
 func (r *Registry) subagentTools() []tools.Tool {
-	invokeParams := `{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string","description":"optional tier for this child (basic, lite, heavy, advisor), at or below its role's tier; model ids and providers are refused"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`
+	invokeParams := `{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string","description":"optional tier for this child (basic, lite, heavy, advisor) or the name of a member of the operator's team, at or below its role's tier; model ids and providers are refused"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`
 	if r.deps.Workspaces != nil {
-		invokeParams = `{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string","description":"optional tier for this child (basic, lite, heavy, advisor), at or below its role's tier; model ids and providers are refused"},"workspace":{"type":"string","enum":["inherit","worktree"],"description":"optional checkout isolation: inherit (parent tree) or worktree (isolated git worktree with stacked DevMap seed)"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`
+		invokeParams = `{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string","description":"optional tier for this child (basic, lite, heavy, advisor) or the name of a member of the operator's team, at or below its role's tier; model ids and providers are refused"},"workspace":{"type":"string","enum":["inherit","worktree"],"description":"optional checkout isolation: inherit (parent tree) or worktree (isolated git worktree with stacked DevMap seed)"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`
 	}
-	return []tools.Tool{
-		{
+	return append(r.debateTools(),
+		tools.Tool{
 			Schema: schema("devcouncil_define_subagent",
 				"Dynamically define or update a specialized subagent type with a custom role, system prompt, and tool configuration.",
 				`{"type":"object","properties":{"name":{"type":"string","description":"unique name for subagent type"},"role":{"type":"string","description":"role description"},"description":{"type":"string","description":"human-readable description"},"system_prompt":{"type":"string","description":"detailed system prompt"},"model":{"type":"string","description":"a tier, not a model id: basic, lite or heavy, at or below the role's ceiling (heavy when enable_write_tools is true, lite otherwise); model ids and providers are refused"},"tier":{"type":"string","description":"the dearest tier this role may run on: basic, lite or heavy, at or below its ceiling (heavy when enable_write_tools is true, lite otherwise); omit to take the ceiling"},"enable_mcp_tools":{"type":"boolean","description":"admit the mcp tool group; false takes it away from the child"},"enable_write_tools":{"type":"boolean","description":"false makes the child read-only"},"allowed_tools":{"type":"array","items":{"type":"string"},"description":"allowlist of tool names; it only ever removes, never widens what enable_write_tools and enable_mcp_tools permit"}},"required":["name","description","system_prompt"]}`),
@@ -92,7 +92,7 @@ func (r *Registry) subagentTools() []tools.Tool {
 			Handler:  r.defineSubagent,
 			Extended: true,
 		},
-		{
+		tools.Tool{
 			Schema: schema("devcouncil_invoke_subagent",
 				"Invoke one or more subagents concurrently by name with custom task prompts, returning their unique conversation IDs and execution outcomes.",
 				invokeParams),
@@ -100,7 +100,7 @@ func (r *Registry) subagentTools() []tools.Tool {
 			Handler:  r.invokeSubagents,
 			Extended: true,
 		},
-		{
+		tools.Tool{
 			Schema: schema("devcouncil_send_message",
 				"Send a message or instruction to an active subagent by its conversation ID.",
 				`{"type":"object","properties":{"recipient":{"type":"string","description":"recipient conversation ID"},"message":{"type":"string","description":"message content"}},"required":["recipient","message"]}`),
@@ -108,7 +108,7 @@ func (r *Registry) subagentTools() []tools.Tool {
 			Handler:  r.sendMessage,
 			Extended: true,
 		},
-		{
+		tools.Tool{
 			Schema: schema("devcouncil_manage_subagents",
 				"Manage subagents: list active direct subagents with live state, or terminate specific/all subagents.",
 				`{"type":"object","properties":{"action":{"type":"string","enum":["list","kill","kill_all"],"description":"management action"},"conversation_ids":{"type":"array","items":{"type":"string"},"description":"IDs to kill when action is 'kill'"}},"required":["action"]}`),
@@ -116,7 +116,7 @@ func (r *Registry) subagentTools() []tools.Tool {
 			Handler:  r.manageSubagents,
 			Extended: true,
 		},
-	}
+	)
 }
 
 func (r *Registry) getSubagentRegistry() *agents.Registry {
@@ -338,16 +338,19 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	mgr := r.getSubagentManager()
 
 	// A per-call model is the dispatching model choosing a placement, so it
-	// may name only a tier, and only one at or below the role's ceiling.
+	// may name only a tier or a member of the operator's team, and only one at
+	// or below the role's ceiling.
 	// Checked for every child before any runs: a fan-out half of which was
 	// refused would report the other half as the dispatch the caller asked
 	// for.
+	roster := teamRoster(r.deps.SubAgent)
 	tiers := make([]agents.Tier, len(args.Subagents))
+	members := make([]string, len(args.Subagents))
 	roles := make([]resolvedRole, len(args.Subagents))
 	for i, s := range args.Subagents {
 		roles[i] = resolveRole(reg, s.TypeName, s.Role, false, true)
 		def := roles[i].Def
-		tier, err := agents.ModelPlacement(s.Model, def.Ceiling())
+		tier, member, err := roster.MemberPlacement(s.Model, def.Ceiling())
 		if err != nil {
 			return tools.Errorf("subagents[%d] (%s, type %q): model: %v. Nothing was dispatched",
 				i, s.Role, s.TypeName, err)
@@ -362,6 +365,9 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 				i, s.Role, s.TypeName, def.Model)
 		}
 		tiers[i] = tier
+		if member != nil {
+			members[i] = member.Name
+		}
 	}
 
 	runner := r.deps.SubAgent
@@ -394,8 +400,11 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		if roles[i].Unknown {
 			unknownTypes = append(unknownTypes, s.TypeName)
 		}
-		requests = append(requests, invokeChildRequest(s, roles[i], tiers[i], len(args.Subagents)))
+		req := invokeChildRequest(s, roles[i], tiers[i], len(args.Subagents))
+		req.Member = members[i]
+		requests = append(requests, req)
 	}
+	placements = append(placements, teamPlacements(runner, requests)...)
 
 	return r.runFanout(ctx, bounds, fanout{
 		placements: placements,
@@ -899,6 +908,11 @@ type SubAgentRequest struct {
 	// parent's model. A ModelSpec that names a placement wins over it, because
 	// only an operator can write one.
 	Tier agents.Tier
+	// Member, when set, is the operator's team member the dispatching model
+	// chose for this child. Its tier is already in Tier and was held to the
+	// role's ceiling; the runner resolves where the member runs from the
+	// roster it was attached with. An operator ModelSpec still wins over it.
+	Member string
 	// SystemPrompt is the role's own prompt. Empty means the child inherits the
 	// parent's, which is what the "self" role wants and what a fan-out with no
 	// named type gets.
@@ -1097,6 +1111,59 @@ type SubAgentRunner interface {
 	RunSubAgent(ctx context.Context, req SubAgentRequest) (SubAgentResult, error)
 }
 
+// TeamView is implemented by a runner that knows the operator's team and tier
+// profile. It is optional, as SubAgentAdmitter is: a runner without it has no
+// team, so a dispatch may name tiers only, and every child it places on a tier
+// is taken to run where the parent does.
+type TeamView interface {
+	// TeamRoster is the operator's team.
+	TeamRoster() agents.Roster
+	// TierPlacement is where a tier runs, in the form Definition.Model uses,
+	// or "" when the profile does not hold it and the child inherits.
+	TierPlacement(t agents.Tier) string
+	// TierModel is the provider and model a child on tier t runs on: the
+	// parent's when the profile does not hold t. It answers "is this the same
+	// model" across the forms placements are written in (a bare id on the
+	// session's provider, provider/model, inherit), which strings cannot.
+	TierModel(t agents.Tier) (provider, model string)
+}
+
+// teamRoster is the runner's roster, or an empty one.
+func teamRoster(runner SubAgentRunner) agents.Roster {
+	if v, ok := runner.(TeamView); ok {
+		return v.TeamRoster()
+	}
+	return agents.Roster{}
+}
+
+// teamPlacements lists where each request will run when a team member or a
+// tier decides it, so the fan-out width is narrowed for a child a member or a
+// tier puts on a local model exactly as it is for one a role pins there. A
+// request whose role names its own placement is already counted by the caller.
+func teamPlacements(runner SubAgentRunner, reqs []SubAgentRequest) []string {
+	v, ok := runner.(TeamView)
+	if !ok {
+		return nil
+	}
+	roster := v.TeamRoster()
+	var out []string
+	for _, req := range reqs {
+		if !agents.ParsePlacement(req.ModelSpec, nil).Inherits() {
+			continue
+		}
+		if m, held := roster.Member(req.Member); held {
+			out = append(out, m.Placement())
+			continue
+		}
+		if req.Tier != "" {
+			if p := v.TierPlacement(req.Tier); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
 // SubAgentAdmitter is implemented by a runner whose children draw on a spend
 // cap, so a fan-out can be admitted before any child starts.
 //
@@ -1219,6 +1286,7 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	for i, t := range args.Tasks {
 		requests = append(requests, spawnChildRequest(t, rolesOf[i], len(args.Tasks)))
 	}
+	placements = append(placements, teamPlacements(runner, requests)...)
 	return r.runFanout(ctx, bounds, fanout{
 		placements: placements,
 		runner:     runner,

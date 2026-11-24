@@ -157,6 +157,29 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **Teams across providers.** A tier may name its provider
+  (`llm.tier.basic: gemini/gemini-4-hydrogen`), so one session can run, say,
+  an Opus main agent with Gemini scouts. Every provider a tier, fallback or
+  team member names is built at startup with its own credential and checked;
+  a provider nobody names is never built. Before, a session held only its own
+  provider, so a `provider/model` role placement failed with "not enabled
+  here" in every real run. The main tier may not name another provider than
+  `llm.provider.default`.
+- **`llm.tier.roster`: a named team.** `name=tier:provider/model[@effort]`
+  entries a dispatching model may choose by name in place of a tier, held to
+  the role's ceiling by the member's own tier. Model ids and providers stay
+  refused from a model.
+- **`llm.tier.<tier>.fallback`.** A child whose provider is rate limited,
+  overloaded or unavailable after retries re-runs once on the tier's fallback,
+  on another provider, and says so on its result.
+- **`devcouncil_debate`.** Two to four read-only participants (tiers or team
+  members, on at least two different models) answer a question blind, rebut
+  each other for up to three rounds, and a judge who is not told which model
+  wrote which answer decides, ending with `DECISION`, `CONFIDENCE` and
+  `DISSENT` lines. A judge with no `DECISION` line comes back
+  `decided: false`. In the sub-agent group, so no child can start one. The
+  native tool count is 55 (54 in a repository with no skills).
+
 - **`work.assist.complete` answers a rejected Anthropic key with
   `E_PROVIDER_AUTH`** (not retryable). Before, a revoked or wrong key came back
   as `E_DEPENDENCY` with only the provider's text, so a host could not tell it

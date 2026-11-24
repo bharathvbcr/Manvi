@@ -25,7 +25,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Task Lease Release** | `manvi lease release TASK TOKEN` | Atomically relinquish a held task lease using its cryptographic token. |
 | **Policy Pre-Check** | `manvi check PATH [--task ID]` | Probe write gate policy for a file path without touching the filesystem; outputs decision, fired rules, and explanation. |
 | **Human Override** | `manvi allow PATH --reason TEXT` | Record an audited human grant in the ledger to unblock a soft policy denial. |
-| **Native Tools List** | `manvi tools [--json]` | List all 54 native tools (53 in a repository with no skills) with a read/write class and a one-sentence description. `--json` prints the same list as one JSON array of `{"name": string, "class": "read"\|"write", "description": string}` objects, in the table's order, and exits 0. Any other argument is refused with exit 1. |
+| **Native Tools List** | `manvi tools [--json]` | List all 55 native tools (54 in a repository with no skills) with a read/write class and a one-sentence description. `--json` prints the same list as one JSON array of `{"name": string, "class": "read"\|"write", "description": string}` objects, in the table's order, and exits 0. Any other argument is refused with exit 1. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
 | **Cloud or Local** | `manvi use [cloud\|local] [--model ID] [--base-url URL] [--json]` | Make Manvi's own user config the one cloud/local switch for every app that runs manvi (a shell, GitPulse, a script). Bare, report which is in force, where that came from (`default`, `config`, `env`, `flag`), the model each mode would use, any environment variable that shadows the saved choice, and the user config path; `--json` prints the same as a host contract (fields are added, never renamed). `use cloud` saves `llm.provider.default: anthropic`, and with `--model` the main tier `llm.tier.main` (checked against the Anthropic catalogue). `use local` saves `llm.provider.default: local` and optionally `llm.local.base_url` (an http(s) URL with a host, no credentials, query or fragment) and `llm.local.model`. The write goes to the user config (refused when that path is inside the repository), is atomic (temporary file and rename, `0600`), keeps every other line, and is read back through the real loader so the status printed is what the next run sees. It touches no credential: the key is whatever the host already supplies, and the status carries no credential state. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
@@ -465,10 +465,62 @@ at its own effort throughout rather than being refused for a ceiling it never
 set. A ceiling the tier's model has no rung for at all is refused. `manvi tiers`
 prints each tier's inherited ceiling.
 
-**Providers.** The profile is catalogued against `anthropic` only, because a
-session's sub-agents can be placed only on its own provider. Under any other
-`llm.provider.default` the profile is reported by `manvi tiers` as inactive and
-not applied, and `manvi run` notes any tier key that was set but does not apply.
+**Providers.** A tier value is a bare model id, which runs on the session's
+own provider, or `provider/model`, which runs on that provider. The shipped
+profile is bare Claude ids, so under any other `llm.provider.default` the bare
+rows are reported by `manvi tiers` as not applied and `manvi run` notes any
+bare tier key that was set but does not apply; a tier that names its provider,
+the session's own included, applies on any session. A prefix that names no
+provider is refused, except on a `local` session, where ids such as
+`qwen/qwen3-coder` are read whole. The main tier may not name a provider other
+than `llm.provider.default`, which is the one owner of the session's provider.
+
+Every provider a tier, a fallback or a team member names is built at startup by
+the same constructor as the session's own, and needs its own credential
+(`GEMINI_API_KEY` for `gemini/…`, and so on). A provider nobody names is never
+built: its key is not required and, for `local`, no server is probed. A named
+provider that cannot be built refuses the session, naming it. Each such model is
+checked against its provider's shipped catalogue (`anthropic`, `gemini`, `xai`)
+and then against the built adapter, which is the only check a `local` model has.
+
+```yaml
+# A Claude session whose scouts run on Gemini, with a Gemini fallback for the
+# read-only tier when Anthropic is rate limited.
+llm.tier.basic: gemini/gemini-4-hydrogen
+llm.tier.lite.fallback: gemini/gemini-4-hydrogen
+```
+
+**Fallback.** `llm.tier.<tier>.fallback` (`MANVI_LLM_TIER_<TIER>_FALLBACK`,
+default empty) is where a child on that tier re-runs, once, when its provider
+fails with a service condition the transport's retries could not outlast — rate
+limited, overloaded, a 5xx, a dropped connection. It must be `provider/model`,
+and a fallback on the provider that just failed is not tried. A refused
+credential, a rejected request, an exhausted spend cap and a cancelled turn are
+not outages and never fail over. The re-run is reported on the child's result,
+both attempts' usage is counted, and it neither escalates nor fails over again.
+A role an operator pinned to a model does not fail over.
+
+**Spend cap.** `MANVI_ANTHROPIC_BUDGET_USD` meters anthropic only, including an
+anthropic provider a tier or member names. Children on `gemini`, `xai` or
+`local` are not metered by it, and `manvi run` says so at startup when the cap
+is set and the session builds one of them.
+
+**Team.** `llm.tier.roster` (`MANVI_LLM_TIER_ROSTER`, default empty) names the
+operator's team: comma-separated `name=tier:provider/model[@effort]` entries.
+
+```yaml
+llm.tier.roster: fable=advisor:anthropic/claude-fable-5-1,hydrogen=advisor:gemini/gemini-4-hydrogen,scout=basic:gemini/gemini-4-hydrogen,haiku=basic:anthropic/claude-haiku-5-5
+```
+
+A dispatching model may write a member's name wherever it may write a tier — the
+`model` of a `devcouncil_invoke_subagent` child, a `devcouncil_debate`
+participant or judge — and never a provider or a model id. A member is admitted
+by its own tier, so it is held to a role's ceiling exactly as that tier is.
+A name must be lower-case, at most 32 characters, and not a tier name; a member
+cannot be on the main tier; at most 32 members. Like every `llm.tier.*` key the
+roster is operator scope: refused from `.devcouncil/config.yaml`. A child on a
+member runs where the member runs and does not escalate. `manvi tiers` lists
+the team below the profile.
 
 ---
 

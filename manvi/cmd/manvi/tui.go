@@ -256,6 +256,10 @@ type tuiSession struct {
 	// on, resolved at attach with the provider it was checked against; nil off
 	// anthropic.
 	tiers agents.TierProfile
+	// roster is the operator's team, resolved at attach with the tiers.
+	roster agents.Roster
+	// fallbacks are the tiers' fallbacks, resolved at attach with the tiers.
+	fallbacks map[agents.Tier]agents.TierSpec
 }
 
 // persist writes a session's log to the same store the headless face resumes
@@ -291,6 +295,8 @@ type attached struct {
 	effort        string
 	effortCeiling string
 	tiers         agents.TierProfile
+	roster        agents.Roster
+	fallbacks     map[agents.Tier]agents.TierSpec
 }
 
 // attachment reads the block under the lock. A caller that read the five fields
@@ -299,7 +305,7 @@ type attached struct {
 func (s *tuiSession) attachment() attached {
 	s.attachMu.Lock()
 	defer s.attachMu.Unlock()
-	return attached{s.provider, s.registry, s.model, s.effort, s.effortCeiling, s.tiers}
+	return attached{s.provider, s.registry, s.model, s.effort, s.effortCeiling, s.tiers, s.roster, s.fallbacks}
 }
 
 // detach drops the resolved provider so the next turn resolves it again.
@@ -308,6 +314,8 @@ func (s *tuiSession) detach() {
 	defer s.attachMu.Unlock()
 	s.provider, s.registry, s.model, s.effort, s.effortCeiling = nil, nil, "", "", ""
 	s.tiers = nil
+	s.roster = agents.Roster{}
+	s.fallbacks = nil
 }
 
 type harnessHost struct {
@@ -1171,6 +1179,8 @@ func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID 
 			effort:          at.effort,
 			effortCeiling:   at.effortCeiling,
 			tiers:           at.tiers,
+			roster:          at.roster,
+			fallbacks:       at.fallbacks,
 			registry:        s.pipeline,
 			native:          s.native,
 			meter:           s.subMeter,
@@ -1270,7 +1280,14 @@ func (h *harnessHost) attachProvider(ctx context.Context, s *tuiSession) error {
 	// could not have been watching the key this session is about to use.
 	h.creds()
 
-	registry, err := registerSessionLLM(s.pipeline, provider)
+	team, err := buildTeamRegistry(ctx, h.reg, resolver, io.Discard, provider, tiers)
+	if err != nil {
+		return err
+	}
+	// Re-armed again: the team's other providers resolved their credentials
+	// just now, and the scrubber must watch those keys before any turn runs.
+	h.creds()
+	registry, err := registerSessionLLM(s.pipeline, team)
 	if err != nil {
 		return err
 	}
@@ -1291,6 +1308,8 @@ func (h *harnessHost) attachProvider(ctx context.Context, s *tuiSession) error {
 	s.provider, s.registry, s.model, s.effort = provider, registry, model, effort
 	s.effortCeiling = ceiling
 	s.tiers = tiers.Profile()
+	s.roster = tiers.Roster
+	s.fallbacks = tiers.Fallbacks()
 	s.attachMu.Unlock()
 	return nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
@@ -94,14 +95,18 @@ func (c *harnessCore) Apply(cx *plugin.Ctx) (plugin.Dispose, error) {
 	return nil, nil
 }
 
-// provideLLM registers the session's adapter as cx.llm on the same kernel
-// that already holds the tool surface. A nil core is the test path that
-// never went through nativeToolsWith: the registry is still built, it is just
-// not a plugin service.
-func (c *harnessCore) provideLLM(provider llm.Provider) (*llm.Registry, error) {
-	registry := llm.NewRegistry()
-	if err := registry.Register(provider); err != nil {
-		return nil, err
+// provideLLM registers the session's provider registry as cx.llm on the same
+// kernel that already holds the tool surface. A nil core is the test path that
+// never went through nativeToolsWith: the registry is still returned, it is
+// just not a plugin service.
+//
+// The registry is built by buildTeamRegistry, not here: it holds the session's
+// adapter and every provider the operator's tiers and team name, and building
+// an adapter needs the settings and the credential resolver, which this seam
+// has never held.
+func (c *harnessCore) provideLLM(registry *llm.Registry) (*llm.Registry, error) {
+	if registry == nil {
+		return nil, errors.New("no provider registry to register")
 	}
 	if c == nil || c.plugins == nil {
 		return registry, nil
@@ -116,8 +121,8 @@ func (c *harnessCore) provideLLM(provider llm.Provider) (*llm.Registry, error) {
 	return registry, err
 }
 
-func registerSessionLLM(pipeline *tools.Registry, provider llm.Provider) (*llm.Registry, error) {
-	return harnessCoreFor(pipeline).provideLLM(provider)
+func registerSessionLLM(pipeline *tools.Registry, registry *llm.Registry) (*llm.Registry, error) {
+	return harnessCoreFor(pipeline).provideLLM(registry)
 }
 
 func bootHarnessCore(reg *flags.Registry, root string) (*harnessCore, error) {

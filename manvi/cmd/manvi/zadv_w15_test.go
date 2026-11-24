@@ -378,8 +378,10 @@ func TestAdvW15ManviToolsCountMatchesTheDocs(t *testing.T) {
 		t.Skipf("the native tool surface could not be built here: %v", err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "\n53 tools, all native") {
-		t.Errorf("manvi tools in a skill-less repository does not end with 53 tools:\n%s", text[max(0, len(text)-200):])
+	// 54 since devcouncil_debate joined the sub-agent group; docs/TOOLS_REFERENCE.md
+	// says the same, and TestToolsReferenceCategoryTableSumsToRegistry holds the two together.
+	if !strings.Contains(text, "\n54 tools, all native") {
+		t.Errorf("manvi tools in a skill-less repository does not end with 54 tools:\n%s", text[max(0, len(text)-200):])
 	}
 	board := 0
 	for _, line := range strings.Split(text, "\n") {

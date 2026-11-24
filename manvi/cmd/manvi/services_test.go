@@ -57,7 +57,7 @@ func TestProvideLLMInstallsTheDocumentedService(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = core.plugins.Close() })
 
-	registry, err := core.provideLLM(kernelStubLLM{})
+	registry, err := core.provideLLM(stubLLMRegistry(t))
 	if err != nil {
 		t.Fatalf("provideLLM: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestProvideLLMInstallsTheDocumentedService(t *testing.T) {
 }
 
 func TestProvideLLMOnAnUnrecordedSurfaceStillBuildsARegistry(t *testing.T) {
-	registry, err := (*harnessCore)(nil).provideLLM(kernelStubLLM{})
+	registry, err := (*harnessCore)(nil).provideLLM(stubLLMRegistry(t))
 	if err != nil {
 		t.Fatalf("nil core: %v", err)
 	}
@@ -89,4 +89,22 @@ func (kernelStubLLM) Capability(model string) (llm.Capability, bool) {
 
 func (kernelStubLLM) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, nil
+}
+
+// stubLLMRegistry is a provider registry holding only the kernel stub, as
+// buildTeamRegistry builds one for a session whose tiers and team name no
+// other provider.
+func stubLLMRegistry(t *testing.T) *llm.Registry {
+	t.Helper()
+	registry := llm.NewRegistry()
+	if err := registry.Register(kernelStubLLM{}); err != nil {
+		t.Fatalf("register stub: %v", err)
+	}
+	return registry
+}
+
+func TestProvideLLMRefusesANilRegistry(t *testing.T) {
+	if _, err := (*harnessCore)(nil).provideLLM(nil); err == nil {
+		t.Fatal("a nil registry was accepted; the session would have no provider to resolve a turn against")
+	}
 }

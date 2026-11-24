@@ -62,12 +62,42 @@ func (t Tier) Rank() int {
 
 func (t Tier) String() string { return string(t) }
 
-// TierSpec is what serves one tier: a bare model id on the session's provider,
-// and the reasoning effort requests at that tier carry. An empty Effort omits
-// the field, so the provider's own default applies.
+// TierSpec is what serves one tier: a model, the provider that serves it, and
+// the reasoning effort requests at that tier carry. An empty Provider is the
+// session's own provider — the only meaning a bare id has ever had — and an
+// empty Effort omits the field, so the provider's own default applies.
+//
+// Provider is set only by an operator who wrote "provider/model" for the tier.
+// It is what lets a team mix providers: an Opus main agent with Gemini scouts
+// is a profile whose basic tier names gemini. A tier that does not name one
+// stays on the session's provider, so a profile written before providers could
+// be named means exactly what it meant then.
 type TierSpec struct {
-	Model  string
-	Effort string
+	Provider string
+	Model    string
+	Effort   string
+}
+
+// Same reports whether two specs run the same model on the same provider. An
+// escalation that moved a child between two tiers for which Same holds would
+// re-run the identical model on a cold cache and call it an escalation.
+func (s TierSpec) Same(o TierSpec) bool {
+	return strings.TrimSpace(s.Model) == strings.TrimSpace(o.Model) &&
+		strings.EqualFold(strings.TrimSpace(s.Provider), strings.TrimSpace(o.Provider))
+}
+
+// Placement is the spec in the form Definition.Model uses: "provider/model"
+// when a provider is named, the bare model otherwise, and "" for an empty
+// spec.
+func (s TierSpec) Placement() string {
+	model := strings.TrimSpace(s.Model)
+	if model == "" {
+		return ""
+	}
+	if p := strings.TrimSpace(s.Provider); p != "" {
+		return p + "/" + model
+	}
+	return model
 }
 
 // TierProfile maps each tier to what serves it.
