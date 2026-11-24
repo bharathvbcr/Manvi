@@ -799,6 +799,28 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Security (Windows): `manvi check /etc/passwd` (and `\x`, `C:foo`) was judged
+  inside the project and allowed, because `filepath.IsAbs` is false for a path
+  that is rooted but names no drive, so the CLI resolved it under the working
+  directory. Such a target is now handed to the gate as written and refused as
+  outside the root. The same shape in the line that describes a symbolic link
+  in a refusal message is closed through the one helper
+  (`internal/rootedpath`). The gate half of the same fault was in DevCouncil
+  (`NormalizeRepoPath`, `lexicalRepoRel`, `namesRoot`, and a tilde whose home
+  directory held a backslash) and is fixed in the pinned commit. No effect off
+  Windows.
+- Windows port of the `go test (windows-latest)` job, which had failed on every
+  run: companion tools are found by their `PATHEXT` extension, a
+  locked-memory probe raises the working set before VirtualLock refuses a
+  credential (memguard deadlocks otherwise), a missing leaf is no longer wrapped
+  where `os.IsNotExist` cannot see it, positions and stored names are slash
+  spelled on every platform, `.gitattributes` checks text out with LF, and the
+  session store closes its temp file before removing it. A provider closing its
+  stdout while being killed no longer surfaces as a provider failure. Tests that
+  encoded a POSIX-only fact (mode bits, shell-script stand-ins, `ln -s`,
+  names with a quote, `*` or `**`, the sqlite3 shell) are platform-correct, or
+  skipped on Windows with the reason named in the test.
+
 - Security (code-graph read gate): devmap's unresolved call-site `receiver`
   text, which is raw source, is withheld when the site's file is a secret path
   or unnamed; call-site samples in devmap prose (`walk_incomplete`,
