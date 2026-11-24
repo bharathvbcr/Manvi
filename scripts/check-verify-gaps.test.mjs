@@ -82,6 +82,9 @@ test("the macos verdict CI produced is fully expected", () => {
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestAgyRealBinaryACPHandshakeAndCrossProcessResume",
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestRealClaudeBinaryStreamJSONHandshake",
     "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed",
+    // Since 2026-11-21 (38d873ca): the darwin clone re-exec helper, reported as
+    // the one unexpected skip by go-test (macos-latest) on main at e75702d8.
+    "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestCloneHelperProcess",
   ];
   const log = [
     "PASS with gates that did not run:",
