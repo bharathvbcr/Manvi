@@ -102,7 +102,7 @@ func TestW21LinkedRootSnapshotCarriesTheMainWorktreesPerWorktreeRefs(t *testing.
 func danglingAdminScript(common string) string {
 	return "set -e\n" +
 		"c=$(git commit-tree $(git write-tree) -m leak)\n" +
-		"a=" + filepath.Join(common, "worktrees", "evil") + "\n" +
+		"a=" + filepath.ToSlash(filepath.Join(common, "worktrees", "evil")) + "\n" +
 		"mkdir -p $a/refs/worktree\n" +
 		"echo ../.. > $a/commondir\n" +
 		"echo /nonexistent/evil/.git > $a/gitdir\n" +

@@ -38,7 +38,7 @@ func TestW21EntryWhoseObjectAppearsLaterIsJudged(t *testing.T) {
 	}
 
 	// 2. The object arrives (its blobs, tree and commit are copied in).
-	write(t, f.root, "arrive.sh", "cp -R "+filepath.Join(scratch, ".git", "objects")+"/. \"$(git rev-parse --git-common-dir)/objects/\"\n")
+	write(t, f.root, "arrive.sh", "cp -R "+filepath.ToSlash(filepath.Join(scratch, ".git", "objects"))+"/. \"$(git rev-parse --git-common-dir)/objects/\"\n")
 	res := shell(f, "sh arrive.sh")
 	if !res.IsError || !res.Blocked || res.Rule != string(policy.RuleSecretPath) {
 		t.Fatalf("FAIL-OPEN: the object a ref-source file already named arrived and was not judged: %+v", res)

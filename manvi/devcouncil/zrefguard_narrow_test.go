@@ -171,7 +171,7 @@ func TestWorktreeAdminDirBrokenByTheCommandIsBlockedUnscanned(t *testing.T) {
 	wt := filepath.Join(filepath.Dir(f.root), "wt-hidden")
 	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
 	admin := filepath.Join(gitOut(t, f.root, "rev-parse", "--path-format=absolute", "--git-common-dir"), "worktrees", "wt-hidden")
-	write(t, f.root, "hide.sh", "#!/bin/sh\nrm -f "+filepath.Join(admin, "HEAD")+"\n")
+	write(t, f.root, "hide.sh", "#!/bin/sh\nrm -f "+filepath.ToSlash(filepath.Join(admin, "HEAD"))+"\n")
 	res := shell(f, "sh hide.sh")
 	if !res.IsError || (res.Rule != ruleRefUnscanned && !strings.Contains(res.Text, "snapshot")) {
 		t.Fatalf("a broken admin directory was allowed: %+v", res)
@@ -246,7 +246,7 @@ func TestPerWorktreeRefParkedThroughTheAdminDirOfAnUnusableWorktreeIsRolledBack(
 			run(t, f.root, "worktree", "add", "-q", "--detach", wt)
 			admin := filepath.Join(gitOut(t, f.root, "rev-parse", "--path-format=absolute", "--git-common-dir"), "worktrees", filepath.Base(wt))
 			tc.hide(t, wt)
-			write(t, f.root, "park.sh", "set -e\nc=$(git commit-tree $(git write-tree) -m leak)\ngit --git-dir="+admin+" update-ref "+tc.ref+" $c\n")
+			write(t, f.root, "park.sh", "set -e\nc=$(git commit-tree $(git write-tree) -m leak)\ngit --git-dir="+filepath.ToSlash(admin)+" update-ref "+tc.ref+" $c\n")
 			res := shell(f, "sh park.sh")
 			if !res.IsError || !res.Blocked || res.Rule != string(policy.RuleSecretPath) {
 				t.Fatalf("the parked leak was allowed or mislabelled: %+v", res)

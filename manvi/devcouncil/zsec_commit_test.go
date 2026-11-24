@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -119,8 +120,8 @@ func stageAndCommit(t *testing.T, f *fixture, path string) tools.Result {
 // never read. That was a silent skip; it is a note now, and the commit still
 // goes through because the agent cannot cure it and git holds the file's blobs.
 func TestCommitNotesASecretPathFileThatCannotBeStatted(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads through a mode-0 directory")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("a mode-0 directory blocks a stat only off Windows (permission bits do not stop a read there) and not for root")
 	}
 	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
 	write(t, f.root, "secrets/token.txt", secretBody)
@@ -269,6 +270,9 @@ func TestCommitRefusesACopiedSecretWhateverTheDiffSpelling(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("%s %v", c.name, c.config), func(t *testing.T) {
+			if runtime.GOOS == "windows" && strings.ContainsAny(c.name, "\"") {
+				t.Skip("a double quote is not legal in a Windows file name")
+			}
 			f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
 			write(t, f.root, ".env", secretBody)
 			checkout(t, f)

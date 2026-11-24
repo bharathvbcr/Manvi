@@ -531,7 +531,11 @@ func prunableAndGone(entries []worktreeEntry, admin string) string {
 		return ""
 	}
 	for _, wt := range entries {
-		if wt.path != path || !wt.prunable {
+		// git prints a worktree's path with forward slashes on every platform and
+		// the gitdir file holds the same spelling, but adminWorktreePath returns
+		// filepath.Dir of it, which is backslash-spelled on Windows: compared raw,
+		// no prunable worktree ever matched there and every stale one refused exec.
+		if filepath.Clean(wt.path) != path || !wt.prunable {
 			continue
 		}
 		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {

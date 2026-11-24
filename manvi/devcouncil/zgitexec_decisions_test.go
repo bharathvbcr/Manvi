@@ -69,8 +69,8 @@ func TestGatedStageRunsTheOperatorsCleanFilter(t *testing.T) {
 	})
 	outside := t.TempDir()
 	marker := filepath.Join(outside, "filter.marker")
-	filter := executableScript(t, outside, "clean-filter", "touch '"+marker+"'\ncat\n")
-	run(t, f.root, "config", "filter.opfilter.clean", filter)
+	filter := executableScript(t, outside, "clean-filter", "touch '"+filepath.ToSlash(marker)+"'\ncat\n")
+	run(t, f.root, "config", "filter.opfilter.clean", filepath.ToSlash(filter))
 	// The agent can write .gitattributes; the filter command is the operator's.
 	if err := os.WriteFile(filepath.Join(f.root, ".gitattributes"), []byte("seed.txt filter=opfilter\n"), 0o644); err != nil { //nolint:gosec // an ordinary tracked file
 		t.Fatal(err)
