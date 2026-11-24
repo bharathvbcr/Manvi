@@ -4,7 +4,7 @@
 
 <p align="left">
   <a href="https://manvi.vbcr.dev/"><img src="https://img.shields.io/badge/website-manvi.vbcr.dev-3B82F6?style=flat&logo=safari&logoColor=white" alt="Website"></a>
-  <a href="https://github.com/bharathvbcr/Manvi/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/bharathvbcr/Manvi/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a>
   <img src="https://img.shields.io/badge/parity_cases-1%2C031_certified-emerald" alt="Parity Cases">
   <img src="https://img.shields.io/badge/architecture-Go_%2B_Rust_process--boundary-orange" alt="Architecture">
   <img src="https://img.shields.io/badge/local_LLMs-Ollama_·_vLLM_·_LM_Studio-8B5CF6?style=flat" alt="Local LLMs">
@@ -494,4 +494,10 @@ Full specifications live in [`docs/`](docs/README.md):
 - **Supported Local Runners**: Ollama, LM Studio, vLLM, llama.cpp, Jan (sub-30ms auto-discovery via `manvi local`)
 - **Supported Frontier Providers**: Anthropic Claude, Google Gemini, xAI Grok (standardized across the multi-provider seam)
 - **Protocol Interop**: Model Context Protocol (MCP 2.0 client & dynamic tool bridges), NDJSON stdio host protocol (`manvi serve`)
+
+---
+
+## License
+
+Dual-licensed under either the [MIT License](LICENSE-MIT) or the [Apache License, Version 2.0](LICENSE-APACHE) (`MIT OR Apache-2.0`), at your option. See [NOTICE](NOTICE) and [CONTRIBUTING.md](CONTRIBUTING.md).
 

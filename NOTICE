@@ -1,0 +1,16 @@
+MANVI
+Copyright (c) 2026 Bharath Chandra Vaddaram
+
+This software is dual-licensed under your option of either the MIT License
+(LICENSE-MIT) or the Apache License, Version 2.0 (LICENSE-APACHE).
+
+Upstream Ecosystem Components
+-----------------------------
+MANVI integrates with sibling open-source projects maintained under the same
+dual MIT OR Apache-2.0 license:
+- DevCouncil (https://github.com/bharathvbcr/DevCouncil)
+- Gusset (https://github.com/bharathvbcr/gusset)
+
+Third-party Go, Rust, and Node dependencies retain their respective upstream
+licenses as declared in manvi/go.mod, native/Cargo.toml, crates/Cargo.toml,
+and package.json.
