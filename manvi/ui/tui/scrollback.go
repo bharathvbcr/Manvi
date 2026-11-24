@@ -325,17 +325,27 @@ func (s *Scrollback) enforceBounds() {
 		if s.selected < 0 {
 			s.selected = -1
 		}
-		if len(s.expandedCapsules) > 0 {
-			shifted := make(map[int]bool, len(s.expandedCapsules))
-			for idx, open := range s.expandedCapsules {
-				if open && idx >= drop {
-					shifted[idx-drop] = true
-				}
-			}
-			s.expandedCapsules = shifted
-		}
-		s.sel.Clear()
 	}
+	// The hovered entry shifts with the rest, and is forgotten once it is gone.
+	if s.hoverEntry >= 0 {
+		s.hoverEntry -= drop
+		if s.hoverEntry < 0 {
+			s.hoverEntry = -1
+		}
+	}
+	// These two run on every drop, whether or not an entry is selected: the
+	// operator can expand a capsule and then move focus so selected is -1, and
+	// the capsule's index still shifts.
+	if len(s.expandedCapsules) > 0 {
+		shifted := make(map[int]bool, len(s.expandedCapsules))
+		for idx, open := range s.expandedCapsules {
+			if open && idx >= drop {
+				shifted[idx-drop] = true
+			}
+		}
+		s.expandedCapsules = shifted
+	}
+	s.sel.Clear()
 }
 
 // settleLast ends the newest entry's stream, and lays it out again when that
