@@ -137,6 +137,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- DevCouncil pin moved from `8286e445` to `84b97f0b` (origin/main; 11 commits,
+  none touching `rust/`). Schema constants are unchanged (dc-store 11,
+  workbench 17), so no cross-app schema carry is needed, and the docs schema
+  re-read gate is re-read at the new pin. The pin carries DevCouncil's Windows
+  fixes: a rooted path that is not absolute (`/etc/passwd`, `C:foo`) is outside
+  the repository, a tilde resolves to the home directory in the slash spelling,
+  the test support finds cargo's `.exe`, and a child that has already exited is
+  not reported as a failure to cancel. gusset stays at `19383ad`.
+
 - DevCouncil pin moved from `d938f7f8` to `8286e445` (origin/main; 241
   commits, including the rustfmt fix for two schema-manifest tests that Manvi's
   verify checks). Schema constants are unchanged (devmap-store 29, dc-store 11,
