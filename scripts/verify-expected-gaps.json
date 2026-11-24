@@ -80,6 +80,16 @@
       "why": "A re-exec helper, not a test of its own: TestApproveFDBareApproverIsClosedToChildrenToo runs it as a child with the approval descriptor at fd 3, and it skips when the suite reaches it directly."
     },
     {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestCloneHelperProcess",
+      "os": [
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "A re-exec helper, not a test of its own (containment_clone_darwin_test.go, darwin only): the clone tests run the test binary under the seatbelt profile with MANVI_TEST_CLONE_SRC and MANVI_TEST_CLONE_DST set, and it skips when the suite reaches it directly."
+    },
+    {
       "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestTUIPtyHelper",
       "os": [
         "ubuntu-latest",
