@@ -228,7 +228,7 @@ func (b *Buffer) RegisterLink(url string) uint16 {
 		b.linkIndex = make(map[string]uint16, 16)
 	}
 	b.links = append(b.links, url)
-	id := uint16(len(b.links))
+	id := uint16(len(b.links)) // #nosec G115 -- len(b.links) <= MaxLinksPerFrame (2048) after the cap check above, far below MaxUint16
 	b.linkIndex[url] = id
 	return id
 }

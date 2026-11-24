@@ -178,7 +178,7 @@ func TestEditInExternalEditorRoundTripSanitizeAndCleanup(t *testing.T) {
 		}
 		seenPerm = info.Mode().Perm()
 
-		raw, err := os.ReadFile(tmpPath)
+		raw, err := os.ReadFile(tmpPath) // #nosec G304 -- tmpPath is the temp file the editor stub was handed, under this test's own directory
 		if err != nil {
 			return err
 		}

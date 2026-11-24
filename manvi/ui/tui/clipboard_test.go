@@ -358,7 +358,7 @@ func TestClipboardNativeExecutionIgnoresPlantedCWDAndWithholdsProviderEnv(t *tes
 	if backend != writeTool {
 		t.Fatalf("backend = %q, want %q", backend, writeTool)
 	}
-	gotBytes, err := os.ReadFile(captured)
+	gotBytes, err := os.ReadFile(captured) // #nosec G304 -- captured is a file this test's stub backend wrote under t.TempDir
 	if err != nil || string(gotBytes) != "copied text" {
 		t.Fatalf("captured = %q (err=%v), want %q", string(gotBytes), err, "copied text")
 	}

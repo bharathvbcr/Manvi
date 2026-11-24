@@ -171,7 +171,7 @@ func clipboardBackends(write bool) []clipboardBackend {
 }
 
 func runClipboardWrite(ctx context.Context, path, text string, args ...string) error {
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- path is a backend from the fixed per-OS tables above, resolved to an absolute path; args are that table's own
 	cmd.Env = childenv.Inherit()
 	cmd.Stdin = strings.NewReader(text)
 	return cmd.Run()
@@ -179,7 +179,7 @@ func runClipboardWrite(ctx context.Context, path, text string, args ...string) e
 
 func runClipboardRead(ctx context.Context, path string, args ...string) (string, bool, error) {
 	out := &limitedBuffer{limit: maxPasteBytes}
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- path is a backend from the fixed per-OS tables above, resolved to an absolute path; args are that table's own
 	cmd.Env = childenv.Inherit()
 	cmd.Stdout = out
 	if err := cmd.Run(); err != nil {
