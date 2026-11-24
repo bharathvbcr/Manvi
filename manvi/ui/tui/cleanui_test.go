@@ -808,7 +808,8 @@ func TestTheComposerFrameOnlyCarriesWhatChangesEnter(t *testing.T) {
 func TestTheStatusBarDropsWholeSegmentsInOrder(t *testing.T) {
 	th := unicodeDark()
 	st := Status{
-		Posture: "strict", Model: "claude-opus-5-5", TaskID: "TASK-7",
+		Posture: "strict", Model: "claude-opus-5-5", Provider: "anthropic", TaskID: "TASK-7",
+		GitBranch: "main", ContextUsed: 5, ContextMax: 10, Steps: 4,
 		InputTokens: 1200, OutputTokens: 300, Grants: 2, Sessions: 3,
 	}
 	last := ""
@@ -819,7 +820,7 @@ func TestTheStatusBarDropsWholeSegmentsInOrder(t *testing.T) {
 		if w >= 9 && !strings.Contains(out, "strict") {
 			t.Fatalf("width %d dropped the posture: %q", w, out)
 		}
-		for _, seg := range []string{"claude-opus-5-5", "TASK-7", "2 granted", "3 sessions", "1.2k↓ 300↑"} {
+		for _, seg := range []string{"claude-opus-5-5", "@anthropic", "TASK-7", "2 granted", "3 sessions", "step 4", "1.2k↓ 300↑"} {
 			if strings.Contains(last, seg) && !strings.Contains(out, seg) {
 				// Gone at this width: it must be gone whole, not cut.
 				for cut := len(seg) - 1; cut > 3; cut-- {
@@ -838,7 +839,7 @@ func TestTheStatusBarDropsWholeSegmentsInOrder(t *testing.T) {
 	// for a session that is merely idle.
 	b := render.NewBuffer(140, 1)
 	DrawStatusBar(b, b.Bounds(), th, st, 0, nil, false)
-	if out := bufferString(b); strings.Contains(out, th.Glyphs().Pass) || !strings.Contains(out, "claude-opus-5-5") {
+	if out := bufferString(b); strings.Contains(out, th.Glyphs().Pass) || !strings.Contains(out, "claude-opus-5-5@anthropic") {
 		t.Fatalf("wide bar: %q", out)
 	}
 }
@@ -1148,8 +1149,10 @@ func paletteSession(th Theme) *App {
 		v.Apply(ev)
 	}
 	v.Scroll.SetFoldAll(false)
-	v.Status.Model = "some-model"
-	v.Status.TaskID, v.Status.Grants = "TASK-1", 1
+	v.Status.Model, v.Status.Provider = "some-model", "anthropic"
+	v.Status.TaskID, v.Status.LeaseExpiry = "TASK-1", time.Now().Add(time.Minute)
+	v.Status.GitBranch, v.Status.GitDirty, v.Status.Grants, v.Status.Steps = "main", 2, 1, 3
+	v.Status.ContextUsed, v.Status.ContextMax = 75, 100
 	v.Status.InputTokens, v.Status.OutputTokens = 10, 2
 	return a
 }
@@ -1449,6 +1452,7 @@ func TestTheFrameHasNoTopBarAndOneQuietFooter(t *testing.T) {
 	a, _ := newTestApp()
 	v := mustCurrent(a)
 	v.Status.Model, v.Status.Posture = "claude-opus-5-5", "strict"
+	v.Status.GitBranch = "main"
 	v.Apply(ui.Event{Kind: ui.KindTurnStart, Text: "hello"})
 	const w, h = 100, 24
 	b := render.NewBuffer(w, h)
@@ -1467,7 +1471,7 @@ func TestTheFrameHasNoTopBarAndOneQuietFooter(t *testing.T) {
 		t.Fatalf("the status is still on the top row: %q", top)
 	}
 	foot := row(h - 1)
-	for _, want := range []string{"strict", "claude-opus-5-5", "ctrl+p commands", "F1 more"} {
+	for _, want := range []string{"strict", "claude-opus-5-5", "main", "ctrl+p commands", "F1 more"} {
 		if !strings.Contains(foot, want) {
 			t.Fatalf("the footer is missing %q: %q", want, foot)
 		}
@@ -1502,7 +1506,7 @@ func TestTheFooterKeepsWhatMatters(t *testing.T) {
 		DrawFooter(b, b.Bounds(), th, st, CtxPrompt, 0, nil, false, extra...)
 		return strings.Join(strings.Fields(bufferString(b)), " "), b
 	}
-	st := Status{Posture: "strict", Model: "claude-opus-5-5", Grants: 2}
+	st := Status{Posture: "strict", Model: "claude-opus-5-5", GitBranch: "main", Grants: 2}
 	wide, b := draw(110, st)
 	// draw hands back the buffer it made, which is never nil; nilaway loses that
 	// through the closure's second result, and without this reports the reads of b
@@ -1625,7 +1629,7 @@ func TestAShortTerminalKeepsTheNotStrictRow(t *testing.T) {
 // sparkline is gated on the whole row's width, not on the status's share.
 func TestTheFooterSharesItsRow(t *testing.T) {
 	th := Dark()
-	st := Status{Posture: "strict", Model: "claude-opus-5-5", Busy: true}
+	st := Status{Posture: "strict", Model: "claude-opus-5-5", GitBranch: "main", Busy: true}
 	draw := func(w int, ctx Context, spark []float64) string {
 		b := render.NewBuffer(w, 1)
 		DrawFooter(b, b.Bounds(), th, st, ctx, 0, spark, true)

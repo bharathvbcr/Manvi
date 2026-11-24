@@ -106,7 +106,7 @@ under **Unreleased** in the same commit as the code.
   runes by the same rule as the screen buffer; `Buffer.SetCell` cannot store
   control or format runes, a zero-width base or a wide rune in the last column;
   joiners, flag tags and variation selectors after a wide character are painted.
-- **b31-tui:** the status bar drops fields nothing populated; Ctrl+Z turns focus
+- **b31-tui:** Ctrl+Z turns focus
   and any-motion reporting off and back on, only for the modes that were on;
   Ctrl+\, Ctrl+], Ctrl+^ and Ctrl+_ decode under those names; the transcript is
   bounded in bytes.

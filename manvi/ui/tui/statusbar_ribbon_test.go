@@ -19,7 +19,8 @@ const ribbonRunes = "▞▚"
 func busyStatus(stall int) Status {
 	return Status{
 		Posture: "strict", Busy: true, BusyLabel: "run_command", StallSecs: stall,
-		Model: "fable", TaskID: "TASK-12",
+		Model: "fable", Provider: "anthropic", TaskID: "TASK-12", GitBranch: "brand/fold-m",
+		Steps: 3,
 	}
 }
 

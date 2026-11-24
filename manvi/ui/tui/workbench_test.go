@@ -508,6 +508,7 @@ func TestWideDashboardShowsSplitLivePreviewPaneAndFallsBackNarrow(t *testing.T) 
 	v1.Status.Posture = "strict"
 	v1.Status.Model = "claude-sonnet-4"
 	v1.Status.TaskID = "T-101"
+	v1.Status.LeaseExpiry = time.Now().Add(15 * time.Minute)
 	v1.Status.Grants = 2
 	for i := 1; i <= 12; i++ {
 		v1.Apply(ui.Event{Kind: ui.KindNotice, Text: "transcript row " + itoa(i)})

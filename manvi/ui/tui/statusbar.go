@@ -3,6 +3,7 @@ package tui
 import (
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
@@ -19,12 +20,28 @@ import (
 // from four hundred lines ago is an operator who will read a green result as an
 // enforced one.
 type Status struct {
-	Posture string
-	Model   string
-	TaskID  string
+	Posture  string
+	Model    string
+	Provider string
+	TaskID   string
+	// LeaseExpiry is when the current task's lease lapses. Shown as a countdown
+	// because a lease that expires mid-turn is how two agents end up in one
+	// working tree.
+	LeaseExpiry time.Time
 
 	InputTokens  int
 	OutputTokens int
+	Steps        int
+
+	// ContextUsed and ContextMax track context-window pressure.
+	ContextUsed int
+	ContextMax  int
+
+	// Git status context.
+	GitBranch string
+	GitAhead  int
+	GitBehind int
+	GitDirty  int
 
 	// Weakened names safety flags moved off their defaults.
 	Weakened []string
@@ -38,9 +55,10 @@ type Status struct {
 	BusyLabel string
 	// BusySecs is how long the running turn has run, and StallSecs how long
 	// since it last produced anything. Both are for the working row.
-	BusySecs  int
-	StallSecs int
-	Sessions  int
+	BusySecs   int
+	StallSecs  int
+	Sessions   int
+	Interrupts int
 }
 
 // StrictSummary reports whether this session's results can be described as
@@ -138,15 +156,72 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 	put(0, false, render.Styled(orDash(st.Posture), postureStyle))
 
 	if st.TaskID != "" {
-		put(2, false, render.Styled(st.TaskID, render.Style{Fg: th.Info, Bg: bg, Attrs: render.Bold}))
+		task := render.Styled(st.TaskID, render.Style{Fg: th.Info, Bg: bg, Attrs: render.Bold})
+		if !st.LeaseExpiry.IsZero() {
+			remain := time.Until(st.LeaseExpiry)
+			switch {
+			case remain <= 0:
+				// An expired lease is not a cosmetic detail: the task is
+				// takeable by another builder from this moment.
+				task = task.Append(" lease EXPIRED", render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold})
+			case remain < 2*time.Minute:
+				task = task.Append(" lease "+shortDuration(remain), render.Style{Fg: th.Fg, Bg: bg, Attrs: render.Bold})
+			default:
+				task = task.Append(" lease "+shortDuration(remain), render.Style{Fg: th.FgSubtle, Bg: bg})
+			}
+		}
+		put(2, false, task)
 	}
 	if st.Model != "" {
-		put(3, false, render.Styled(st.Model, name))
+		model := render.Styled(st.Model, name)
+		put(3, false, model)
+		if st.Provider != "" {
+			// A segment of its own that joins the model without a separator, so
+			// a narrow bar loses the provider before it loses the model.
+			put(8, false, render.Styled("@"+st.Provider, base))
+		}
+	}
+	if st.GitBranch != "" {
+		branch := st.GitBranch
+		if st.GitAhead > 0 {
+			branch += "↑" + itoa(st.GitAhead)
+		}
+		if st.GitBehind > 0 {
+			branch += "↓" + itoa(st.GitBehind)
+		}
+		if st.GitDirty > 0 {
+			branch += " ●" + itoa(st.GitDirty)
+		}
+		put(6, false, render.Styled(branch, base))
 	}
 
 	// Right-hand cluster: what the session has spent and leaned on.
 	if st.Busy && len(spark) > 2 {
 		put(10, true, render.Sparkline(spark, render.Style{Fg: th.AccentDim, Bg: bg}))
+	}
+	if st.ContextMax > 0 && st.ContextUsed > 0 {
+		pct := (st.ContextUsed * 100) / st.ContextMax
+		if pct > 100 {
+			pct = 100
+		}
+		filled := (pct * 5) / 100
+		blocks := strings.Repeat("▓", filled) + strings.Repeat("░", 5-filled)
+		if !th.Unicode {
+			blocks = strings.Repeat("#", filled) + strings.Repeat("-", 5-filled)
+		}
+		// Quiet until it matters: the gauge is secondary text while there is
+		// room, bold as the window fills, and the failure colour only when it
+		// is nearly full.
+		gaugeStyle := base
+		if pct >= 90 {
+			gaugeStyle = render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold}
+		} else if pct >= 70 {
+			gaugeStyle = strong
+		}
+		put(4, true, render.Styled("ctx "+blocks+" "+itoa(pct)+"%", gaugeStyle))
+	}
+	if st.Steps > 0 {
+		put(7, true, render.Styled("step "+itoa(st.Steps), base))
 	}
 	if st.InputTokens > 0 || st.OutputTokens > 0 {
 		put(5, true, render.Styled(compactCount(st.InputTokens)+"↓ "+compactCount(st.OutputTokens)+"↑", base))
@@ -173,6 +248,8 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 				}
 			case right:
 				out = out.Append("  ", base)
+			case s.rank == 8 && i > 0 && segs[i-1].rank == 3:
+				// The provider, joined to its model.
 			case i > 0 && segs[i-1].rank == 0:
 				out = out.Append("  ", base)
 			default:
