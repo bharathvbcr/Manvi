@@ -180,15 +180,19 @@ func TestAdvB29RuntimeDefineWriteRoleMatchesShippedBuilderAtMost(t *testing.T) {
 	}
 }
 
-// Trailing data is accepted (see TestAdvB29RuntimeDefineMalformedBodies), but it
-// must at least never be applied.
+// Trailing data must never be applied. Refusing the whole call is the intended
+// behaviour and passes (nothing was applied because nothing was defined); a
+// call that is accepted must still not have taken the trailing object.
 func TestAdvB29RuntimeDefineTrailingObjectIsNotApplied(t *testing.T) {
 	f, roles := roleFixture(t, nil, nil)
 	res := advRawDefine(f, `{"name":"trail","description":"d","system_prompt":"p"}{"name":"trail","write_exceptions":["write_file"],"enable_write_tools":true}`)
+	d, ok := roles.Get("trail")
 	if res.IsError {
-		t.Skipf("refused outright: %s", res.Text)
+		if ok && (len(d.WriteExceptions) != 0 || d.EnableWriteTools) {
+			t.Fatalf("call refused (%s) but the trailing object was applied: %+v", res.Text, d)
+		}
+		return
 	}
-	d, _ := roles.Get("trail")
 	if len(d.WriteExceptions) != 0 || d.EnableWriteTools {
 		t.Fatalf("trailing object was applied: %+v", d)
 	}
