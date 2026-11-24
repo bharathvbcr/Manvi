@@ -567,3 +567,91 @@ func (r *Registry) readValues(v *valueScan, path, abs string, tracked bool) {
 		}
 	}
 }
+
+// maxListedPathBytes bounds one record of a listing, the only part of it that is
+// held at a time.
+const maxListedPathBytes = 1 << 20
+
+// recordSplitter is the stdout writer of a `-z` listing: it hands each
+// NUL-terminated record to visit as it arrives and holds only the part of one
+// record that has not ended yet. After the first error it takes nothing more,
+// and the error comes back to the child as a failed write, which ends it.
+type recordSplitter struct {
+	visit func(record string) error
+	buf   []byte
+	err   error
+}
+
+func (s *recordSplitter) Write(p []byte) (int, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	n := len(p)
+	for len(p) > 0 {
+		end := bytes.IndexByte(p, 0)
+		if end < 0 {
+			if len(s.buf)+len(p) > maxListedPathBytes {
+				s.err = fmt.Errorf("a listed path is longer than %d bytes", maxListedPathBytes)
+				return 0, s.err
+			}
+			s.buf = append(s.buf, p...)
+			return n, nil
+		}
+		record := p[:end]
+		if len(s.buf) > 0 {
+			if len(s.buf)+len(record) > maxListedPathBytes {
+				s.err = fmt.Errorf("a listed path is longer than %d bytes", maxListedPathBytes)
+				return 0, s.err
+			}
+			s.buf = append(s.buf, record...)
+			record = s.buf
+		}
+		if err := s.visit(string(record)); err != nil {
+			s.err = err
+			return 0, err
+		}
+		s.buf = s.buf[:0]
+		p = p[end+1:]
+	}
+	return n, nil
+}
+
+// finish reports a listing that ended inside a record: every record of a -z
+// listing ends in NUL, so one that did not is output git did not finish writing.
+func (s *recordSplitter) finish() error {
+	if s.err != nil {
+		return s.err
+	}
+	if len(s.buf) > 0 {
+		return errors.New("the listing ended inside a path")
+	}
+	return nil
+}
+
+// streamListing runs one `git ls-files -z` and gives each path to visit as git
+// writes it. What it returns is git's stderr, which is where `ls-files` says it
+// skipped a directory it could not open (see listingWarningNotes); a visit error
+// ends the child and is returned as it came.
+func (r *Registry) streamListing(ctx context.Context, args []string, visit func(path string) error) (gitCapture, error) {
+	splitter := &recordSplitter{visit: visit}
+	spec := gitSpec(r.deps.Root, "", args)
+	spec.stdout = splitter
+	res := runProc(ctx, spec)
+	if splitter.err != nil {
+		return gitCapture{}, splitter.err
+	}
+	if res.timedOut {
+		return gitCapture{}, fmt.Errorf("git %s: timed out", strings.Join(args, " "))
+	}
+	if res.err != nil {
+		msg := strings.TrimSpace(string(res.stderr))
+		if len(msg) > gitStderrPreview {
+			msg = msg[:gitStderrPreview] + "…"
+		}
+		return gitCapture{}, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), res.err, msg)
+	}
+	if err := splitter.finish(); err != nil {
+		return gitCapture{}, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return gitCapture{stderr: string(res.stderr), stderrNote: res.stderrNote}, nil
+}

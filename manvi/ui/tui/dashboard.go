@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
@@ -108,6 +109,10 @@ func (d *Dashboard) HitTest(x, y int) int {
 // rowHeight is how many rows one session occupies.
 const rowHeight = 2
 
+// dashboardMinSplitWidth is the narrowest terminal width that splits the
+// dashboard into a 55% session list and 45% live preview pane.
+const dashboardMinSplitWidth = 116
+
 // Draw paints the session list.
 //
 // fxOn animates the header: the mark carries a wave of the gradient's second
@@ -159,14 +164,24 @@ func (d *Dashboard) Draw(b *render.Buffer, r render.Rect, th Theme, views []*Age
 	}
 
 	area, hints := area.SplitBottom(1)
-	body := area.Pad(1, 2, 1, 2)
 
 	if len(views) == 0 {
+		body := area.Pad(1, 2, 1, 2)
 		render.Styled("no sessions — ctrl+n to start one", th.Subtle()).
 			DrawIn(b, render.Rect{X: body.X, Y: body.Y, W: body.W, H: 1})
 		DrawShortcutBar(b, hints, th, CtxDashboard)
 		return
 	}
+
+	listArea := area
+	var divArea, previewArea render.Rect
+	if r.W >= dashboardMinSplitWidth {
+		leftW := area.W * 55 / 100
+		var rightArea render.Rect
+		listArea, rightArea = area.SplitLeft(leftW)
+		divArea, previewArea = rightArea.SplitLeft(1)
+	}
+	body := listArea.Pad(1, 2, 1, 2)
 
 	now := time.Now()
 
@@ -198,7 +213,7 @@ func (d *Dashboard) Draw(b *render.Buffer, r render.Rect, th Theme, views []*Age
 		}
 		selected := i == d.sel
 		hovered := d.hover == i+1
-		rowRect := render.Rect{X: r.X, Y: y, W: r.W, H: rowHeight}
+		rowRect := render.Rect{X: listArea.X, Y: y, W: listArea.W, H: rowHeight}
 		// Recorded for the pointer: a click is tested against the rows as
 		// they were drawn, window offset included.
 		d.rows = append(d.rows, rowRect)
@@ -277,5 +292,168 @@ func (d *Dashboard) Draw(b *render.Buffer, r render.Rect, th Theme, views []*Age
 		meta.Truncate(body.W).Draw(b, body.X, y+1)
 	}
 
+	if !divArea.Empty() && body.H > 0 {
+		divGlyph := "│"
+		if !th.Unicode {
+			divGlyph = "|"
+		}
+		divStyle := render.Style{Fg: th.ruleColor(), Bg: th.Bg}
+		for y := divArea.Y; y < divArea.Bottom(); y++ {
+			b.SetString(divArea.X, y, divGlyph, divStyle)
+		}
+	}
+	if !previewArea.Empty() && body.H > 0 && d.sel >= 0 && d.sel < len(views) {
+		d.drawPreview(b, previewArea, th, views[d.sel], tick, now)
+	}
+
 	DrawShortcutBar(b, hints, th, CtxDashboard)
+}
+
+func (d *Dashboard) drawPreview(b *render.Buffer, r render.Rect, th Theme, v *AgentView, tick int, now time.Time) {
+	if v == nil || r.Empty() {
+		return
+	}
+	pane := r.Pad(1, 2, 1, 2)
+	if pane.Empty() || pane.W < 12 {
+		return
+	}
+	g := th.Glyphs()
+	var lines []render.Line
+
+	stateChip, stateStyle := "idle", th.Subtle()
+	switch {
+	case v.Approval() != nil:
+		stateChip, stateStyle = "blocked", th.Status(StatusWarn).With(render.Bold)
+	case v.Error() != "":
+		stateChip, stateStyle = "error", th.Status(StatusBlock).With(render.Bold)
+	case v.Status.Busy:
+		stateChip, stateStyle = render.Spinner(g.Spinner, tick)+" busy", th.AccentStyle()
+	}
+	title := v.Title
+	if title == "" {
+		title = v.ID
+	}
+	lines = append(lines, render.Styled(title+"  ", th.Strong()).Append("["+stateChip+"]", stateStyle))
+
+	hBar := "─"
+	if !th.Unicode {
+		hBar = "-"
+	}
+	lines = append(lines, render.Styled(strings.Repeat(hBar, pane.W), render.Style{Fg: th.ruleColor(), Bg: th.Bg}))
+
+	st := v.Status
+	strict, why := st.StrictSummary()
+	postureStyle := th.Strong()
+	if !strict {
+		postureStyle = th.Status(StatusWarn).With(render.Bold)
+	}
+	postureLine := render.Styled("Posture  ", th.Subtle()).Append(orDash(st.Posture), postureStyle)
+	if !strict && why != "" {
+		postureLine = postureLine.Append(" ("+why+")", th.Status(StatusWarn))
+	}
+	lines = append(lines, postureLine)
+
+	modelText := orDash(st.Model)
+	if st.Provider != "" {
+		modelText += " · " + st.Provider
+	}
+	if st.InputTokens > 0 || st.OutputTokens > 0 {
+		modelText += " · " + compactCount(st.InputTokens) + "↓ " + compactCount(st.OutputTokens) + "↑"
+	}
+	lines = append(lines, render.Styled("Model    ", th.Subtle()).Append(modelText, th.Base()))
+
+	leaseText := "—"
+	leaseStyle := th.Muted()
+	if st.TaskID != "" {
+		leaseText = st.TaskID
+		leaseStyle = th.Status(StatusInfo)
+		if !st.LeaseExpiry.IsZero() {
+			rem := st.LeaseExpiry.Sub(now)
+			if rem <= 0 {
+				leaseText += " (EXPIRED)"
+				leaseStyle = th.Status(StatusBlock).With(render.Bold)
+			} else {
+				leaseText += " (" + shortDuration(rem) + " left)"
+			}
+		}
+	}
+	grantLabel := itoa(st.Grants) + " grant(s)"
+	grantStyle := th.Muted()
+	if st.Grants > 0 {
+		grantStyle = th.Status(StatusGranted)
+	}
+	lines = append(lines, render.Styled("Lease    ", th.Subtle()).
+		Append(leaseText, leaseStyle).
+		Append("  ·  ", th.Subtle()).
+		Append(grantLabel, grantStyle))
+
+	if len(st.Degraded) > 0 {
+		lines = append(lines, render.Styled("Unrun    ", th.Subtle()).
+			Append(strings.Join(st.Degraded, ", "), th.Status(StatusDegraded)))
+	}
+
+	lines = append(lines, render.Line{})
+
+	if card := v.Approval(); card != nil {
+		req := card.Request
+		lines = append(lines, render.Styled(g.Warn+" Pending Approval", th.Status(StatusWarn).With(render.Bold)))
+		if req.Rule != "" {
+			ruleLine := render.Styled("Rule     ", th.Subtle()).Append(req.Rule, th.Strong())
+			if req.Severity != "" {
+				ruleLine = ruleLine.Append(" ["+req.Severity+"]", th.Status(StatusWarn))
+			}
+			lines = append(lines, ruleLine)
+		}
+		if req.Path != "" {
+			lbl := "Path     "
+			if req.Subject == "command" {
+				lbl = "Command  "
+			}
+			lines = append(lines, render.Styled(lbl, th.Subtle()).Append(req.Path, th.Status(StatusInfo)))
+		}
+		if req.Reason != "" {
+			lines = append(lines, render.WrapText("Reason: "+req.Reason, pane.W, th.Muted())...)
+		}
+		wait := "waiting " + shortDuration(now.Sub(card.arrived))
+		if q := v.PendingApprovals(); q > 0 {
+			wait += " · +" + itoa(q) + " queued"
+		}
+		lines = append(lines, render.Styled(wait, th.Subtle()))
+		lines = append(lines, render.Styled("Press Enter to open session and answer", th.Subtle()))
+	} else {
+		if errText := v.Error(); errText != "" {
+			lines = append(lines, render.Styled("Last Error", th.Status(StatusBlock).With(render.Bold)))
+			lines = append(lines, render.WrapText(errText, pane.W, th.Status(StatusBlock))...)
+			lines = append(lines, render.Line{})
+		}
+		lines = append(lines, render.Styled("Recent Transcript", th.Strong()))
+		rows := recentTranscriptLines(v, th, pane.W, 8)
+		if len(rows) == 0 {
+			lines = append(lines, render.Styled("No transcript activity yet.", th.Subtle()))
+		} else {
+			lines = append(lines, rows...)
+		}
+	}
+
+	for row := 0; row < pane.H && row < len(lines); row++ {
+		lines[row].Truncate(pane.W).Draw(b, pane.X, pane.Y+row)
+	}
+}
+
+func recentTranscriptLines(v *AgentView, th Theme, width, limit int) []render.Line {
+	if v == nil || v.Scroll == nil || limit <= 0 {
+		return nil
+	}
+	refs := v.Scroll.rows(th, width)
+	var nonGap []render.Line
+	for _, ref := range refs {
+		if ref.gap && len(ref.line) == 0 {
+			continue
+		}
+		nonGap = append(nonGap, ref.line)
+	}
+	if len(nonGap) > limit {
+		nonGap = nonGap[len(nonGap)-limit:]
+	}
+	return nonGap
 }

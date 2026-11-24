@@ -95,6 +95,11 @@ test("the macos verdict CI produced is fully expected", () => {
     "github.com/bharathvbcr/Manvi/manvi/mcp.TestZadvW23TimeoutDurationIsInsideTheFingerprint",
     "github.com/bharathvbcr/Manvi/manvi/mcp.TestZadvW23TimeoutDurationIsBoundedLikeTimeoutSeconds",
     "github.com/bharathvbcr/Manvi/manvi/mcp.TestZadvW23AProgramRegistrationIsNotRefusedBecauseTheTreeDeclaredTheNameFirst",
+    // Since the 2026-11-23 land (ft-efcfd01a): three known-open settlement tests
+    // that skip unconditionally until agent/loop.go is free.
+    "github.com/bharathvbcr/Manvi/manvi/agent.TestOpenB31SettleMergeDecodingKeepsUnknownKinds",
+    "github.com/bharathvbcr/Manvi/manvi/agent.TestOpenB31SettleLoopReportsUnknownKindsOnTheOutcomeAndLog",
+    "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestOpenB31SettleOutcomeNoticeNamesUnknownKinds",
   ];
   const log = [
     "PASS with gates that did not run:",

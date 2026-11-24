@@ -663,6 +663,207 @@ os.chmod(nsib, 0o644)
 shutil.rmtree(base, ignore_errors=True)
 shutil.rmtree(nbase, ignore_errors=True)
 
+# ---------------------------------------------------------------------------
+# One owner for a child's environment, temp directory and write roots (B25).
+# ---------------------------------------------------------------------------
+print("children get a private temp, a scrubbed env and no shared write root (B25)")
+import hashlib
+from mh.bench import load_tasks
+from mh.harness import Config, Harness, log_args
+from mh.model import Reply
+
+_contained = toolmod.containment_backend() in ("sandbox-exec", "bwrap")
+_host_tmp = os.path.realpath(tempfile.gettempdir())
+_task = {t.name: t for t in load_tasks()}["cryptic"]
+
+
+def _sandbox_for(task):
+    d = tmpdir()
+    s = os.path.join(d, "s")
+    task.materialise(s)
+    return Sandbox(s, protected_roots=task.guard_roots), s
+
+
+# A verifier payload that writes what it can see to the temp directory the
+# interpreter would pick (the C4 shape: hidden-test arguments left in /tmp).
+_ref = open(os.path.join(_task.dir, "reference", "app", "invoice.py")).read()
+_PAYLOAD = (
+    "import os, sys, tempfile\n"
+    f"_p = os.path.join(tempfile.gettempdir(), 'mh-b25-args-{os.getpid()}-{time.monotonic_ns()}.txt')\n"
+    "try:\n"
+    "    open(_p, 'w').write('HIDDEN-ARGS-SENTINEL')\n"
+    "except OSError:\n"
+    "    pass\n"
+    "print('MH_B25_PATH', _p)\n"
+)
+_sb, _s = _sandbox_for(_task)
+open(os.path.join(_s, "app", "invoice.py"), "w").write(_PAYLOAD + "\n" + _ref)
+_ok, _out = _task.verify(_s)
+_wout = (_task.last_record or {}).get("worker_output", "")
+_path = next((ln.split(" ", 1)[1].strip() for ln in _wout.splitlines()
+              if ln.startswith("MH_B25_PATH ")), "")
+check("B25 the payload ran in the worker and named its temp path", bool(_path), _wout[:200])
+check("B25 correct code still verifies with a temp-writing payload", _ok, _out[:200])
+if _contained:
+    check("B25 what the worker wrote to its temp is gone when the verification ends",
+          bool(_path) and not os.path.exists(_path), _path)
+    _got = _sb.run_shell(cmd=f"cat '{_path}' 2>&1")
+    check("B25 the next run_shell cannot read what the verifier worker wrote",
+          "HIDDEN-ARGS-SENTINEL" not in _got, _got[:200])
+    check("B25 the worker's temp is not the host's shared temp",
+          bool(_path) and os.path.dirname(os.path.realpath(_path)) != _host_tmp, _path)
+_sb.close()
+
+# Episode one writes into the host temp; episode two's shell must not see it.
+if _contained:
+    _marker = os.path.join(_host_tmp, f"mh-b25-marker-{os.getpid()}")
+    _sb1, _ = _sandbox_for(_task)
+    _r1 = _sb1.run_shell(cmd=f"{{ echo leaked > '{_marker}'; }} 2>/dev/null; echo rc=$?; "
+                             "echo kept > \"$TMPDIR/private\"; echo \"$TMPDIR\"")
+    _tmp1 = _r1.strip().splitlines()[-1]
+    _sb2, _ = _sandbox_for(_task)
+    _r2 = _sb2.run_shell(cmd=f"cat '{_marker}' 2>/dev/null; echo \"$TMPDIR\"")
+    _tmp2 = _r2.strip().splitlines()[-1]
+    check("B25 a file episode one writes to the host temp is not readable in episode two",
+          "leaked" not in _r2 and not os.path.exists(_marker), _r2[:200])
+    check("B25 the shell's TMPDIR is a private directory, not the host temp",
+          _tmp1 != _host_tmp and os.path.isdir(_tmp1) and _tmp1 != _tmp2, f"{_tmp1} {_tmp2}")
+    _sb1.close()
+    check("B25 the episode's private temp is removed at episode end", not os.path.exists(_tmp1))
+    _r = _sb2.run_shell(cmd=f"cat '{_tmp1}/private' 2>&1")
+    check("B25 episode two cannot read episode one's private temp after it ended",
+          "kept" not in _r, _r[:200])
+    _sb2.close()
+    _sb3, _ = _sandbox_for(_task)
+    _r3 = _sb3.run_shell(cmd="d=$(mktemp -d) && echo made > \"$d/x\" && case \"$d\" in \"$TMPDIR\"/*) echo MKTEMP_OK;; esac")
+    check("B25 a toolchain that needs a writable temp (mktemp -d) still works", "MKTEMP_OK" in _r3, _r3[:200])
+    _sb3.close()
+    try:
+        os.remove(_marker)
+    except OSError:
+        pass
+
+# A provider key in the runner's environment reaches no child.
+_keys = {"CEREBRAS_API_KEY": "sentinel-cerebras", "OPENAI_API_KEY": "sentinel-openai",
+         "ANTHROPIC_API_KEY": "sentinel-anthropic", "MH_NOT_ALLOWED": "sentinel-other"}
+_saved = {k: os.environ.get(k) for k in _keys}
+os.environ.update(_keys)
+try:
+    _sb, _s = _sandbox_for(_task)
+    _env_out = _sb.run_shell(cmd="env")
+    check("B25 run_shell's environment holds no provider key",
+          "sentinel" not in _env_out and "API_KEY" not in _env_out, _env_out[:200])
+    check("B25 run_shell's environment is the allow-list plus HOME and the temp vars",
+          all(k in _env_out for k in ("HOME=", "TMPDIR=", "TMP=", "TEMP=")), _env_out[:200])
+    _sb.close()
+
+    _seen = []
+    _real_popen = subprocess.Popen
+
+    class _SpyPopen(_real_popen):
+        def __init__(self, *a, **kw):
+            _seen.append(kw.get("env"))
+            super().__init__(*a, **kw)
+
+    subprocess.Popen = _SpyPopen
+    try:
+        _sb, _s = _sandbox_for(_task)
+        open(os.path.join(_s, "app", "invoice.py"), "w").write(_ref)
+        _task.verify(_s)
+        _rpc_envs = list(_seen)
+        del _seen[:]
+        _shell_task = {t.name: t for t in load_tasks()}["envbuild"]
+        _sb2, _s2 = _sandbox_for(_shell_task)
+        _shell_task.verify(_s2)
+        _shell_envs = list(_seen)
+    finally:
+        subprocess.Popen = _real_popen
+    _both = _rpc_envs + _shell_envs
+    check("B25 the checker and the worker each started with an explicit env",
+          len(_rpc_envs) >= 2 and all(isinstance(e, dict) for e in _rpc_envs), str(len(_rpc_envs)))
+    check("B25 the shell-kind verifier started with an explicit env",
+          len(_shell_envs) >= 1 and all(isinstance(e, dict) for e in _shell_envs), str(len(_shell_envs)))
+    check("B25 no verifier child's env holds a provider key",
+          all(isinstance(e, dict) and not any("sentinel" in v for v in e.values())
+              and not any(k.endswith("_API_KEY") for k in e) for e in _both), str(len(_both)))
+    check("B25 every verifier child's HOME and TMPDIR are private and distinct from the host's",
+          all(isinstance(e, dict) and e.get("TMPDIR") not in (None, _host_tmp)
+              and e.get("HOME") == e.get("TMPDIR") for e in _both))
+finally:
+    for k, v in _saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+# The scrub is an allow-list: a name nobody thought of is out, not in.
+_e = toolmod.scrubbed_env("/p", {"PATH": "/x", "LC_ALL": "C", "FOO_TOKEN": "t",
+                                 "PYTHONSTARTUP": "s", "BASH_ENV": "b", "LANG": "en"})
+check("B25 scrubbed_env keeps PATH, LANG and LC_*, drops everything else",
+      set(_e) == {"PATH", "LC_ALL", "LANG", "HOME", "TMPDIR", "TMP", "TEMP"}, str(sorted(_e)))
+
+# A logged write_file is recoverable in full from the episode log.
+_content = "".join(f"def f{i}(): return {i}\n" for i in range(200))
+_logged, _meta = log_args({"path": "a.py", "content": _content})
+check("B25 a 1,000+ character write_file argument is logged whole",
+      len(_content) > 1000 and _logged["content"] == _content and not _meta, str(len(_logged["content"])))
+_huge = "z" * 300_000
+_l2, _m2 = log_args({"content": _huge})
+check("B25 an argument past the cap keeps its true length and sha256",
+      _m2["content"]["chars"] == 300_000 and
+      _m2["content"]["sha256"] == hashlib.sha256(_huge.encode()).hexdigest() and
+      len(_l2["content"]) < 300_000)
+check("B25 a non-dict argument payload is logged under _raw", log_args("rm -rf x")[0] == {"_raw": "rm -rf x"})
+
+
+class _Scripted:
+    def __init__(self, turns):
+        self.turns, self.options = list(turns), {"num_ctx": 32768}
+
+    def chat(self, messages, tools=None, retries=2):
+        spec = self.turns.pop(0) if self.turns else {}
+        return Reply(content="", reasoning="", tool_calls=spec.get("tool_calls", []),
+                     raw={}, prompt_tokens=10, output_tokens=10, latency_s=0.0,
+                     done_reason="stop")
+
+
+_sb, _s = _sandbox_for(_task)
+_h = Harness(_Scripted([{"tool_calls": [{"id": "c", "name": "write_file",
+                                         "args": {"path": "big.txt", "content": _content}}]},
+                        {"tool_calls": [{"id": "c", "name": "finish",
+                                         "args": {"summary": "x"}}]}] * 2),
+             Config(name="b25", checklist=False, envboot=False), _s, _task)
+_res = _h.run()
+_wf = [e for e in _res.events if e["t"] == "tool" and e["name"] == "write_file"]
+check("B25 the episode log holds the whole write_file content",
+      bool(_wf) and _wf[0]["args"]["content"] == _content, str(_wf[:1])[:200])
+_ce = [e for e in _res.events if e["t"] == "containment"][0]
+check("B25 the containment event stamps the scrubbed env and the episode temp root",
+      _ce.get("shell_env") == "scrubbed" and os.path.isabs(_ce.get("temp_root", "")), str(_ce))
+check("B25 the episode's temp root is removed once the episode ends",
+      not os.path.exists(_ce["temp_root"]), _ce.get("temp_root"))
+
+# The checkout's .env* files are guard roots, and the shell cannot read them.
+_er = tmpdir()
+os.makedirs(os.path.join(_er, ".git"))
+os.makedirs(os.path.join(_er, "bench"))
+open(os.path.join(_er, ".env.local"), "w").write("GEMINI_API_KEY=sentinel-file-key\n")
+open(os.path.join(_er, ".env"), "w").write("X=1\n")
+open(os.path.join(_er, "README.md"), "w").write("not a secret\n")
+_guards = toolmod.env_file_guards(os.path.join(_er, "bench"))
+check("B25 env_file_guards names the checkout's .env* files and nothing else",
+      sorted(os.path.basename(g) for g in _guards) == [".env", ".env.local"], str(_guards))
+check("B25 the default guard set includes the checkout's .env* files",
+      set(toolmod.env_file_guards(toolmod.BENCH_ROOT)) <= set(toolmod.default_protected_roots()))
+if _contained:
+    _ws = os.path.join(_er, "bench", "ws")
+    os.makedirs(_ws)
+    _g = Sandbox(_ws, protected_roots=_guards)
+    _r = _g.run_shell(cmd=f"cat '{os.path.join(_er, '.env.local')}' 2>&1")
+    check("B25 the model's shell cannot read a guarded .env.local", "sentinel-file-key" not in _r, _r[:200])
+    _g.close()
+shutil.rmtree(_er, ignore_errors=True)
+
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

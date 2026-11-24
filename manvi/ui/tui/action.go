@@ -53,6 +53,12 @@ type (
 	ActionTick struct{}
 	// ActionFocus reports terminal window focus in/out events.
 	ActionFocus struct{ In bool }
+	// ActionSetDraft replaces the target session composer's draft text (e.g.
+	// after returning from an external editor).
+	ActionSetDraft struct {
+		SessionID string
+		Text      string
+	}
 )
 
 // Harness actions.
@@ -69,6 +75,10 @@ type (
 		// Reply carries the answer back to the blocked caller. Buffered by the
 		// sender, so a decision never blocks the UI loop.
 		Reply chan ui.Decision
+		// Done, when set, is closed when the blocked caller stops waiting: its
+		// context was cancelled or timed out. The card is withdrawn then, and a
+		// late answer to it is refused, because nobody is left to receive it.
+		Done <-chan struct{}
 	}
 	// ActionTurnStarted marks a session busy.
 	ActionTurnStarted struct{ SessionID string }
@@ -100,6 +110,7 @@ func (ActionMotion) action()          {}
 func (ActionScroll) action()          {}
 func (ActionTick) action()            {}
 func (ActionFocus) action()           {}
+func (ActionSetDraft) action()        {}
 func (ActionEvent) action()           {}
 func (ActionApprovalRequest) action() {}
 func (ActionTurnStarted) action()     {}
@@ -140,6 +151,15 @@ type (
 	EffectCloseSession struct{ SessionID string }
 	// EffectCopy puts text on the system clipboard.
 	EffectCopy struct{ Text string }
+	// EffectPasteClipboard reads text from the local system clipboard and
+	// delivers it back as an ActionPaste.
+	EffectPasteClipboard struct{}
+	// EffectExternalEditor opens $VISUAL/$EDITOR with Initial and delivers the
+	// edited result back to SessionID's composer.
+	EffectExternalEditor struct {
+		SessionID string
+		Initial   string
+	}
 	// EffectSuspend performs a Ctrl+Z.
 	EffectSuspend struct{}
 	// EffectRedraw forces a full repaint, after something else wrote to the tty.
@@ -148,16 +168,18 @@ type (
 	EffectQuit struct{}
 )
 
-func (EffectSubmit) effect()       {}
-func (EffectCancel) effect()       {}
-func (EffectCommand) effect()      {}
-func (EffectDecide) effect()       {}
-func (EffectNewSession) effect()   {}
-func (EffectCloseSession) effect() {}
-func (EffectCopy) effect()         {}
-func (EffectSuspend) effect()      {}
-func (EffectRedraw) effect()       {}
-func (EffectQuit) effect()         {}
+func (EffectSubmit) effect()         {}
+func (EffectCancel) effect()         {}
+func (EffectCommand) effect()        {}
+func (EffectDecide) effect()         {}
+func (EffectNewSession) effect()     {}
+func (EffectCloseSession) effect()   {}
+func (EffectCopy) effect()           {}
+func (EffectPasteClipboard) effect() {}
+func (EffectExternalEditor) effect() {}
+func (EffectSuspend) effect()        {}
+func (EffectRedraw) effect()         {}
+func (EffectQuit) effect()           {}
 
 // Host is everything the TUI can ask the harness to do.
 //
@@ -186,6 +208,12 @@ type Host interface {
 	// CloseSession releases whatever the session held — a lease, most
 	// importantly, which outlives the process if it is not given back.
 	CloseSession(ctx context.Context, sessionID string) error
+}
+
+// FileCompleter is an optional extension on Host that supplies repository file
+// paths for @-mention completion in the composer.
+type FileCompleter interface {
+	Files(query string) []string
 }
 
 // CommandSpec describes a slash command.

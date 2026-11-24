@@ -12,7 +12,7 @@
 //     stopped being true in Go 1.23: `internal/godebugs/table.go` records
 //     asynctimerchan as Changed:23, and `go doc time.After` now says the
 //     collector recovers unreferenced, unstopped timers. This module declares
-//     go 1.26, so the new behaviour is the one in force. The rule would have
+//     go 1.27.4, so the new behaviour is the one in force. The rule would have
 //     had 47 hits, every one of them wrong.
 //
 //   - An `exec.Command` rule was written and dropped. Its one production hit,

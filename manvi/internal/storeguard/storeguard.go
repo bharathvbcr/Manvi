@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 )
@@ -30,6 +31,49 @@ func NewClient(t testing.TB, binary, db string) *store.Client {
 	c := store.New(binary, db)
 	t.Cleanup(c.Close)
 	return c
+}
+
+// settle bounds how long an abandoned start, which a client closes
+// asynchronously, gets to finish ending before the children count as leaked.
+const settle = 5 * time.Second
+
+// NoNewChildren runs fn and fails the test when it leaves a dcstore child of
+// this process alive that was not there before. It is the per-command form of
+// Run's check: a command that builds a store client must close it before it
+// returns, so the child is gone, or ending, by the time fn is back. A child
+// still listed after settle is a leak. On a platform with no process
+// listing it checks nothing, as Run does.
+func NoNewChildren(t testing.TB, fn func()) {
+	t.Helper()
+	before, err := dcstoreChildren(os.Getpid())
+	if err != nil {
+		t.Fatalf("listing dcstore children before: %v", err)
+	}
+	known := make(map[int]bool, len(before))
+	for _, k := range before {
+		known[k.pid] = true
+	}
+	fn()
+	deadline := time.Now().Add(settle)
+	for {
+		after, err := dcstoreChildren(os.Getpid())
+		if err != nil {
+			t.Fatalf("listing dcstore children after: %v", err)
+		}
+		var fresh []child
+		for _, k := range after {
+			if !known[k.pid] {
+				fresh = append(fresh, k)
+			}
+		}
+		if len(fresh) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the code under test left %d dcstore child process(es) alive: %+v; close the store client it builds", len(fresh), fresh)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // Run runs the package's tests and returns the exit code for os.Exit. It

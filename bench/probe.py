@@ -33,6 +33,7 @@ TOOLS = [{"type": "function", "function": {
 
 def probe_api(model):
     """One live round-trip per capability, through the client the grid uses."""
+    from mh import keystore
     from mh.model import CerebrasClient, ModelError, env_local_paths, model_spec
     from mh.runtime import api_provider
 
@@ -43,7 +44,7 @@ def probe_api(model):
           f"top_k={spec['top_k']}")
 
     print("[credential] CEREBRAS_API_KEY in environment: "
-          f"{'yes' if os.environ.get('CEREBRAS_API_KEY') else 'no'}")
+          f"{'yes' if keystore.get('CEREBRAS_API_KEY') or os.environ.get('CEREBRAS_API_KEY') else 'no'}")
     for path in env_local_paths():
         print(f"[credential] {path}: "
               f"{'present' if os.path.isfile(path) else 'absent'}")

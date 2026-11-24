@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -102,6 +103,39 @@ func TestTheTUIBoundsOutputAtItsDefault(t *testing.T) {
 	}
 	if got := reqs[0].MaxTokens; got != 8192 {
 		t.Fatalf("TUI request MaxTokens = %d, want the face's default 8192", got)
+	}
+}
+
+// TestTheTUITestRegistryReadsNeitherTheEnvironmentNorAnyFile pins the property
+// TestTheTUIBoundsOutputAtItsDefault relies on: registryWith, which tuiTurnHost
+// builds its host on, never calls LoadEnv and opens no config file, so every flag
+// resolves from its default whatever MANVI_* variables or user config the machine
+// running the suite has. It sets the provider and the output cap in the
+// environment and names a user config holding the provider, then asks each flag's
+// origin. It characterises the helper; it does not show that production ignores
+// the environment (newRegistry honours both, which other tests cover).
+func TestTheTUITestRegistryReadsNeitherTheEnvironmentNorAnyFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	user := filepath.Join(home, "user-config.yaml")
+	if err := os.WriteFile(user, []byte("llm.provider.default: local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envUserConfig, user)
+	t.Setenv(flags.EnvKey(flags.LLMDefaultProvider), "local")
+	t.Setenv(flags.EnvKey(flags.LLMLocalMaxOutputTokens), "1234")
+	reg := registryWith(t, nil)
+	for _, key := range []string{flags.LLMDefaultProvider, flags.LLMLocalMaxOutputTokens} {
+		v, err := reg.Lookup(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Origin != flags.OriginDefault {
+			t.Fatalf("%s resolved from %v (%q); the TUI test helper's registry is not hermetic", key, v.Origin, v.Raw)
+		}
+	}
+	if got := tuiMaxTokens(reg); got != 8192 {
+		t.Fatalf("tuiMaxTokens = %d, want the face's default 8192", got)
 	}
 }
 

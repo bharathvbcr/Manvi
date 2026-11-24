@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Sanitize makes untrusted text safe to write to a terminal.
@@ -40,8 +42,16 @@ func Sanitize(text string) string {
 func sanitizeSlow(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
+	// Which format runes survive is decided by the render buffer's own rule, so
+	// what Sanitize lets through is exactly what the buffer will draw.
+	var scan render.FormatScanner
 	for _, r := range text {
+		keep := scan.Keep(r)
 		switch {
+		case unicode.Is(unicode.Cf, r) && keep:
+			// A joiner that shapes a script (Persian, Hindi) or builds an emoji
+			// sequence, or a well-formed flag tag sequence: ordinary text.
+			b.WriteRune(r)
 		case r == '\n' || r == '\t':
 			b.WriteRune(r)
 		case r == '\r':
@@ -53,7 +63,7 @@ func sanitizeSlow(text string) string {
 			b.WriteRune('�')
 		case unicode.IsControl(r):
 			b.WriteString(controlMarker(r))
-		case isBidiControl(r):
+		case isInvisibleFormat(r):
 			// Bidirectional overrides reorder displayed text without changing
 			// the bytes, so what a reviewer reads can differ from what is
 			// there. This is the Trojan Source problem, and a diff viewer is
@@ -89,10 +99,32 @@ func isPlain(text string) bool {
 		}
 		if c >= utf8.RuneSelf {
 			r, size := utf8.DecodeRuneInString(text[i:])
-			if r == utf8.RuneError || unicode.IsControl(r) || isBidiControl(r) {
+			if r == utf8.RuneError || unicode.IsControl(r) {
 				return false
 			}
+			if isInvisibleFormat(r) {
+				// Whether a format rune is kept depends on what precedes it,
+				// so the answer comes from a pass over the whole text.
+				return plainWithFormat(text)
+			}
 			i += size - 1
+		}
+	}
+	return true
+}
+
+// plainWithFormat is isPlain for text that holds a format rune or a line or
+// paragraph separator: it walks every rune through the render buffer's scanner
+// and accepts the text only if each format rune is one the buffer keeps.
+func plainWithFormat(text string) bool {
+	var scan render.FormatScanner
+	for _, r := range text {
+		keep := scan.Keep(r)
+		if r == utf8.RuneError || (unicode.IsControl(r) && r != '\n' && r != '\t') {
+			return false
+		}
+		if isInvisibleFormat(r) && (!unicode.Is(unicode.Cf, r) || !keep) {
+			return false
 		}
 	}
 	return true
@@ -119,9 +151,28 @@ func markerFor(r rune) string {
 	if r <= 0xff {
 		return "\\x" + string([]byte{hex[(r>>4)&0xf], hex[r&0xf]})
 	}
+	if r > 0xffff {
+		return "\\U" + string([]byte{
+			hex[(r>>28)&0xf], hex[(r>>24)&0xf], hex[(r>>20)&0xf], hex[(r>>16)&0xf],
+			hex[(r>>12)&0xf], hex[(r>>8)&0xf], hex[(r>>4)&0xf], hex[r&0xf],
+		})
+	}
 	return "\\u" + string([]byte{
 		hex[(r>>12)&0xf], hex[(r>>8)&0xf], hex[(r>>4)&0xf], hex[r&0xf],
 	})
+}
+
+// isInvisibleFormat reports a rune that draws nothing (or reorders or breaks
+// what is drawn) yet changes what a reader sees: every Unicode format character
+// (Cf: bidi controls, zero-width space, joiners, soft hyphen, BOM, the tag
+// characters U+E0000 block) and the line and paragraph separators U+2028 and
+// U+2029, which a terminal or a log viewer may treat as a line break. Each is
+// shown as a visible escape, except the format runes the render buffer itself
+// keeps (render.FormatScanner): a joiner that shapes a script or builds an emoji
+// sequence, and a well-formed flag tag sequence. Bidi controls, U+2028 and
+// U+2029 are marked in every context.
+func isInvisibleFormat(r rune) bool {
+	return r == '\u2028' || r == '\u2029' || unicode.Is(unicode.Cf, r) || isBidiControl(r)
 }
 
 // isBidiControl reports whether a rune reorders displayed text.

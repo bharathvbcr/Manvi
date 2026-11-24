@@ -410,8 +410,12 @@ Manvi/
 │   ├── fnmatch/               # Go fnmatch glob engine
 │   ├── gate/                  # Composite policy & override gate
 │   ├── grants/                # Human & agent grant ledger
+│   ├── gussetfn/              # In-process Rust call seam (gusset)
 │   ├── policy/                # Pure write gate & command gate ladders
-│   └── repomap/               # Code graph adjacency engine
+│   ├── proc/                  # Process group supervision for child commands
+│   ├── repomap/               # Code graph adjacency engine
+│   ├── safefile/              # Contained file reads and writes
+│   └── testsupport/           # Test-only helpers that build the Rust binaries on demand
 │
 ├── native/                    # Native desktop broker workspace (Rust)
 ├── crates/                    # Symlinks to DevCouncil's Rust components (../DevCouncil/rust/)

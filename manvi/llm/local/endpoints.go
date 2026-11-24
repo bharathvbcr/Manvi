@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -67,6 +68,12 @@ const (
 type Endpoint struct {
 	// BaseURL is the OpenAI-compatible API root.
 	BaseURL string
+	// Named reports that the operator wrote this address down (a flag, the
+	// environment or their own config), as opposed to the harness guessing it.
+	// It is the only thing that lets a scan attach a credential: a guessed
+	// address is whatever happens to listen there, and a key sent to it is a
+	// key handed to a stranger.
+	Named bool
 	// Convention names the runtimes documented to listen here. It is a note
 	// for an operator reading a scan that found nothing, not an identification
 	// — what actually answers is established by probing.
@@ -126,11 +133,27 @@ func (m ServedModel) Why() string {
 // Server is one local server a scan reached.
 type Server struct {
 	BaseURL string
-	Runtime Runtime
+	// AuthRequired reports that the model listing was refused with 401 or 403
+	// when asked without a credential. Something is listening and wants a key,
+	// which is a different fact from nothing listening; the models behind it
+	// are unknown, not absent.
+	AuthRequired bool
+	Runtime      Runtime
 	// Version is what the server reported, when it reports one. Only Ollama
 	// does, so this is usually empty and never load-bearing.
 	Version string
 	Models  []ServedModel
+}
+
+// pinAdvice says what an operator does to make a found address theirs. A
+// credential is never sent to an address they did not name, so the advice is
+// the whole path from "found" to "trusted": name it once and it is saved.
+func (s Server) pinAdvice() string {
+	pin := fmt.Sprintf("manvi use local --base-url %s", s.BaseURL)
+	if s.AuthRequired {
+		return fmt.Sprintf("It requires a credential, and none is sent to an address you did not name; to confirm it and send yours, run: %s", pin)
+	}
+	return fmt.Sprintf("No credential is sent to an address you did not name; to confirm it, run: %s", pin)
 }
 
 // Usable returns the models on this server that could drive a coding turn.
@@ -160,6 +183,9 @@ func (s Server) Describe() string {
 	if s.Version != "" {
 		name += " " + s.Version
 	}
+	if s.AuthRequired {
+		name += ", requires a credential"
+	}
 	return fmt.Sprintf("%s (%s)", s.BaseURL, name)
 }
 
@@ -170,8 +196,10 @@ type ScanOptions struct {
 	Endpoints []Endpoint
 	// Timeout bounds each endpoint's probe. Zero means DefaultScanTimeout.
 	Timeout time.Duration
-	// Credential is sent to each candidate, for the operator who fronts their
-	// server with a proxy that checks one. Nil sends none.
+	// Credential is sent to the endpoints marked Named and to no other: an
+	// operator who fronts their server with a proxy that checks a key has said
+	// where it is, and nothing the harness guessed at is owed it. Nil sends
+	// none.
 	Credential func() (credentials.Secret, error)
 	// Capabilities asks each server about each model it serves. It costs one
 	// request per model on Ollama, so it is off for the resolution path — which
@@ -220,7 +248,7 @@ func Scan(ctx context.Context, opts ScanOptions) []Server {
 
 	found := make([]*Server, len(endpoints))
 	forEachBounded(ctx, len(endpoints), ScanConcurrency, func(i int) {
-		found[i] = probeEndpoint(ctx, endpoints[i].BaseURL, timeout, opts)
+		found[i] = probeEndpoint(ctx, endpoints[i], timeout, opts)
 	})
 
 	out := make([]Server, 0, len(endpoints))
@@ -258,19 +286,27 @@ func forEachBounded(ctx context.Context, n, limit int, fn func(i int)) {
 
 // probeEndpoint asks one address what it serves, returning nil when it is not a
 // local model server.
-func probeEndpoint(ctx context.Context, baseURL string, timeout time.Duration, opts ScanOptions) *Server {
+func probeEndpoint(ctx context.Context, ep Endpoint, timeout time.Duration, opts ScanOptions) *Server {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// The credential travels only to an address the operator named. It is
+	// decided here, at the one place a probe is built, so no caller can widen
+	// it by passing a resolver alongside a list of guesses.
+	resolve := opts.Credential
+	if !ep.Named {
+		resolve = nil
+	}
 
 	// A throwaway adapter rather than a second HTTP client: the model listing,
 	// its bounded read, the credential header and every dimension probe are
 	// already implemented here, and a scanner with its own copy of them would
 	// drift from the one the turn actually uses.
 	a := New(Config{
-		BaseURL:          baseURL,
+		BaseURL:          ep.BaseURL,
 		SupportsTools:    true,
 		DiscoveryTimeout: timeout,
-	}, opts.Credential)
+	}, resolve)
 
 	// One attempt, no backoff. The transport retries a refused connection four
 	// times over roughly fifteen seconds, which is right for the server an
@@ -283,9 +319,22 @@ func probeEndpoint(ctx context.Context, baseURL string, timeout time.Duration, o
 
 	srv, err := a.Survey(ctx, opts.Capabilities)
 	if err != nil {
+		// A 401 or 403 is an answer: a server is here and wants a key this
+		// probe was not entitled to send. Dropping it as "nothing answered"
+		// would report a protected server as absent.
+		if refusedForCredential(err) {
+			return &Server{BaseURL: ep.BaseURL, Runtime: RuntimeUnidentified, AuthRequired: true}
+		}
 		return nil
 	}
 	return &srv
+}
+
+// refusedForCredential reports whether a failed listing was the server saying
+// "not without a credential".
+func refusedForCredential(err error) bool {
+	var te *transport.Error
+	return errors.As(err, &te) && (te.Status == http.StatusUnauthorized || te.Status == http.StatusForbidden)
 }
 
 // Survey reports what this adapter's own server is serving, with the runtime
@@ -377,7 +426,7 @@ func (a *Adapter) identify(ctx context.Context) (Runtime, string) {
 	if body, err := a.getBoundedAbsolute(ctx, base+"/api/version"); err == nil {
 		var v ollamaVersion
 		if json.Unmarshal(body, &v) == nil && v.Version != "" {
-			return RuntimeOllama, v.Version
+			return RuntimeOllama, listenerString(v.Version)
 		}
 	}
 	if _, ok := a.probeLlamaCPP(ctx); ok {
@@ -440,8 +489,8 @@ func (r Resolution) Note() string {
 		return fmt.Sprintf("using the %s server at %s — of the local servers running, it is the only one serving %q",
 			r.Found.Runtime, r.Found.BaseURL, r.MatchedModel)
 	case r.Found != nil && r.Found.BaseURL != r.Configured:
-		return fmt.Sprintf("using the %s server found at %s (%s is unset and nothing is serving its default %s)",
-			r.Found.Runtime, r.Found.BaseURL, BaseURLSetting, r.Configured)
+		return fmt.Sprintf("using the %s server found at %s (%s is unset and nothing is serving its default %s). %s",
+			r.Found.Runtime, r.Found.BaseURL, BaseURLSetting, r.Configured, r.Found.pinAdvice())
 	default:
 		return ""
 	}
@@ -475,9 +524,12 @@ type ResolveOptions struct {
 	// them.
 	Endpoints []Endpoint
 	// Timeout bounds each probe. Zero means DefaultScanTimeout.
+	//
+	// There is deliberately no credential here. A resolution only scans when
+	// the operator named no address, so every candidate is a guess, and a guess
+	// is owed no key. The named address is surveyed through Scan with
+	// Endpoint.Named set.
 	Timeout time.Duration
-	// Credential is sent to each candidate. Nil sends none.
-	Credential func() (credentials.Secret, error)
 }
 
 // ResolveEndpoint decides which local server a run will talk to.
@@ -500,12 +552,15 @@ type ResolveOptions struct {
 //     report them. Choosing between an operator's servers on their behalf is a
 //     guess, and this package does not make those.
 func ResolveEndpoint(ctx context.Context, opts ResolveOptions) Resolution {
+	// An address the operator declared is returned exactly as declared. Filling
+	// an empty one in with the shipped default would hand the harness's own
+	// guess back as something the operator named.
+	if opts.DeclaredByOperator {
+		return Resolution{BaseURL: opts.Declared, Configured: opts.Declared, Declared: true}
+	}
 	declared := opts.Declared
 	if declared == "" {
 		declared = DefaultBaseURL
-	}
-	if opts.DeclaredByOperator {
-		return Resolution{BaseURL: declared, Configured: declared, Declared: true}
 	}
 
 	endpoints := opts.Endpoints
@@ -514,9 +569,8 @@ func ResolveEndpoint(ctx context.Context, opts ResolveOptions) Resolution {
 	}
 	res := Resolution{BaseURL: declared, Configured: declared, Scanned: endpoints}
 	servers := Scan(ctx, ScanOptions{
-		Endpoints:  endpoints,
-		Timeout:    opts.Timeout,
-		Credential: opts.Credential,
+		Endpoints: endpoints,
+		Timeout:   opts.Timeout,
 	})
 	switch {
 	case len(servers) == 0:
@@ -565,6 +619,9 @@ func SoleUsableModel(s Server) (string, string) {
 	usable := s.Usable()
 	switch len(usable) {
 	case 0:
+		if s.AuthRequired {
+			return "", fmt.Sprintf("%s requires a credential, so its models are unknown", s.BaseURL)
+		}
 		if len(s.Models) == 0 {
 			return "", fmt.Sprintf("%s serves no models", s.BaseURL)
 		}

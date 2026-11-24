@@ -54,7 +54,30 @@ func (p *tierProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream,
 			resp = p.script[turn]
 		}
 	}
-	return &scriptedStream{resp: resp}, nil
+	return &scriptedStream{resp: withDispatchMarker(resp, req.System)}, nil
+}
+
+// dispatchMarker finds the verdict marker a dispatch told its child to write.
+var dispatchMarker = regexp.MustCompile(`(?m)^\s*(MANVI-VERDICT\S*:) PASS$`)
+
+// withDispatchMarker writes the marker the child was told in place of the bare
+// VerdictMarker a scripted answer spells, as a model that read its instructions
+// would. A script cannot know a per-dispatch marker in advance.
+func withDispatchMarker(resp llm.Response, system string) llm.Response {
+	m := dispatchMarker.FindStringSubmatch(system)
+	if m == nil || m[1] == devcouncil.VerdictMarker {
+		return resp
+	}
+	content := make([]llm.ContentBlock, len(resp.Message.Content))
+	for i, block := range resp.Message.Content {
+		if text, ok := block.(llm.TextBlock); ok {
+			text.Text = strings.ReplaceAll(text.Text, devcouncil.VerdictMarker, m[1])
+			block = text
+		}
+		content[i] = block
+	}
+	resp.Message.Content = content
+	return resp
 }
 
 func (p *tierProvider) requests() []llm.Request {

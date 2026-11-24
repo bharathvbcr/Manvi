@@ -280,11 +280,22 @@ type DecodingReport struct {
 	// Python literal or trailing comma repaired — so the tool ran on arguments
 	// the model did not literally send.
 	ArgumentsRepaired bool `json:"arguments_repaired,omitempty"`
+	// UnknownKinds names the block or step types the stream carried that this
+	// adapter has no reading for. Their content is absent from the message.
+	// Filled through NoteUnknown, which keeps it sorted, distinct and bounded.
+	UnknownKinds []string `json:"unknown_kinds,omitempty"`
+	// UnknownKindsMore counts the distinct unrecognised types past the bound
+	// that UnknownKinds did not list, so a capped list is never read as whole.
+	UnknownKindsMore int `json:"unknown_kinds_more,omitempty"`
+	// unknownOverflow remembers the names counted in UnknownKindsMore so a
+	// repeat is not counted twice. Not part of the wire or the journal.
+	unknownOverflow map[string]struct{}
 }
 
 // Clean reports whether the response decoded without compensating for anything.
 func (d DecodingReport) Clean() bool {
-	return d.FallbackFormat == "" && !d.ReasoningReclassified && !d.PrefillDisproved && !d.ArgumentsRepaired
+	return d.FallbackFormat == "" && !d.ReasoningReclassified && !d.PrefillDisproved && !d.ArgumentsRepaired &&
+		len(d.UnknownKinds) == 0 && d.UnknownKindsMore == 0
 }
 
 // Response is the settled result of a stream.

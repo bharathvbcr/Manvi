@@ -481,3 +481,24 @@ func TestSparklineIsOneColumnPerValue(t *testing.T) {
 		t.Fatal("an empty series must render nothing")
 	}
 }
+
+func TestPainterSynchronizedOutputWrapsFramesAndStaysQuietWhenIdle(t *testing.T) {
+	p := NewPainter(20, 2, TrueColor)
+	p.SetSynchronized(true)
+	p.Buffer().SetString(0, 0, "sync", Plain)
+	var out bytes.Buffer
+	if err := p.Flush(&out, Cursor{}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.HasPrefix(got, "\x1b[?2026h") || !strings.HasSuffix(got, "\x1b[?2026l") {
+		t.Fatalf("synchronized frame not wrapped in DEC 2026: %q", got)
+	}
+	out.Reset()
+	if err := p.Flush(&out, Cursor{}); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("idle synchronized frame wrote %d bytes: %q", out.Len(), out.String())
+	}
+}

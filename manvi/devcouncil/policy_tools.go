@@ -248,10 +248,11 @@ func (r *Registry) escalate(ctx context.Context, decision policy.Decision, subje
 		return decision, false
 	}
 
-	// Re-evaluated rather than patched. The decision returned here is the one
-	// the ledger actually produces for this write, so the qualification that
-	// travels onto the result is the real grant rather than one assembled at
-	// the call site.
+	// Patched, not re-evaluated: the decision the operator cleared is returned
+	// with the grant's identity written onto it, and the ledger is not asked
+	// again here. A caller whose operation has effects this decision did not
+	// cover judges them itself afterwards, as the exec tool does for a command's
+	// redirect targets.
 	authorised.Action = policy.Allow
 	authorised.GrantID = grant.ID
 	authorised.GrantedBy = string(grant.Grantor.Authority)
@@ -358,16 +359,20 @@ func (r *Registry) requestOverride(ctx context.Context, call tools.Call) tools.R
 		}
 		decision = cmdDecision
 	} else {
-		if args.Rule == string(policy.RuleOperation) || strings.Contains(args.Reason, "delete") || strings.Contains(args.Rule, "delete") {
-			op = dc.OpDelete
-		}
+		// The operation is what the gate re-evaluates, not what the caller says.
+		// Neither the reason (free text written to argue for the grant) nor the
+		// rule the caller named (it picks which block to look at, and a model can
+		// name any known rule) may choose it: the scope this override persists
+		// takes its permission from op, so a delete is recorded only when the
+		// delete evaluation is the one that is actually blocked.
 		writeDecision, writeErr := r.deps.Gate.EvaluateWrite(target, task, op)
 		if writeErr != nil {
 			return unavailable("policy decision", writeErr)
 		}
-		if !writeDecision.Blocked() && op != dc.OpDelete {
+		if !writeDecision.Blocked() {
 			if delDec, delErr := r.deps.Gate.EvaluateWrite(target, task, dc.OpDelete); delErr == nil && delDec.Blocked() {
 				writeDecision = delDec
+				op = dc.OpDelete
 			}
 		}
 		decision = writeDecision

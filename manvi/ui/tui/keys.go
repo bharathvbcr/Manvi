@@ -20,6 +20,8 @@ const (
 	CmdPrevSession
 	CmdSessions
 	CmdTheme
+	CmdToggleInspector
+	CmdToggleVerbose
 	CmdSuspend
 	CmdRedraw
 
@@ -31,6 +33,8 @@ const (
 	CmdMultiline
 	CmdHistoryPrev
 	CmdHistoryNext
+	CmdHistorySearch
+	CmdPasteClipboard
 
 	// Scrollback.
 	CmdScrollUp
@@ -47,9 +51,16 @@ const (
 	CmdFoldAll
 	CmdExpandAll
 	CmdCopy
+	CmdCopyMenu
 	CmdSearch
 	CmdFindNext
 	CmdFindPrev
+
+	// Inspector drawer.
+	CmdInspectorNextTab
+	CmdInspectorPrevTab
+	CmdInspectorStepPrev
+	CmdInspectorStepNext
 
 	// Prompt editing.
 	CmdCursorLeft
@@ -67,6 +78,7 @@ const (
 	CmdExpandPaste
 	CmdYank
 	CmdUndo
+	CmdExternalEditor
 
 	// Dashboard.
 	CmdRenameSession
@@ -78,6 +90,7 @@ const (
 	CmdNextItem
 	CmdPrevItem
 	CmdToggleSelect
+	CmdToggleApprovalDiff
 )
 
 // Context is where a key is being pressed.
@@ -91,6 +104,7 @@ const (
 	CtxApproval
 	CtxPrompt
 	CtxScrollback
+	CtxInspector
 	CtxDashboard
 	CtxGlobal
 )
@@ -138,6 +152,9 @@ var bindings = []Binding{
 	{Keys: []string{"down", "j"}, Cmd: CmdNextItem, Ctx: CtxApproval, Label: "next option"},
 	{Keys: []string{"up", "k"}, Cmd: CmdPrevItem, Ctx: CtxApproval, Label: "prev option"},
 	{Keys: []string{"space"}, Cmd: CmdToggleSelect, Ctx: CtxApproval, Label: "tick option"},
+	{Keys: []string{"pgup"}, Cmd: CmdPageUp, Ctx: CtxApproval, Label: "scroll command up"},
+	{Keys: []string{"pgdn"}, Cmd: CmdPageDown, Ctx: CtxApproval, Label: "scroll command down"},
+	{Keys: []string{"v"}, Cmd: CmdToggleApprovalDiff, Ctx: CtxApproval, Label: "expand diff"},
 	{Keys: []string{"enter"}, Cmd: CmdAccept, Ctx: CtxApproval, Label: "confirm", Hint: true},
 	{Keys: []string{"esc"}, Cmd: CmdDismiss, Ctx: CtxApproval, Label: "deny", Hint: true},
 	{Keys: []string{"left"}, Cmd: CmdCursorLeft, Ctx: CtxApproval},
@@ -172,6 +189,9 @@ var bindings = []Binding{
 	{Keys: []string{"ctrl+y"}, Cmd: CmdYank, Ctx: CtxPrompt, Label: "yank"},
 	{Keys: []string{"ctrl+z", "ctrl+_"}, Cmd: CmdUndo, Ctx: CtxPrompt, Label: "undo"},
 	{Keys: []string{"ctrl+o"}, Cmd: CmdExpandPaste, Ctx: CtxPrompt, Label: "expand paste"},
+	{Keys: []string{"ctrl+r"}, Cmd: CmdHistorySearch, Ctx: CtxPrompt, Label: "history search"},
+	{Keys: []string{"ctrl+v"}, Cmd: CmdPasteClipboard, Ctx: CtxPrompt, Label: "paste"},
+	{Keys: []string{"alt+e", "f4"}, Cmd: CmdExternalEditor, Ctx: CtxPrompt, Label: "external editor"},
 	{Keys: []string{"esc"}, Cmd: CmdClearDraft, Ctx: CtxPrompt, Label: "clear"},
 
 	// Scrollback.
@@ -192,7 +212,21 @@ var bindings = []Binding{
 	{Keys: []string{"E"}, Cmd: CmdFoldAll, Ctx: CtxScrollback, Label: "fold all"},
 	{Keys: []string{"R"}, Cmd: CmdExpandAll, Ctx: CtxScrollback, Label: "expand all"},
 	{Keys: []string{"y"}, Cmd: CmdCopy, Ctx: CtxScrollback, Label: "copy", Hint: true},
+	{Keys: []string{"Y"}, Cmd: CmdCopyMenu, Ctx: CtxScrollback, Label: "copy menu"},
+	{Keys: []string{"i"}, Cmd: CmdToggleInspector, Ctx: CtxScrollback, Label: "inspector"},
 	{Keys: []string{"esc"}, Cmd: CmdDismiss, Ctx: CtxScrollback, Label: "back to prompt"},
+
+	// Inspector drawer.
+	{Keys: []string{"up", "k"}, Cmd: CmdScrollUp, Ctx: CtxInspector, Label: "scroll up", Hint: true},
+	{Keys: []string{"down", "j"}, Cmd: CmdScrollDown, Ctx: CtxInspector, Label: "scroll down", Hint: true},
+	{Keys: []string{"pgup"}, Cmd: CmdPageUp, Ctx: CtxInspector},
+	{Keys: []string{"pgdn"}, Cmd: CmdPageDown, Ctx: CtxInspector},
+	{Keys: []string{"]"}, Cmd: CmdInspectorNextTab, Ctx: CtxInspector, Label: "next tab", Hint: true},
+	{Keys: []string{"["}, Cmd: CmdInspectorPrevTab, Ctx: CtxInspector, Label: "prev tab"},
+	{Keys: []string{"left", "h"}, Cmd: CmdInspectorStepPrev, Ctx: CtxInspector, Label: "prev step"},
+	{Keys: []string{"right", "l"}, Cmd: CmdInspectorStepNext, Ctx: CtxInspector, Label: "next step"},
+	{Keys: []string{"y"}, Cmd: CmdCopy, Ctx: CtxInspector, Label: "copy", Hint: true},
+	{Keys: []string{"esc"}, Cmd: CmdDismiss, Ctx: CtxInspector, Label: "back to prompt", Hint: true},
 
 	// Dashboard. Built for fan-out, so it moves in every way a list can:
 	// one row, one page, or to an end.
@@ -224,6 +258,8 @@ var bindings = []Binding{
 	// strip advertised "next" and offered no way back.
 	{Keys: []string{"shift+tab"}, Cmd: CmdPrevSession, Ctx: CtxGlobal, Label: "prev session"},
 	{Keys: []string{"ctrl+s"}, Cmd: CmdSessions, Ctx: CtxGlobal, Label: "sessions"},
+	{Keys: []string{"ctrl+b"}, Cmd: CmdToggleInspector, Ctx: CtxGlobal, Label: "drawer"},
+	{Keys: []string{"ctrl+o"}, Cmd: CmdToggleVerbose, Ctx: CtxGlobal, Label: "expand work"},
 	{Keys: []string{"ctrl+y"}, Cmd: CmdTheme, Ctx: CtxGlobal, Label: "theme"},
 	{Keys: []string{"ctrl+z"}, Cmd: CmdSuspend, Ctx: CtxGlobal, Label: "suspend"},
 	{Keys: []string{"ctrl+l"}, Cmd: CmdRedraw, Ctx: CtxGlobal, Label: "redraw"},
@@ -284,6 +320,8 @@ func ctxName(c Context) string {
 		return "prompt"
 	case CtxScrollback:
 		return "transcript"
+	case CtxInspector:
+		return "inspector"
 	case CtxDashboard:
 		return "dashboard"
 	}
@@ -381,6 +419,97 @@ func (a *App) key(binding string) []Effect {
 			v.Approval().Toggle()
 		}
 		return nil
+	case CmdToggleApprovalDiff:
+		if v := a.Current(); v != nil && v.Approval() != nil {
+			v.Approval().ToggleDiff()
+		}
+		return nil
+	case CmdToggleInspector:
+		if v := a.Current(); v != nil && v.Inspector != nil {
+			v.Inspector.Toggle()
+			if !v.Inspector.Open && v.Focus == CtxInspector {
+				v.Focus = CtxPrompt
+			}
+		}
+		return nil
+	case CmdToggleVerbose:
+		a.toggleStackWork()
+		return nil
+	case CmdCopyMenu:
+		if v := a.Current(); v != nil {
+			if ov := CopyOverlay(v); ov != nil {
+				a.overlay = ov
+			} else {
+				a.setNotice("nothing in this transcript to copy yet", StatusWarn)
+			}
+		}
+		return nil
+	case CmdHistorySearch:
+		if v := a.Current(); v != nil {
+			if ov := HistoryOverlay(v.Prompt.History()); ov != nil {
+				a.overlay = ov
+			} else {
+				a.setNotice("no prompt history yet", StatusInfo)
+			}
+		}
+		return nil
+	case CmdPasteClipboard:
+		return []Effect{EffectPasteClipboard{}}
+	case CmdExternalEditor:
+		if ctx != CtxPrompt {
+			return nil
+		}
+		return a.launchExternalEditor()
+	case CmdInspectorNextTab:
+		if v := a.Current(); v != nil && v.Inspector != nil {
+			v.Inspector.NextTab(1)
+		}
+		return nil
+	case CmdInspectorPrevTab:
+		if v := a.Current(); v != nil && v.Inspector != nil {
+			v.Inspector.NextTab(-1)
+		}
+		return nil
+	case CmdInspectorStepPrev:
+		if v := a.Current(); v != nil && v.Inspector != nil {
+			switch v.Inspector.Tab {
+			case TabThink:
+				v.Inspector.StepThought(-1, len(thoughtsOf(v.Scroll.Entries())))
+			case TabDiffs:
+				eds := editsOf(v.Scroll.Entries())
+				if len(eds) > 0 {
+					idx := v.Inspector.diffIdx
+					if idx < 0 || idx >= len(eds) {
+						idx = len(eds) - 1
+					}
+					if idx > 0 {
+						v.Inspector.diffIdx = idx - 1
+						v.Inspector.scroll = 0
+					}
+				}
+			}
+		}
+		return nil
+	case CmdInspectorStepNext:
+		if v := a.Current(); v != nil && v.Inspector != nil {
+			switch v.Inspector.Tab {
+			case TabThink:
+				v.Inspector.StepThought(1, len(thoughtsOf(v.Scroll.Entries())))
+			case TabDiffs:
+				eds := editsOf(v.Scroll.Entries())
+				if len(eds) > 0 {
+					idx := v.Inspector.diffIdx
+					if idx < 0 || idx >= len(eds) {
+						idx = len(eds) - 1
+					}
+					if idx+1 < len(eds) {
+						v.Inspector.diffIdx = idx + 1
+						v.Inspector.scroll = 0
+					}
+				}
+			}
+		}
+		return nil
 	case CmdCancel:
 		return a.cancel()
 	case CmdSubmit:
@@ -413,6 +542,17 @@ func (a *App) key(binding string) []Effect {
 		return a.clearDraft()
 	case CmdCopy:
 		if v := a.Current(); v != nil {
+			if ctx == CtxInspector && v.Inspector != nil {
+				if label, text := v.Inspector.CopyContent(v); text != "" {
+					a.setNotice("copied "+label+" ("+itoa(len(text))+" bytes)", StatusInfo)
+					return []Effect{EffectCopy{Text: text}}
+				}
+				return nil
+			}
+			if drag := v.Scroll.DragSelectedText(); drag != "" {
+				a.setNotice("copied selection ("+itoa(len(drag))+" bytes)", StatusInfo)
+				return []Effect{EffectCopy{Text: drag}}
+			}
 			if text := v.Scroll.SelectedText(); text != "" {
 				a.setNotice("copied "+itoa(len(text))+" bytes", StatusInfo)
 				return []Effect{EffectCopy{Text: text}}
@@ -428,6 +568,12 @@ func (a *App) key(binding string) []Effect {
 			a.overlay.MovePage(-1)
 			return nil
 		}
+		if ctx == CtxApproval {
+			if v := a.Current(); v != nil && v.Approval() != nil {
+				v.Approval().ScrollSubject(-subjectRowBudget)
+			}
+			return nil
+		}
 		if ctx == CtxDashboard {
 			a.dashboard.Page(-1, len(a.views))
 			return nil
@@ -435,6 +581,12 @@ func (a *App) key(binding string) []Effect {
 	case CmdPageDown:
 		if a.overlay != nil {
 			a.overlay.MovePage(1)
+			return nil
+		}
+		if ctx == CtxApproval {
+			if v := a.Current(); v != nil && v.Approval() != nil {
+				v.Approval().ScrollSubject(subjectRowBudget)
+			}
 			return nil
 		}
 		if ctx == CtxDashboard {
@@ -458,6 +610,22 @@ func (a *App) key(binding string) []Effect {
 	}
 
 	if v := a.Current(); v != nil {
+		if ctx == CtxInspector && v.Inspector != nil {
+			switch resolve(binding, CtxInspector) {
+			case CmdScrollUp:
+				v.Inspector.ScrollBy(-1)
+				return nil
+			case CmdScrollDown:
+				v.Inspector.ScrollBy(1)
+				return nil
+			case CmdPageUp:
+				v.Inspector.ScrollBy(-10)
+				return nil
+			case CmdPageDown:
+				v.Inspector.ScrollBy(10)
+				return nil
+			}
+		}
 		if handled := a.scrollbackKey(v, binding, ctx); handled {
 			return nil
 		}
@@ -572,6 +740,10 @@ func (a *App) promptKey(p *Prompt, binding string, ctx Context) bool {
 	case CmdExpandPaste:
 		if p.ExpandPastes() {
 			a.setNotice("expanded paste", StatusInfo)
+		} else {
+			// When there are no paste chips to expand in the composer, Ctrl+O
+			// acts as the universal verbose-transcript toggle.
+			a.toggleStackWork()
 		}
 	default:
 		return false
@@ -582,6 +754,11 @@ func (a *App) promptKey(p *Prompt, binding string, ctx Context) bool {
 func (a *App) history(delta int) []Effect {
 	v := a.Current()
 	if v == nil || a.overlay != nil || v.Approval() != nil || v.Focus != CtxPrompt {
+		return nil
+	}
+	// Inside a multi-line draft, Up/Down move vertically between lines first
+	// and fall through to prompt history only at the first/last line.
+	if v.Prompt.MoveLine(delta) {
 		return nil
 	}
 	if delta < 0 {
@@ -597,12 +774,21 @@ func (a *App) toggleFocus() []Effect {
 	if v == nil || a.mode != ModeSession {
 		return nil
 	}
-	if v.Focus == CtxPrompt {
+	drawerVisible := v.Inspector != nil && v.Inspector.Open && !v.Inspector.rect.Empty()
+	switch v.Focus {
+	case CtxPrompt:
 		v.Focus = CtxScrollback
 		// Entering the transcript with nothing selected selects the newest
 		// entry, so the first arrow key moves rather than jumping to the top.
 		v.Scroll.SelectDelta(0, a.Theme)
-	} else {
+	case CtxScrollback:
+		v.Scroll.SelectNone()
+		if drawerVisible {
+			v.Focus = CtxInspector
+		} else {
+			v.Focus = CtxPrompt
+		}
+	default:
 		v.Focus = CtxPrompt
 		v.Scroll.SelectNone()
 	}
@@ -649,4 +835,27 @@ func (a *App) complete() []Effect {
 		return nil
 	}
 	return a.acceptOverlay()
+}
+
+func (a *App) toggleStackWork() {
+	v := a.Current()
+	if v == nil {
+		return
+	}
+	if v.Scroll.ToggleStackWork() {
+		a.setNotice("work capsules stacked (Ctrl+O expands all)", StatusInfo)
+		return
+	}
+	a.setNotice("full verbose work stream (Ctrl+O stacks capsules)", StatusInfo)
+}
+
+func (a *App) launchExternalEditor() []Effect {
+	v := a.Current()
+	if v == nil {
+		return nil
+	}
+	return []Effect{EffectExternalEditor{
+		SessionID: v.ID,
+		Initial:   v.Prompt.Value(),
+	}}
 }

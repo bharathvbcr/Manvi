@@ -63,3 +63,32 @@ func TestMemberInGroupClassifiesEveryStatOutcome(t *testing.T) {
 		}
 	}
 }
+
+// The group listing skips a process that vanished mid-scan and fails closed on
+// every other read error: a member it cannot read must not make the group look
+// emptier than it is.
+func TestListStatErrorSkipsOnlyAProcessThatIsGone(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantSkip bool
+	}{
+		{"ENOENT is gone", &fs.PathError{Op: "open", Path: "/proc/9/stat", Err: syscall.ENOENT}, true},
+		{"fs.ErrNotExist is gone", fs.ErrNotExist, true},
+		{"ESRCH is gone", &fs.PathError{Op: "read", Path: "/proc/9/stat", Err: syscall.ESRCH}, true},
+		{"EACCES fails closed", &fs.PathError{Op: "open", Path: "/proc/9/stat", Err: syscall.EACCES}, false},
+		{"EPERM fails closed", &fs.PathError{Op: "open", Path: "/proc/9/stat", Err: syscall.EPERM}, false},
+		{"os.ErrPermission fails closed", os.ErrPermission, false},
+		{"EIO fails closed", &fs.PathError{Op: "read", Path: "/proc/9/stat", Err: syscall.EIO}, false},
+		{"an unrecognised error fails closed", errors.New("boom"), false},
+	}
+	for _, tc := range cases {
+		got := listStatError(9, tc.err)
+		if tc.wantSkip != (got == nil) {
+			t.Errorf("%s: listStatError = %v, want skip=%v", tc.name, got, tc.wantSkip)
+		}
+		if got != nil && !errors.Is(got, tc.err) {
+			t.Errorf("%s: the returned error %v does not wrap the read error", tc.name, got)
+		}
+	}
+}

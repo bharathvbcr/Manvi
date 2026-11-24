@@ -75,12 +75,35 @@ func (s *timerSlot) stop() {
 	}
 }
 
+// closeWaitTimeout bounds CloseAndWait so a non-cancellable or wedged input
+// descriptor never stalls the UI loop.
+const closeWaitTimeout = 500 * time.Millisecond
+
+type pollResult int
+
+const (
+	pollStopped pollResult = iota
+	pollReady
+	pollFallback
+)
+
+type inputPoller interface {
+	waitReadable(done <-chan struct{}) pollResult
+	close()
+}
+
 // Reader turns a byte stream into a channel of events.
 type Reader struct {
 	src           io.Reader
 	events        chan Event
 	done          chan struct{}
 	closeOnce     sync.Once
+	mu            sync.Mutex
+	wake          io.Closer
+	pollerFactory func(io.Reader) (inputPoller, io.Closer, error)
+	cancellable   bool
+	readWG        sync.WaitGroup
+	runWG         sync.WaitGroup
 	escapeDelay   time.Duration
 	pasteDeadline atomic.Int64 // time.Duration; atomic so SetPasteDeadline is safe while Run reads it
 	pasteIdle     time.Duration
@@ -127,16 +150,47 @@ func (r *Reader) SetMaxPasteBytes(n int) { r.pasteLimit = n }
 // stream ends.
 func (r *Reader) Events() <-chan Event { return r.events }
 
-// Close stops delivery.
-//
-// The reading goroutine is parked in a blocking Read on the tty and cannot be
-// interrupted from here; it exits when the descriptor closes or the process
-// does. That is deliberate rather than overlooked — the alternatives are a
-// read deadline, which is not portable across every tty, or a polling loop that
-// burns a core to be interruptible. Nothing is delivered after Close, and the
-// goroutine holds no resource beyond its stack.
+// Close stops delivery and wakes any cancellable poll loop.
 func (r *Reader) Close() {
-	r.closeOnce.Do(func() { close(r.done) })
+	r.closeOnce.Do(func() {
+		close(r.done)
+		r.mu.Lock()
+		wake := r.wake
+		r.mu.Unlock()
+		if wake != nil {
+			_ = wake.Close()
+		}
+	})
+}
+
+// CloseAndWait stops delivery and waits up to 500ms for a cancellable reader
+// to exit so a child process can read from the same descriptor without racing.
+// It returns false when the source is non-cancellable or the wait timed out.
+func (r *Reader) CloseAndWait() bool {
+	return r.closeAndWait(closeWaitTimeout)
+}
+
+func (r *Reader) closeAndWait(timeout time.Duration) bool {
+	r.Close()
+	r.mu.Lock()
+	canWait := r.cancellable
+	r.mu.Unlock()
+	if !canWait {
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
+		r.runWG.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 // Inject delivers an event as though the terminal had sent it.
@@ -164,16 +218,56 @@ func (r *Reader) Inject(e Event) bool {
 // Run pumps the stream until it ends or Close is called. It blocks, and is
 // normally started on its own goroutine.
 func (r *Reader) Run() {
+	r.mu.Lock()
+	select {
+	case <-r.done:
+		r.mu.Unlock()
+		close(r.events)
+		return
+	default:
+	}
+	factory := r.pollerFactory
+	if factory == nil {
+		factory = newInputPoller
+	}
+	poller, wake, err := factory(r.src)
+	if err == nil && poller != nil {
+		r.wake = wake
+		r.cancellable = true
+	}
+	r.runWG.Add(1)
+	r.readWG.Add(1)
+	r.mu.Unlock()
+
 	raw := make(chan []byte, 8)
 	readErr := make(chan error, 1)
 
 	go func() {
+		defer r.readWG.Done()
 		// A buffer large enough that an ordinary paste or a burst of mouse
 		// motion arrives in one read. Undersizing it does not lose data, but it
 		// does split sequences across reads more often, which is the path the
 		// escape timeout has to arbitrate.
 		buf := make([]byte, 8192)
 		for {
+			if poller != nil {
+				switch poller.waitReadable(r.done) {
+				case pollStopped:
+					return
+				case pollFallback:
+					poller.close()
+					r.mu.Lock()
+					r.cancellable = false
+					r.mu.Unlock()
+					poller = nil
+				case pollReady:
+				}
+			}
+			select {
+			case <-r.done:
+				return
+			default:
+			}
 			n, err := r.src.Read(buf)
 			if n > 0 {
 				chunk := make([]byte, n)
@@ -194,7 +288,14 @@ func (r *Reader) Run() {
 		}
 	}()
 
-	defer close(r.events)
+	defer func() {
+		r.readWG.Wait()
+		if poller != nil {
+			poller.close()
+		}
+		close(r.events)
+		r.runWG.Done()
+	}()
 
 	var pending []byte
 	// scan is how far a paste waiting for its end has been searched; see

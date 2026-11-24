@@ -45,6 +45,21 @@ function sign(args, extra) {
   });
 }
 
+describe("release-sign-macos.sh notarization", () => {
+  it("bounds every notarytool submit that waits with --timeout", () => {
+    // The codesign and notarytool path needs macOS secrets, so it is read, not run.
+    const script = readFileSync(path.join(REPO_ROOT, "scripts", "release-sign-macos.sh"), "utf8");
+    const joined = script.replace(/\\\n/g, " ");
+    const submits = joined.split("\n").filter((line) => /notarytool\s+submit\b/.test(line));
+    assert.ok(submits.length >= 1, "no notarytool submit found; this check is examining nothing");
+    for (const line of submits) {
+      assert.match(line, /--wait\b/, "a submit that does not wait needs no timeout, but this script waits");
+      assert.match(line, /--timeout\s+("\$notary_timeout"|\d+[smh]?)/, `notarytool submit waits without --timeout: ${line.trim()}`);
+    }
+    assert.match(script, /^\s*notary_timeout="\d+[smh]?"$/m, "notary_timeout is not a literal duration");
+  });
+});
+
 describe("release-sign-macos.sh", () => {
   it("fails loudly, naming the missing secrets and no values, when none are set", () => {
     const result = sign(["preflight"]);

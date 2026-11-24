@@ -11,11 +11,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/openaicompat"
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // Adapter drives an OpenAI-compatible server on the operator's machine.
@@ -311,6 +313,40 @@ func (a *Adapter) validate(req llm.Request) error {
 	return a.capabilityFor(context.Background(), req.Model).Validate(req)
 }
 
+// listenerString neutralises a string a listener chose before anything else
+// sees it. A model id or version comes off the wire from whatever answered on a
+// port, and it is later printed to a terminal and into logs; ESC and the other
+// terminal-hostile runes would be executed there rather than displayed. Doing
+// it once, where the bytes are decoded, means no later printer has to remember.
+// Line breaks are escaped as well, which ui.Sanitize keeps for ordinary text:
+// an id that is one line of a listing must not be able to forge a second.
+// Legitimate ids (letters, digits, '/', ':', '.', '-', '_') pass through
+// unchanged, so matching a configured model against the listing is unaffected.
+func listenerString(s string) string {
+	return boundListenerString(listenerNewlines.Replace(ui.Sanitize(strings.TrimSpace(s))))
+}
+
+// maxListenerStringBytes bounds a model id or version a listener chose. Real
+// ones are far shorter; the bound keeps one listener from filling every listing,
+// doctor row and error that quotes it.
+const maxListenerStringBytes = 256
+
+// boundListenerString cuts s to maxListenerStringBytes on a rune boundary,
+// ending in an ellipsis so a cut value is never mistaken for a whole one.
+func boundListenerString(s string) string {
+	const ellipsis = "…"
+	if len(s) <= maxListenerStringBytes {
+		return s
+	}
+	cut := maxListenerStringBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
+}
+
+var listenerNewlines = strings.NewReplacer("\n", `\n`, "\t", `\t`)
+
 type modelList struct {
 	Data []struct {
 		ID string `json:"id"`
@@ -426,7 +462,7 @@ func (a *Adapter) fetchModels(ctx context.Context) (map[string]struct{}, error) 
 	served := make(map[string]struct{}, len(list.Data))
 	windows := map[string]int{}
 	for _, m := range list.Data {
-		id := strings.TrimSpace(m.ID)
+		id := listenerString(m.ID)
 		if m.MaxModelLen > 0 && id != "" {
 			windows[id] = m.MaxModelLen
 		}

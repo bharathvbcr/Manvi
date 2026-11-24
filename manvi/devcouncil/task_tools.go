@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
@@ -76,6 +77,45 @@ func (r *Registry) getTask(ctx context.Context, call tools.Call) tools.Result {
 	return ok(task)
 }
 
+// maxLeaseLabel bounds a caller-supplied lease label.
+const maxLeaseLabel = 48
+
+// leaseLabel reduces a caller-supplied lease label to a short, printable token:
+// letters, digits, dot, underscore and hyphen, with anything else (colons,
+// spaces, controls) replaced by an underscore. It returns "" for a label with
+// nothing in it.
+func leaseLabel(raw string) string {
+	raw = strings.TrimSpace(raw)
+	var b strings.Builder
+	n := 0
+	for _, r := range raw {
+		if n == maxLeaseLabel {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+		n++
+	}
+	return b.String()
+}
+
+// agentLeaseOwner is the lease owner recorded for a lease whose label an agent
+// chose: "agent:" plus the sanitised, bounded label. The prefix says an agent
+// chose the name, so a model that typed "human:operator" cannot read as the
+// operator in the lease and watch faces. An empty label yields "", and the
+// caller picks the owner it would have used without one. Every place that
+// stores a model-chosen label as a lease owner goes through here.
+func agentLeaseOwner(raw string) string {
+	if label := leaseLabel(raw); label != "" {
+		return "agent:" + label
+	}
+	return ""
+}
+
 func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		TaskID string `json:"task_id"`
@@ -85,12 +125,22 @@ func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 		return tools.Errorf("bad arguments: %v", err)
 	}
 	sess := r.sessionFor(ctx)
-	owner := args.Owner
-	if owner == "" {
-		owner = sess.State().Owner
+	// The identity this agent is known by to the policy ledger comes from the
+	// harness: the session's own, or "manvi". It is never taken from an argument,
+	// because the same name is recorded as the grantor of every override the
+	// agent issues to itself, and a model that could name its own grantor could
+	// make a grant read as another agent's. The caller's owner string only
+	// labels the lease in the store.
+	identity := sess.State().Owner
+	if identity == "" {
+		identity = defaultIdentity
 	}
-	if owner == "" {
-		owner = "manvi"
+	// The label is shown as who holds the task by `manvi lease` and the watch
+	// face, so it is stored with a prefix that says an agent chose it: a model
+	// that typed "human:operator" must not read as the operator.
+	owner := identity
+	if labelled := agentLeaseOwner(args.Owner); labelled != "" {
+		owner = labelled
 	}
 
 	lease, err := r.deps.Store.Acquire(ctx, store.AcquireRequest{
@@ -149,7 +199,7 @@ func (r *Registry) checkout(ctx context.Context, call tools.Call) tools.Result {
 	// do anything under it. A fan-out's cleanup can only give back a lease it
 	// was told about, and a child that took one and then died is exactly the
 	// case that has nobody left to tell it.
-	sess.adopt(lease.TaskID, lease.Token, owner)
+	sess.adopt(lease.TaskID, lease.Token, identity)
 
 	// The token is deliberately absent from the payload: it is a credential,
 	// and the model does not need it to work. The harness holds it.

@@ -14,12 +14,41 @@ import (
 // padLabel renders a field label at this card's fixed label column, so the rows
 // stay aligned when the subject row is "command" rather than "path".
 func padLabel(label string) string {
-	const width = 8
-	for len(label) < width {
+	for len(label) < ui.SubjectLabelWidth {
 		label += " "
 	}
 	return label
 }
+
+// subjectRowBudget is how many rows of a decision's subject the card shows at
+// once. A subject longer than that scrolls, and the allow option stays unarmed
+// until the end has been on screen.
+const subjectRowBudget = 8
+
+// decisionLines lays a decision's subject out as styled rows: the label on the
+// first row and the rest indented under it. It is the one painter of a subject
+// for the approval card and the transcript, over the layout in ui.DecisionRows
+// that the line renderer shares, so what an operator is shown does not depend
+// on which face shows it.
+func decisionLines(subject, text string, width int, label, body render.Style) []render.Line {
+	return subjectLines(ui.DecisionRows(subject, text, width), label, body)
+}
+
+// subjectLines styles rows already laid out by ui.DecisionRows.
+func subjectLines(rows []ui.SubjectRow, label, body render.Style) []render.Line {
+	out := make([]render.Line, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, render.Line{
+			{Text: padLabel(row.Label), Style: label},
+			{Text: row.Text, Style: body},
+		})
+	}
+	return out
+}
+
+// defaultCardInner is the width a card's subject is first laid out at, before
+// any frame has fixed the real one.
+const defaultCardInner = 94
 
 // ApprovalCard is the blocking permission prompt.
 //
@@ -49,6 +78,8 @@ type ApprovalCard struct {
 	// uses it: an allow/deny card and a single-select question both answer from
 	// option alone.
 	picked map[int]bool
+	// diffExpanded reveals up to 40 diff preview lines instead of the default 8.
+	diffExpanded bool
 
 	// Index and Total track position in the pending approval queue.
 	Index int
@@ -82,6 +113,60 @@ type ApprovalCard struct {
 	cardRect   render.Rect
 	optionRows []render.Rect
 	reasonRect render.Rect
+
+	// done is closed when the caller blocked on this card stops waiting, so the
+	// card is withdrawn rather than left to take an answer nobody will read.
+	done <-chan struct{}
+
+	// The subject's scroll state. subjectTop is the first row shown when the
+	// subject is longer than the row budget. subjectOverflow, subjectHidden,
+	// subjectAtEnd and subjectLastLine describe the layout last built, and
+	// subjectEndPainted is true only if the frame most recently painted showed
+	// the subject's last row. It is rebuilt with every layout, so a resize or a
+	// scroll that moves the end off screen disarms the allow at once; it is not a
+	// latch.
+	subjectTop        int
+	subjectOverflow   bool
+	subjectHidden     bool
+	subjectAtEnd      bool
+	subjectLastLine   int
+	subjectEndPainted bool
+
+	// guarded marks a card promoted after another was retired. The operator's
+	// keystroke was aimed at the card that went, so this one takes no answer,
+	// Esc included, until it has been painted and the quiet period has passed.
+	guarded bool
+}
+
+// withdrawn reports that the caller this card was raised for has stopped
+// waiting.
+func (c *ApprovalCard) withdrawn() bool {
+	if c.done == nil {
+		return false
+	}
+	select {
+	case <-c.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// withdrawnText is what the transcript records for a card whose caller left.
+const withdrawnText = "withdrawn: cancelled before an answer"
+
+// SubjectUnread reports that the subject is longer than the card shows and its
+// end has not yet been on screen. The allow option is not armed until it has.
+func (c *ApprovalCard) SubjectUnread() bool {
+	return c.subjectOverflow && !c.subjectEndPainted
+}
+
+// ScrollSubject moves the visible window of a long subject by delta rows.
+func (c *ApprovalCard) ScrollSubject(delta int) {
+	c.subjectTop += delta
+	if c.subjectTop < 0 {
+		c.subjectTop = 0
+	}
 }
 
 // writeInOption is the last row of a question.
@@ -104,7 +189,15 @@ const (
 func NewApprovalCard(req ui.Request, reply chan ui.Decision) *ApprovalCard {
 	p := NewPrompt()
 	p.Placeholder = "why this is safe — recorded on the grant"
-	return &ApprovalCard{Request: req, Reply: reply, reason: p, arrived: time.Now(), Index: 1, Total: 1}
+	c := &ApprovalCard{Request: req, Reply: reply, reason: p, arrived: time.Now(), Index: 1, Total: 1}
+	if !req.IsQuestion() {
+		// Unread until a frame has shown the end: a card that was never laid out
+		// must not be allowable.
+		rows := ui.DecisionRows(req.Subject, req.Path, defaultCardInner)
+		c.subjectHidden = ui.SubjectTruncated(rows)
+		c.subjectOverflow = len(rows) > subjectRowBudget
+	}
+	return c
 }
 
 // approvalQuiet is how long the card must have been on screen with no input
@@ -221,9 +314,19 @@ func (c *ApprovalCard) options() []string {
 		return []string{"acknowledge — this rule is never grantable [esc/enter]"}
 	}
 	return []string{
-		"deny — the operation is refused [d/esc]",
-		"allow once — record a scoped, reasoned grant [a/enter]",
+		"deny — the operation is refused [esc]",
+		"allow once — record a scoped, reasoned grant [enter]",
 	}
+}
+
+// ToggleDiff expands or collapses the approval card's diff preview beyond the
+// default 8-line cap so operators can inspect full patches before deciding.
+func (c *ApprovalCard) ToggleDiff() bool {
+	if c == nil || c.Request.Diff == "" {
+		return false
+	}
+	c.diffExpanded = !c.diffExpanded
+	return true
 }
 
 // Toggle ticks or unticks the highlighted row of a multi-select question, and
@@ -287,6 +390,9 @@ func (c *ApprovalCard) Next(delta int) {
 
 // Accept advances the card, returning a decision when it has one.
 func (c *ApprovalCard) Accept() (ui.Decision, bool) {
+	if c.withdrawn() {
+		return ui.Decision{Allow: false, Reason: withdrawnText}, true
+	}
 	if !c.Request.Grantable {
 		return ui.Decision{
 			Allow:  false,
@@ -300,6 +406,11 @@ func (c *ApprovalCard) Accept() (ui.Decision, bool) {
 		}
 		if c.option == 0 {
 			return ui.Decision{Allow: false, Reason: "declined by the operator"}, true
+		}
+		if c.subjectHidden || c.SubjectUnread() {
+			// Not armed: the operator has not seen, or cannot see, all of what
+			// an allow would cover.
+			return ui.Decision{}, false
 		}
 		c.stage = stageReason
 		return ui.Decision{}, false
@@ -424,8 +535,35 @@ func (c *ApprovalCard) content(th Theme, width int) (lines []render.Line, reason
 			Append("   severity ", muted).
 			Append(c.Request.Severity, render.Style{Fg: accent, Bg: th.BgOverlay, Attrs: render.Bold}))
 		// The label follows the subject: a blocked shell command shown under the
-		// word "path" is a question about a different act than the one being asked.
-		add(render.Styled(padLabel(c.Request.SubjectLabel()), muted).Append(c.Request.Path, strong))
+		// word "path" is a question about a different act than the one being
+		// asked. The subject is shown whole, wrapped, so a command's tail cannot
+		// sit past the card's edge while the grant covers it.
+		subjectRows := ui.DecisionRows(c.Request.Subject, c.Request.Path, width)
+		hidden := ui.SubjectTruncated(subjectRows)
+		rows := subjectLines(subjectRows, muted, strong)
+		c.subjectHidden = hidden
+		c.subjectEndPainted = false
+		c.subjectOverflow = len(rows) > subjectRowBudget
+		c.subjectAtEnd = true
+		if c.subjectOverflow {
+			top := min(c.subjectTop, len(rows)-subjectRowBudget)
+			c.subjectTop = top
+			c.subjectAtEnd = top+subjectRowBudget >= len(rows)
+			shown := rows[top : top+subjectRowBudget]
+			rows = append(append([]render.Line{}, shown...),
+				render.Styled(padLabel("")+"rows "+itoa(top+1)+"-"+itoa(top+subjectRowBudget)+" of "+itoa(len(rows))+
+					" — pgup/pgdn to scroll; allow needs the last row shown", muted))
+			c.subjectLastLine = len(lines) + subjectRowBudget - 1
+		} else {
+			c.subjectLastLine = len(lines) + len(rows) - 1
+		}
+		for _, l := range rows {
+			add(l)
+		}
+		if hidden {
+			add(render.Styled("too long to show or approve here — deny it and ask for a smaller step",
+				render.Style{Fg: th.Danger, Bg: th.BgOverlay, Attrs: render.Bold}))
+		}
 	}
 	if c.Request.TaskID != "" {
 		add(render.Styled(padLabel("task"), muted).Append(c.Request.TaskID, strong))
@@ -440,12 +578,22 @@ func (c *ApprovalCard) content(th Theme, width int) (lines []render.Line, reason
 
 	// Syntax-colored diff preview for file writes and edits.
 	if c.Request.Diff != "" {
-		add(render.Styled("┌─ diff preview ", render.Style{Fg: th.Info, Bg: th.BgOverlay, Attrs: render.Bold}))
 		diffLines := strings.Split(c.Request.Diff, "\n")
 		maxDiff := 8
+		toggleHint := ""
+		if len(diffLines) > maxDiff {
+			if c.diffExpanded {
+				maxDiff = 40
+				toggleHint = "  [v collapse]"
+			} else {
+				toggleHint = "  [v expand]"
+			}
+		}
+		add(render.Styled("┌─ diff preview ", render.Style{Fg: th.Info, Bg: th.BgOverlay, Attrs: render.Bold}).
+			Append(toggleHint, muted))
 		for idx, dl := range diffLines {
 			if idx >= maxDiff {
-				add(render.Styled(fmt.Sprintf("│ … %d more diff lines", len(diffLines)-maxDiff), muted))
+				add(render.Styled(fmt.Sprintf("│ … %d more diff lines (press v to toggle)", len(diffLines)-maxDiff), muted))
 				break
 			}
 			st := muted
@@ -605,6 +753,11 @@ func (c *ApprovalCard) Draw(b *render.Buffer, r render.Rect, th Theme, tick int,
 			continue
 		}
 		l.Truncate(inner.W).Draw(b, inner.X, y)
+		if i == c.subjectLastLine && c.subjectAtEnd && !c.isQuestion() {
+			// The last row of the subject is on screen: nothing an allow would
+			// cover is still hidden.
+			c.subjectEndPainted = true
+		}
 	}
 	return caret
 }
@@ -699,7 +852,7 @@ func (a *Approver) Approve(ctx context.Context, req ui.Request) (ui.Decision, er
 	// goroutine to be scheduled.
 	reply := make(chan ui.Decision, 1)
 	select {
-	case a.Actions <- ActionApprovalRequest{SessionID: a.SessionID, Request: req, Reply: reply}:
+	case a.Actions <- ActionApprovalRequest{SessionID: a.SessionID, Request: req, Reply: reply, Done: ctx.Done()}:
 	case <-ctx.Done():
 		return ui.Decision{Allow: false, Reason: "cancelled before it could be put to an operator"}, nil
 	case <-a.Done:
@@ -731,8 +884,16 @@ func (a *App) acceptApproval() []Effect {
 	was := card.stage
 	needed := card.NeedsSelection()
 	decision, done := card.Accept()
+	if card.withdrawn() {
+		// The caller left between the card being shown and this answer. There is
+		// nobody to receive it, so it is refused rather than recorded as given.
+		v.retireWithdrawn()
+		return nil
+	}
 	if !done {
 		switch {
+		case was == stageChoose && card.SubjectUnread() && !card.isQuestion() && card.option != 0:
+			a.setNotice("the command is longer than the card — pgdn to the end before allowing it", StatusWarn)
 		case was == stageReason && card.isQuestion() && trimSpace(card.reason.Value()) == "":
 			a.setNotice("an empty answer is not an answer — type one, or press esc to leave it unanswered", StatusWarn)
 		case was == stageReason && trimSpace(card.reason.Value()) == "":
@@ -748,7 +909,7 @@ func (a *App) acceptApproval() []Effect {
 	v.Apply(ui.Event{
 		Kind: ui.KindApprovalDone, At: time.Now().UTC(),
 		ApprovalID: card.Request.ID, Rule: card.Request.Rule, Path: card.Request.Path,
-		Text: decisionText(decision),
+		Subject: card.Request.Subject, Text: decisionText(decision),
 	})
 	if card.Reply != nil {
 		select {

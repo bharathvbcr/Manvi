@@ -96,7 +96,7 @@ func TestTruncateForMessageDoesNotSplitARune(t *testing.T) {
 	// three-byte rune, and exactly on a boundary.
 	for _, lead := range []int{118, 119, 120} {
 		input := strings.Repeat("a", lead) + strings.Repeat("日", 8)
-		got := truncateForMessage(input)
+		got := llm.TruncateForMessage(input)
 		if !utf8.ValidString(got) {
 			t.Errorf("truncateForMessage(%d ASCII + kanji) = %q (% x): not valid UTF-8",
 				lead, got, got)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
@@ -288,23 +289,132 @@ func harnessFor(pipeline *tools.Registry) (*subAgentRunner, harnessCapability) {
 // tools included: the documented tool counts are this list's length. Listing is
 // all it does; `manvi tool` builds without the board (see agentTools).
 func listTools(out io.Writer, reg *flags.Registry) error {
-	_, pipeline, err := agentTools(reg, nil, "")
+	catalog, err := toolCatalog(reg)
 	if err != nil {
 		return err
+	}
+	for _, e := range catalog {
+		_, _ = fmt.Fprintf(out, "%-34s %-6s %s\n", e.Name, e.Class, e.Description)
+	}
+	_, _ = fmt.Fprintf(out, "\n%d tools, all native — no Python process is involved.\n", len(catalog))
+	return nil
+}
+
+// toolsUsage is what `manvi tools` answers to any argument it does not know.
+const toolsUsage = "usage: manvi tools [--json]"
+
+// toolCatalogEntry is one row of `manvi tools`, and one element of the array
+// `manvi tools --json` prints. The table and the JSON are both written from
+// this, so they cannot disagree about which tools exist, in what order, or
+// which are read-only.
+type toolCatalogEntry struct {
+	Name        string `json:"name"`
+	Class       string `json:"class"` // "read" or "write"
+	Description string `json:"description"`
+}
+
+// toolCatalog is the surface listTools describes, one entry per tool, in the
+// pipeline's own order.
+func toolCatalog(reg *flags.Registry) ([]toolCatalogEntry, error) {
+	_, pipeline, err := agentTools(reg, nil, "")
+	if err != nil {
+		return nil, err
 	}
 	readOnly := map[string]bool{}
 	for _, s := range pipeline.ReadOnlySchemas() {
 		readOnly[s.Name] = true
 	}
-	for _, s := range pipeline.Schemas() {
-		access := "write"
+	schemas := pipeline.Schemas()
+	catalog := make([]toolCatalogEntry, 0, len(schemas))
+	for _, s := range schemas {
+		class := "write"
 		if readOnly[s.Name] {
-			access = "read"
+			class = "read"
 		}
-		_, _ = fmt.Fprintf(out, "%-34s %-6s %s\n", s.Name, access, firstSentence(s.Description))
+		catalog = append(catalog, toolCatalogEntry{Name: s.Name, Class: class, Description: firstSentence(s.Description)})
 	}
-	_, _ = fmt.Fprintf(out, "\n%d tools, all native — no Python process is involved.\n", len(pipeline.Schemas()))
+	return catalog, nil
+}
+
+// toolsCommand is `manvi tools [--json]`. No argument prints the table; --json
+// prints the same catalog as one JSON array. Anything else is refused before
+// the tool surface is built, as `version` refuses an argument it does not know.
+func toolsCommand(out io.Writer, reg *flags.Registry, args []string) error {
+	switch {
+	case len(args) == 0:
+		return listTools(out, reg)
+	case len(args) == 1 && args[0] == "--json":
+		catalog, err := toolCatalog(reg)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(catalog)
+	default:
+		return errors.New(toolsUsage)
+	}
+}
+
+// toolUsage is what `manvi tool` answers to arguments it cannot read.
+const toolUsage = "usage: manvi tool NAME [--json '{...}']"
+
+// toolPayload reads what follows the tool's name: nothing, which means no
+// arguments ({}), or one --json with its value, as "--json VALUE" or
+// "--json=VALUE". Anything else is refused. It used to take the first --json it
+// found and ignore the rest, so a misspelt flag (--jsno) or a --json with no
+// value ran the tool with {} — a write tool then ran on empty arguments because
+// of a typo.
+func toolPayload(rest []string) (string, error) {
+	if len(rest) == 0 {
+		return "{}", nil
+	}
+	if len(rest) > 1 {
+		if len(rest) == 2 && rest[0] == "--json" {
+			return rest[1], nil
+		}
+		return "", errors.New(toolUsage)
+	}
+	if v, ok := strings.CutPrefix(rest[0], "--json="); ok {
+		return v, nil
+	}
+	return "", errors.New(toolUsage)
+}
+
+// payloadEchoMax bounds how much of a refused --json value is quoted back in
+// the error. The value is whatever the caller typed or a script generated; the
+// error is printed to a terminal and recorded, so it carries a prefix and the
+// total length, never the whole payload. No size cap on tool arguments exists
+// elsewhere in manvi to reuse (the 1 MiB limit in run.go is for a prompt on
+// stdin), so none is invented here: the operating system already bounds argv,
+// and the TUI line is one typed line.
+const payloadEchoMax = 200
+
+// checkToolPayload refuses a --json value that is not a UTF-8 JSON object.
+// Valid JSON that is not an object ([], null, 123, "s") is not a tool's
+// arguments, and a tool that decodes into a struct reads some of those as the
+// zero value and runs on it.
+func checkToolPayload(payload string) error {
+	switch {
+	case !utf8.ValidString(payload):
+		return fmt.Errorf("--json is not valid UTF-8 (%d bytes): %s", len(payload), payloadPreview(payload))
+	case !json.Valid([]byte(payload)):
+		return fmt.Errorf("--json is not valid JSON (%d bytes): %s", len(payload), payloadPreview(payload))
+	case !strings.HasPrefix(strings.TrimLeft(payload, " \t\r\n"), "{"):
+		return fmt.Errorf("--json must be a JSON object (%d bytes): %s", len(payload), payloadPreview(payload))
+	}
 	return nil
+}
+
+// payloadPreview quotes at most payloadEchoMax bytes of s, cut on a rune
+// boundary, and says when it cut.
+func payloadPreview(s string) string {
+	if len(s) <= payloadEchoMax {
+		return fmt.Sprintf("%q", s)
+	}
+	cut := payloadEchoMax
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%q... (first %d bytes)", s[:cut], cut)
 }
 
 // callTool runs one tool through the caller's pipeline.
@@ -318,18 +428,18 @@ func listTools(out io.Writer, reg *flags.Registry) error {
 // credentials that session resolved.
 func callTool(out io.Writer, notes io.Writer, scrubber *credentials.Scrubber, pipeline *tools.Registry, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: manvi tool NAME [--json '{...}']")
+		return errors.New(toolUsage)
 	}
 	if !pipeline.Has(args[0]) {
 		return fmt.Errorf("no native tool %q (see: manvi tools)", args[0])
 	}
 
-	payload := flagValue(args, "--json")
-	if payload == "" {
-		payload = "{}"
+	payload, err := toolPayload(args[1:])
+	if err != nil {
+		return err
 	}
-	if !json.Valid([]byte(payload)) {
-		return fmt.Errorf("--json is not valid JSON: %s", payload)
+	if err := checkToolPayload(payload); err != nil {
+		return err
 	}
 
 	result := pipeline.Run(context.Background(), tools.Call{

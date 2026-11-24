@@ -1,8 +1,12 @@
 package devcouncil
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -157,13 +161,19 @@ func (r *Registry) defineSubagent(ctx context.Context, call tools.Call) tools.Re
 	if refusal := r.refuseDynamicRoles(); refusal != nil {
 		return *refusal
 	}
-	var def agents.Definition
-	if err := decode(call, &def); err != nil {
-		return tools.Errorf("bad arguments: %v", err)
-	}
 	if refusal := refuseRetiredRoleKeys(call); refusal != nil {
 		return *refusal
 	}
+	// A model's arguments decode into authoredRole, never into
+	// agents.Definition, and a key outside it is refused rather than dropped.
+	// Definition carries write_exceptions, the one field that widens a role, and
+	// decoding the model's JSON straight into it let a model grant itself a
+	// write tool the role's read-only floor had taken away.
+	var authored authoredRole
+	if refusal := authored.decode(call); refusal != nil {
+		return *refusal
+	}
+	def := authored.definition()
 	if strings.TrimSpace(def.Name) == "" {
 		return tools.Errorf("subagent name is required")
 	}
@@ -206,6 +216,62 @@ func (r *Registry) defineSubagent(ctx context.Context, call tools.Call) tools.Re
 		"description": def.Description,
 		"tier":        def.Ceiling(),
 	})
+}
+
+// authoredRole is every field a model may set when it defines a role. It is
+// deliberately not agents.Definition: a field a model may not declare, above
+// all WriteExceptions, must have nowhere to land.
+type authoredRole struct {
+	Name             string   `json:"name"`
+	Role             string   `json:"role"`
+	Description      string   `json:"description"`
+	SystemPrompt     string   `json:"system_prompt"`
+	Model            string   `json:"model"`
+	Tier             string   `json:"tier"`
+	EnableMCPTools   bool     `json:"enable_mcp_tools"`
+	EnableWriteTools bool     `json:"enable_write_tools"`
+	AllowedTools     []string `json:"allowed_tools"`
+}
+
+// decode reads call's arguments into a, refusing any key authoredRole does not
+// name. The refusal names the key and says nothing was registered.
+func (a *authoredRole) decode(call tools.Call) *tools.Result {
+	if len(call.Arguments) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(call.Arguments))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(a)
+	if err == nil {
+		// One JSON value and nothing after it: a second object or stray bytes
+		// would otherwise be ignored here yet read by whatever sees the raw text.
+		if _, more := dec.Token(); !errors.Is(more, io.EOF) {
+			err = errors.New("unexpected data after the arguments object")
+		}
+	}
+	if err != nil {
+		res := tools.Errorf("bad arguments: %v. A model may declare only name, role, description, "+
+			"system_prompt, model, tier, enable_mcp_tools, enable_write_tools and allowed_tools; "+
+			"anything else, write_exceptions included, is the operator's to grant. Nothing was registered", err)
+		return &res
+	}
+	return nil
+}
+
+// definition is the agents.Definition a model's declaration amounts to: the
+// operator-only fields keep their zero values.
+func (a authoredRole) definition() agents.Definition {
+	return agents.Definition{
+		Name:             a.Name,
+		Role:             a.Role,
+		Description:      a.Description,
+		SystemPrompt:     a.SystemPrompt,
+		Model:            a.Model,
+		Tier:             agents.Tier(a.Tier),
+		EnableMCPTools:   a.EnableMCPTools,
+		EnableWriteTools: a.EnableWriteTools,
+		AllowedTools:     a.AllowedTools,
+	}
 }
 
 // authoredTier reads the placement of a role a model is defining, from either
@@ -1204,9 +1270,17 @@ func (r *Registry) spawnTask(t spawnRequest, req SubAgentRequest, role resolvedR
 			}
 
 			if t.TaskID != "" {
+				// The label is the model's, so the owner goes through the
+				// same prefix and bound checkout applies; spawn requires a
+				// non-empty label, and the fallback keeps an unnameable one
+				// from reading as anyone else.
+				owner := agentLeaseOwner(t.Label)
+				if owner == "" {
+					owner = "agent:subagent"
+				}
 				acquire := store.AcquireRequest{
 					TaskID: t.TaskID,
-					Owner:  t.Label,
+					Owner:  owner,
 					TTL:    r.deps.LeaseTTL,
 				}
 				lease, err := r.deps.Store.Acquire(childCtx, acquire)

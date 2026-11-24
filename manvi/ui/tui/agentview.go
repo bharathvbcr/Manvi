@@ -16,11 +16,12 @@ type AgentView struct {
 	ID    string
 	Title string
 
-	Scroll *Scrollback
-	Prompt *Prompt
-	Status Status
+	Scroll    *Scrollback
+	Prompt    *Prompt
+	Inspector *Inspector
+	Status    Status
 
-	// Focus is CtxPrompt or CtxScrollback.
+	// Focus is CtxPrompt, CtxScrollback, or CtxInspector.
 	Focus Context
 
 	// approval is the card currently blocking, and pending is the queue behind
@@ -29,6 +30,10 @@ type AgentView struct {
 	// own reply channel anyway.
 	approval *ApprovalCard
 	pending  []*ApprovalCard
+	// retiredSincePaint is set when a card was retired after the last frame was
+	// drawn. A key that arrives then was aimed at the card that went, and is
+	// consumed with a notice rather than applied to whatever is now showing.
+	retiredSincePaint bool
 
 	// queued holds follow-up prompts typed while a turn was running.
 	queued []string
@@ -44,6 +49,8 @@ type AgentView struct {
 	// lands on the caret position the operator aimed at rather than on a
 	// recomputed guess at the layout.
 	promptRect render.Rect
+	// latestPill is the clickable "↓ latest" jump pill shown when scrolled up.
+	latestPill render.Rect
 
 	// lastEscape supports the double-Escape binding.
 	lastEscape time.Time
@@ -59,11 +66,12 @@ type AgentView struct {
 // NewAgentView builds an empty session view.
 func NewAgentView(id, title string) *AgentView {
 	return &AgentView{
-		ID:     id,
-		Title:  title,
-		Scroll: NewScrollback(),
-		Prompt: NewPrompt(),
-		Focus:  CtxPrompt,
+		ID:        id,
+		Title:     title,
+		Scroll:    NewScrollback(),
+		Prompt:    NewPrompt(),
+		Inspector: NewInspector(),
+		Focus:     CtxPrompt,
 	}
 }
 
@@ -194,11 +202,62 @@ func (v *AgentView) activity() string {
 }
 
 // Approval returns the card blocking this session, if any.
+//
+// A card whose caller has stopped waiting is retired here, before it is
+// returned: every path that reads the card — the keys, the frame, the tick —
+// comes through this accessor, so none of them can act on a withdrawn card.
 func (v *AgentView) Approval() *ApprovalCard {
 	if v == nil {
 		return nil
 	}
+	v.retireWithdrawn()
 	return v.approval
+}
+
+// activeCard is the card blocking this session as it stands, a withdrawn one
+// included, and changes nothing. Deciding where a key goes reads this, so that
+// asking never retires a card: the key is then handled against the card the
+// operator was looking at, not the one behind it.
+func (v *AgentView) activeCard() *ApprovalCard {
+	if v == nil {
+		return nil
+	}
+	return v.approval
+}
+
+// retireWithdrawn removes every card whose caller was cancelled or timed out,
+// active or queued, and leaves a transcript entry saying so.
+func (v *AgentView) retireWithdrawn() {
+	for v.approval != nil && v.approval.withdrawn() {
+		v.noteWithdrawn(v.approval)
+		v.PopApproval()
+		v.retiredSincePaint = true
+		if v.approval != nil {
+			v.approval.guarded = true
+		}
+	}
+	if len(v.pending) == 0 {
+		return
+	}
+	kept := make([]*ApprovalCard, 0, len(v.pending))
+	for _, c := range v.pending {
+		if c.withdrawn() {
+			v.noteWithdrawn(c)
+			continue
+		}
+		kept = append(kept, c)
+	}
+	v.pending = kept
+}
+
+// noteWithdrawn records in the transcript that a card was retired unanswered.
+func (v *AgentView) noteWithdrawn(c *ApprovalCard) {
+	v.Apply(ui.Event{
+		Kind: ui.KindApprovalDone, At: time.Now().UTC(),
+		ApprovalID: c.Request.ID, Rule: c.Request.Rule,
+		Path: c.Request.Path, Subject: c.Request.Subject,
+		Text: withdrawnText,
+	})
 }
 
 // PushApproval queues a request, activating it if nothing is blocking.
@@ -223,6 +282,7 @@ func (v *AgentView) PendingApprovals() int {
 	if v == nil {
 		return 0
 	}
+	v.retireWithdrawn()
 	return len(v.pending)
 }
 
@@ -318,6 +378,28 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 	area := r
 	area, footer := area.SplitBottom(1)
 
+	// Adaptive Workbench split: when the Inspector Drawer is open and the
+	// terminal is wide enough (>= inspectorMinWidth), split 62% main / 38%
+	// drawer. When closed on wide screens in stacked mode, center the reading
+	// column to a comfortable ~104-column measure.
+	var drawerRect render.Rect
+	if v.Inspector != nil && v.Inspector.Open && area.W >= inspectorMinWidth {
+		dw := area.W * 38 / 100
+		if dw < 40 {
+			dw = 40
+		}
+		if dw > 68 {
+			dw = 68
+		}
+		area, drawerRect = area.SplitRight(dw)
+	} else if v.Scroll.StackWork && area.W > 116 {
+		pad := (area.W - 104) / 2
+		area = area.Pad(0, pad, 0, pad)
+	}
+	if drawerRect.Empty() && v.Focus == CtxInspector {
+		v.Focus = CtxPrompt
+	}
+
 	// A run that is not strict says so on a row of its own, directly above
 	// where the operator types: it is the one statement on screen that changes
 	// what every result above it means, and it is never folded into the row of
@@ -361,6 +443,11 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		v.drawQueue(b, queue, th)
 	}
 
+	// A card whose caller has gone is retired before it can be drawn, and what
+	// the operator sees from here on is the layout that follows.
+	v.retireWithdrawn()
+	v.retiredSincePaint = false
+
 	// The working row, between the transcript and whatever is typed under it.
 	// An approval card takes its place: the turn is then waiting on the
 	// operator, and the card says so itself.
@@ -370,6 +457,19 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		st := v.Status
 		st.BusyLabel = v.activity()
 		DrawActivity(b, working, th, st, tick, fxOn)
+		// When the Inspector Drawer is closed and stacked mode is active,
+		// regenerate the active thinking trace in one compact line directly
+		// above the working row so it never floods the transcript.
+		if (v.Inspector == nil || !v.Inspector.Open) && v.Scroll.StackWork && area.H > 6 {
+			if thought := v.liveThoughtPreview(); thought != "" {
+				var thinkRow render.Rect
+				area, thinkRow = area.SplitBottom(1)
+				b.Fill(thinkRow, ' ', th.Base())
+				render.Styled("  "+th.Glyphs().Thought+" ", th.Subtle()).
+					Append(thought, th.Subtle().With(render.Italic)).
+					Truncate(thinkRow.W).Draw(b, thinkRow.X, thinkRow.Y)
+			}
+		}
 		if area.H > 8 {
 			// A blank row above it, where there is the height: the row is the
 			// state of the turn, not the last line of what the turn printed.
@@ -401,6 +501,30 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 
 	v.Scroll.Draw(b, area, th, v.Focus == CtxScrollback)
 
+	// Floating clickable "↓ latest" pill when the user has scrolled up.
+	v.latestPill = render.Rect{}
+	if !v.Scroll.Following() && area.H >= 4 && area.W >= 24 {
+		lbl := " ↓ latest "
+		if !th.Unicode {
+			lbl = " v latest "
+		}
+		pw := render.StringWidth(lbl)
+		px := area.Right() - pw - 2
+		py := area.Bottom() - 1
+		if px >= area.X && py >= area.Y {
+			pillStyle := render.Style{Fg: th.Fg, Bg: th.BgRaised, Attrs: render.Bold}
+			if th.monochrome() {
+				pillStyle = render.Style{Attrs: render.Reverse}
+			}
+			v.latestPill = render.Rect{X: px, Y: py, W: pw, H: 1}
+			render.Styled(lbl, pillStyle).Draw(b, px, py)
+		}
+	}
+
+	if v.Inspector != nil {
+		v.Inspector.Draw(b, drawerRect, th, v, v.Focus == CtxInspector)
+	}
+
 	promptCaret := v.drawPrompt(b, promptRect, th, tick, fxOn)
 	if v.approval == nil {
 		caret = promptCaret
@@ -422,6 +546,27 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 	}
 	DrawFooter(b, footer, th, v.Status, ctx, tick, spark, fxOn, extra...)
 	return caret
+}
+
+// liveThoughtPreview returns the newest non-empty line of a live reasoning
+// entry for the compact single-slot thinking strip above the working row.
+func (v *AgentView) liveThoughtPreview() string {
+	entries := v.Scroll.Entries()
+	if len(entries) == 0 {
+		return ""
+	}
+	last := entries[len(entries)-1]
+	if last.Event.Kind != ui.KindReasoning || !last.live {
+		return ""
+	}
+	text := strings.TrimSpace(last.text())
+	if text == "" {
+		return ""
+	}
+	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+		text = strings.TrimSpace(text[i+1:])
+	}
+	return ui.OneLine(text)
 }
 
 func (v *AgentView) drawQueue(b *render.Buffer, r render.Rect, th Theme) {

@@ -10,23 +10,43 @@ import (
 )
 
 func (r *workResult) capture(raw Observation, privacy PrivacyPolicy) error {
-	safe, fingerprint, err := sanitizeFrame(raw, privacy, true)
+	safe, digests, err := sanitizeFrame(raw, privacy, true)
 	if err != nil {
 		return err
 	}
 	r.observation = &safe
-	r.takeoverFingerprint = fingerprint
+	r.takeoverFingerprint = digests.frame
+	r.semantic = digests.semantic
 	return nil
 }
 
-// approval is approvalFingerprint of the frame capture just took. The frame
-// digest of a visual step is the takeover fingerprint capture already holds, so
-// that step does not decode the same frame a further time.
-func (r *workResult) approval(raw Observation, s workflow.Selector) [32]byte {
-	if s.Visual != nil {
-		return r.takeoverFingerprint
+// approval captures raw and returns the fingerprint a person's review of that
+// frame is bound to. It takes the capture itself, so the digest can never come
+// from a frame other than raw (or from no frame, which would be the zero digest
+// and match a review that never happened). The frame digest of a visual step is
+// the takeover fingerprint that same capture produced, so the step does not
+// decode the frame a further time. On error nothing is returned to compare.
+func (r *workResult) approval(raw Observation, privacy PrivacyPolicy, s workflow.Selector) ([32]byte, error) {
+	if err := r.capture(raw, privacy); err != nil {
+		return [32]byte{}, err
 	}
-	return semanticFingerprint(raw)
+	r.fingerprinted = true
+	if s.Visual != nil {
+		return r.takeoverFingerprint, nil
+	}
+	return r.semantic, nil
+}
+
+// nextReviewed is the digest a run holds as "reviewed" after result: the
+// result's own when it carries a digest of a frame it captured, else the last
+// good one. A result that captured a frame but failed before it was digested
+// (a recovery capture followed by a failed approval capture) has no digest, and
+// its zero value must not replace a real one.
+func (r *workResult) nextReviewed(last [32]byte) [32]byte {
+	if r.fingerprinted {
+		return r.fingerprint
+	}
+	return last
 }
 
 // A review is captured before focus invalidates the native observation and HID

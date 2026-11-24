@@ -128,6 +128,11 @@ case "$cmd" in
     # the profile, never the password. store-credentials validates the
     # credentials with Apple before saving; a failure stops the job.
     profile="manvi-notary"
+    # notarytool's --wait has no limit of its own, so a stuck submission would
+    # hold the release job until the runner's own cap. On timeout notarytool
+    # exits non-zero (the submission keeps processing at Apple), the json below
+    # is empty, status reads "unknown", and the job stops.
+    notary_timeout="30m"
     printf '%s\n' "$APPLE_APP_PASSWORD" | script -q /dev/null \
       xcrun notarytool store-credentials "$profile" \
         --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --keychain "$keychain" >/dev/null
@@ -137,7 +142,7 @@ case "$cmd" in
     ditto -c -k --keepParent "$file" "$work/notarize.zip"
     xcrun notarytool submit "$work/notarize.zip" \
       --keychain-profile "$profile" --keychain "$keychain" \
-      --wait --output-format json > "$work/notary.json"
+      --wait --timeout "$notary_timeout" --output-format json > "$work/notary.json"
     status="$(jq -r '.status // "unknown"' "$work/notary.json")"
     id="$(jq -r '.id // empty' "$work/notary.json")"
     if [[ "$status" != "Accepted" ]]; then

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/draw"
 	"image/png"
@@ -116,11 +117,12 @@ func checkProtectedSearch(raw Observation, policy PrivacyPolicy, search PixelRec
 		return errors.New("visual search is outside scoped frame")
 	}
 	region := image.Rect(int(search.X), int(search.Y), int(search.X+search.Width), int(search.Y+search.Height))
-	for _, n := range raw.Nodes {
-		if policy.sensitive(n) || (n.Value != nil && *n.Value == "[redacted]") {
+	plan := policy.plan(raw.Nodes)
+	for i, n := range raw.Nodes {
+		if plan.sensitive[i] || (n.Value != nil && *n.Value == redactedText) {
 			r, err := sensitivePixelRect(n, raw.Window.Bounds, int(w), int(h))
 			if err != nil {
-				return err
+				return fmt.Errorf("sensitive control %s: %w", policy.describeNode(n), err)
 			}
 			if r.Overlaps(region) {
 				return errors.New("visual search overlaps protected pixels")
@@ -173,11 +175,9 @@ func sensitivePixelRect(n Node, w Bounds, width, height int) (image.Rectangle, e
 		return image.Rectangle{}, errors.New("sensitive region has no reliable bounds")
 	}
 	sx, sy := float64(width)/w.Width, float64(height)/w.Height
-	r := image.Rect(int(math.Floor((n.Bounds.X-w.X)*sx))-2, int(math.Floor((n.Bounds.Y-w.Y)*sy))-2, int(math.Ceil((n.Bounds.X+n.Bounds.Width-w.X)*sx))+2, int(math.Ceil((n.Bounds.Y+n.Bounds.Height-w.Y)*sy))+2).Intersect(image.Rect(0, 0, width, height))
-	if r.Empty() {
-		return image.Rectangle{}, errors.New("sensitive bounds do not intersect captured surface")
-	}
-	return r, nil
+	// A control wholly outside the surface has no pixels in it to hide: the empty
+	// rectangle is the answer, not an error.
+	return image.Rect(int(math.Floor((n.Bounds.X-w.X)*sx))-2, int(math.Floor((n.Bounds.Y-w.Y)*sy))-2, int(math.Ceil((n.Bounds.X+n.Bounds.Width-w.X)*sx))+2, int(math.Ceil((n.Bounds.Y+n.Bounds.Height-w.Y)*sy))+2).Intersect(image.Rect(0, 0, width, height)), nil
 }
 func approvalFingerprint(o Observation, s workflow.Selector) ([32]byte, error) {
 	semantic := semanticFingerprint(o)
@@ -200,6 +200,13 @@ func frameFingerprint(o Observation) ([32]byte, error) {
 // frameDigest binds the semantic state, the unmasked NRGBA pixels and the window
 // geometry. Callers that already hold the decoded frame pass its pixels instead
 // of decoding the same bytes again.
+//
+// The pixels are the 8-bit NRGBA conversion of the frame (the same draw.Draw
+// conversion the sanitized frame goes through, and the one the parity oracle
+// defines). A 16-bit sample that changes only in its low byte therefore does not
+// change the digest. That is accepted on purpose: a change below 1/256 of a
+// channel is invisible to the person reviewing the frame, and the digest binds
+// what they could see.
 func frameDigest(o Observation, rgba []byte) ([32]byte, error) {
 	semantic := semanticFingerprint(o)
 	h := sha256.New()

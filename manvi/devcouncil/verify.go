@@ -239,7 +239,7 @@ const coverageUnmeasuredNote = "diff_coverage: no coverage file was supplied, so
 // result. A verifier that cannot be reached, a diff that cannot be parsed, and
 // a diff that is genuinely clean would otherwise all produce the same report.
 func (r *Registry) runRigor(ctx context.Context, diff string, planned []string, taskID string) ([]Gap, []NextAction, []string) {
-	const owned = "secret_scan, stub_detection, diff_coverage"
+	const owned = "secret_scan, stub_detection, diff_coverage, runner_hijack, lean_tcb"
 	var degraded []string
 
 	client := rigorClient{Binary: r.deps.VerifierBinary, Root: r.deps.Root}

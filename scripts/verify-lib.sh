@@ -123,8 +123,15 @@ gate_go_test_json() {
   (cd "$dir" && go test -json "$@") >"$json" 2>"$err" || status=$?
   if (( status != 0 )); then
     python3 - "$json" <<'PY' >&2
-import json, sys
+import json, re, sys
 failed, tests, out, by_test = set(), [], [], {}
+# go test kills a package binary that outlives -timeout with "panic: test timed
+# out after 20m0s" and lists what was running. That is a different finding from
+# an assertion failure (a hang, or a host too loaded to finish), so it is named
+# as one rather than left as the tail of an unlabelled FAIL.
+timed_out, running = {}, {}
+TIMEOUT = re.compile(r"^panic: test timed out after (\S+)")
+RUNNING = re.compile(r"^\t\t(\S+) \(")
 for line in open(sys.argv[1], errors="replace"):
     line = line.strip()
     if not line.startswith("{"):
@@ -139,12 +146,25 @@ for line in open(sys.argv[1], errors="replace"):
     if action == "fail" and test:
         tests.append((pkg, test))
     if action == "output":
+        text = e.get("Output", "")
+        m = TIMEOUT.search(text)
+        if m:
+            timed_out[pkg] = m.group(1)
+        m = RUNNING.match(text)
+        if m and pkg in timed_out:
+            running.setdefault(pkg, [])
+            if m.group(1) not in running[pkg]:
+                running[pkg].append(m.group(1))
         out.append((pkg, e.get("Output", "")))
         if test:
             by_test.setdefault((pkg, test), []).append(e.get("Output", ""))
 # A package's own output is dominated by whatever test ran last, so a failure
 # is read from the failing test's output. Packages that failed without a
 # failing test (build error, panic, timeout) fall back to their tail.
+for pkg, after in timed_out.items():
+    names = ", ".join(running.get(pkg, [])) or "none named"
+    print("TIMED OUT, not an assertion failure: %s was killed by go test -timeout after %s; running when it fired: %s" % (pkg, after, names))
+    failed.add(pkg)
 with_tests = {pkg for pkg, _ in tests}
 shown = [text for pkg, text in out if pkg in failed and pkg not in with_tests]
 print("".join(shown[-400:]), end="")
@@ -156,6 +176,8 @@ if len(tests) > 20:
 if tests:
     print("failed tests:")
     print("\n".join("  " + pkg + "." + test for pkg, test in tests[:50]))
+if timed_out:
+    print("%d package(s) timed out; %d test(s) failed an assertion" % (len(timed_out), len(tests)))
 PY
     tail -n 50 "$err" >&2
     printf 'go test -json exited %d\n' "$status" >&2

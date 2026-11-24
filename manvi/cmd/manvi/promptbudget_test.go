@@ -333,3 +333,34 @@ func TestTUIPersistStillRefusesAnotherRunsNewerGeneration(t *testing.T) {
 		t.Fatalf("persist over another run's generation = %v, want a *session.ConflictError", err)
 	}
 }
+
+// An essential section kept past the budget reaches the log as an overrun, not
+// as a dropped section: the model saw it.
+func TestPromptAssemblyRecordsAKeptEssentialSectionAsAnOverrunNotADrop(t *testing.T) {
+	log := session.NewLog()
+	report := prompt.Report{
+		Included: []prompt.Included{{Name: "scope", Source: "scope"}},
+		Overrun:  []prompt.Overrun{{Name: "scope", Source: "scope", Reason: "exceeded the 10-token budget but was kept"}},
+		Tokens:   40,
+	}
+	if err := recordPromptAssembly(log, report, "text", 10, specIdentity{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range log.Events() {
+		if e.Type != session.PromptAssembled {
+			continue
+		}
+		var d session.PromptAssembledData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Dropped) != 0 {
+			t.Fatalf("dropped = %v, want none: the section was kept", d.Dropped)
+		}
+		if len(d.Overrun) != 1 || !strings.HasPrefix(d.Overrun[0], "scope: ") {
+			t.Fatalf("overrun = %v, want the kept section and its reason", d.Overrun)
+		}
+		return
+	}
+	t.Fatal("no prompt.assembled event was recorded")
+}

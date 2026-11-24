@@ -33,6 +33,15 @@ type Scrollback struct {
 
 	// MaxEntries bounds retention. Zero means unbounded.
 	MaxEntries int
+	// MaxBytes bounds retention by the text the entries hold. A count of
+	// entries does not bound memory: one tool result can be megabytes, and the
+	// entry bound alone let five thousand of them stand. Zero means unbounded.
+	// The newest entry is never retired by it, so a single reply larger than
+	// the bound is kept whole rather than cut out from under the reader.
+	MaxBytes int
+	// bytes is what the retained entries hold, kept current as entries arrive,
+	// grow and retire so the bound does not rescan the transcript per event.
+	bytes int
 	// dropped counts entries retired by that bound. It is surfaced in the
 	// viewport rather than kept private: a transcript that silently loses its
 	// beginning is a transcript that cannot be used as evidence.
@@ -76,6 +85,17 @@ type Scrollback struct {
 	searchQuery string
 	matches     []int
 	matchIdx    int
+
+	// StackWork groups runs of intermediate work entries (thoughts, tool calls,
+	// tool results, sub-agent activity) within a turn into one collapsible
+	// workCapsule row, while keeping policy/failure/grant rows pinned visibly.
+	StackWork bool
+	// expandedCapsules records capsule start indices opened by the operator.
+	expandedCapsules map[int]bool
+	// sel holds an active cell-level mouse drag selection in layout-row space.
+	sel TextSelection
+	// hoverEntry is the entry currently under the mouse pointer, or -1.
+	hoverEntry int
 }
 
 // rowRef points a rendered row back at the entry that produced it.
@@ -89,6 +109,9 @@ type rowRef struct {
 	// belongs to the layout and not to the entry's own rows, so an entry renders
 	// the same wherever it sits and the row caches never hold a spacer.
 	gap bool
+	// capsuleStart is the start entry index of a workCapsule header row, or -1
+	// for normal rows.
+	capsuleStart int
 }
 
 // layoutSlot is the flattened row index at one width and theme.
@@ -97,9 +120,10 @@ type rowRef struct {
 // entry, and rebuilding every row of a long transcript for it — once per frame
 // for the length of a turn — was the bulk of what a frame cost.
 type layoutSlot struct {
-	rows  []rowRef
-	width int
-	theme string
+	rows      []rowRef
+	width     int
+	theme     string
+	stackWork bool
 	// valid is how many leading entries rows still describes correctly. Every
 	// change to an entry's rendering lowers it to that entry's index; a layout
 	// pass re-renders from there to the end and leaves the prefix alone.
@@ -109,7 +133,34 @@ type layoutSlot struct {
 
 // NewScrollback builds an empty transcript.
 func NewScrollback() *Scrollback {
-	return &Scrollback{follow: true, selected: -1, MaxEntries: 5000, barCol: -1}
+	return &Scrollback{follow: true, selected: -1, hoverEntry: -1, MaxEntries: 5000, MaxBytes: DefaultMaxScrollbackBytes, barCol: -1}
+}
+
+// DefaultMaxScrollbackBytes is the text a transcript retains by default.
+const DefaultMaxScrollbackBytes = 32 << 20
+
+// entryBytes is what an entry retains, each byte of text once. A streamed
+// entry keeps its text in Body, and its event's Text is the first piece of
+// that same text, so only the body is counted for it. No fixed per-entry
+// overhead is counted: the figure is the text held and nothing else.
+func entryBytes(e *Entry) int {
+	n := eventBytes(e.Event)
+	if e.Body.Len() > 0 {
+		n -= len(e.Event.Text)
+	}
+	return n + e.Body.Len()
+}
+
+// eventBytes is what an event holds that can be large: its text, tool
+// arguments, diagnostic payload and the lists of strings it carries.
+func eventBytes(ev ui.Event) int {
+	n := len(ev.Text) + len(ev.Detail) + len(ev.Tool) + len(ev.Path) + len(ev.Arguments) + len(ev.Data)
+	for _, list := range [][]string{ev.Choices, ev.Paths, ev.Findings, ev.SelectedTests} {
+		for _, item := range list {
+			n += len(item)
+		}
+	}
+	return n
 }
 
 // ScrollbarCol is the screen column of the last frame's scrollbar, or -1 when
@@ -163,6 +214,7 @@ func (s *Scrollback) Append(ev ui.Event) {
 		last := s.entries[len(s.entries)-1]
 		if last.Event.Kind == ev.Kind && last.Event.Agent == ev.Agent {
 			last.Body.WriteString(ev.Text)
+			s.bytes += len(ev.Text)
 			if !ev.At.IsZero() {
 				last.until = ev.At
 			}
@@ -177,6 +229,7 @@ func (s *Scrollback) Append(ev ui.Event) {
 			}
 			last.Invalidate()
 			s.changed(len(s.entries) - 1)
+			s.enforceBounds()
 			return
 		}
 	}
@@ -235,23 +288,64 @@ func (s *Scrollback) Append(ev ui.Event) {
 		}
 	}
 	s.entries = append(s.entries, e)
+	s.bytes += entryBytes(e)
+	s.enforceBounds()
+}
 
+// enforceBounds retires the oldest entries until the transcript is within
+// both bounds: the entry count, and the bytes it holds. The newest entry
+// stays whatever its size, because retiring it would drop what is on screen.
+func (s *Scrollback) enforceBounds() {
+	drop := 0
 	if s.MaxEntries > 0 && len(s.entries) > s.MaxEntries {
-		drop := len(s.entries) - s.MaxEntries
-		s.entries = append([]*Entry(nil), s.entries[drop:]...)
-		s.dropped += drop
-		// Every row's entry index just shifted. Rewriting them in place would
-		// work, but this happens once per new entry at the bound and rows are
-		// cheap to re-gather from the entries' own caches; a second, subtler
-		// path is not worth it.
-		s.touch()
-		if s.selected >= 0 {
-			s.selected -= drop
-			if s.selected < 0 {
-				s.selected = -1
-			}
+		drop = len(s.entries) - s.MaxEntries
+	}
+	held := s.bytes
+	for _, e := range s.entries[:drop] {
+		held -= entryBytes(e)
+	}
+	for s.MaxBytes > 0 && held > s.MaxBytes && drop < len(s.entries)-1 {
+		e := s.entries[drop]
+		held -= entryBytes(e)
+		drop++
+	}
+	if drop == 0 {
+		return
+	}
+	s.entries = append([]*Entry(nil), s.entries[drop:]...)
+	s.bytes = held
+	s.dropped += drop
+	// Every row's entry index just shifted. Rewriting them in place would
+	// work, but this happens once per new entry at the bound and rows are
+	// cheap to re-gather from the entries' own caches; a second, subtler
+	// path is not worth it.
+	s.touch()
+	if s.selected >= 0 {
+		s.selected -= drop
+		if s.selected < 0 {
+			s.selected = -1
 		}
 	}
+	// The hovered entry shifts with the rest, and is forgotten once it is gone.
+	if s.hoverEntry >= 0 {
+		s.hoverEntry -= drop
+		if s.hoverEntry < 0 {
+			s.hoverEntry = -1
+		}
+	}
+	// These two run on every drop, whether or not an entry is selected: the
+	// operator can expand a capsule and then move focus so selected is -1, and
+	// the capsule's index still shifts.
+	if len(s.expandedCapsules) > 0 {
+		shifted := make(map[int]bool, len(s.expandedCapsules))
+		for idx, open := range s.expandedCapsules {
+			if open && idx >= drop {
+				shifted[idx-drop] = true
+			}
+		}
+		s.expandedCapsules = shifted
+	}
+	s.sel.Clear()
 }
 
 // settleLast ends the newest entry's stream, and lays it out again when that
@@ -386,10 +480,28 @@ func gapBefore(prev, cur *Entry) bool {
 func (s *Scrollback) rows(th Theme, width int) []rowRef {
 	slot := s.slotFor(th.Name, width)
 	if slot.valid < len(s.entries) {
+		// When StackWork is active, a new work entry can change the header
+		// summary of an open work run that started earlier, so step valid back
+		// to the start of that contiguous work run.
+		if s.StackWork && slot.valid > 0 {
+			back := slot.valid
+			for back > 0 && isWorkEntry(s.entries[back-1].Event.Kind) {
+				back--
+			}
+			if back < slot.valid {
+				slot.valid = back
+			}
+		}
 		// Rows are grouped by entry in order, so the stale ones are a suffix.
 		keep := len(slot.rows)
 		for keep > 0 && slot.rows[keep-1].entry >= slot.valid {
 			keep--
+		}
+		if (s.sel.Active || s.sel.Dragging) && (s.viewW == 0 || width == s.viewW) {
+			_, _, r1, _ := s.sel.Bounds()
+			if keep <= r1 {
+				s.sel.Clear()
+			}
 		}
 		out := slot.rows[:keep]
 		// The entry above, for the spacing: the nearest one that is drawn. A
@@ -400,6 +512,52 @@ func (s *Scrollback) rows(th Theme, width int) []rowRef {
 			above--
 		}
 		for i := slot.valid; i < len(s.entries); i++ {
+			if s.StackWork && isWorkEntry(s.entries[i].Event.Kind) {
+				end := i + 1
+				for end < len(s.entries) && isWorkEntry(s.entries[end].Event.Kind) {
+					end++
+				}
+				cap := buildWorkCapsule(s.entries, i, end)
+				if cap.visibleCount(s.entries) >= 2 {
+					if above >= 0 && gapBefore(s.entries[above], s.entries[i]) && !blankTail(out) {
+						out = append(out, rowRef{entry: i, gap: true, capsuleStart: -1})
+					}
+					expanded := s.expandedCapsules[i]
+					out = append(out, rowRef{
+						entry:        i,
+						line:         cap.headerLine(th, width, expanded),
+						first:        true,
+						capsuleStart: i,
+					})
+					if !expanded {
+						// Safety invariant: always show pinned blocks/failures/grants/degraded/warns.
+						for _, pi := range cap.pinned {
+							for j, l := range s.entries[pi].Lines(th, width) {
+								out = append(out, rowRef{entry: pi, line: l, first: j == 0, capsuleStart: -1})
+							}
+						}
+					} else {
+						for k := i; k < end; k++ {
+							if s.entries[k].absorbed {
+								continue
+							}
+							for j, l := range s.entries[k].Lines(th, width) {
+								out = append(out, rowRef{entry: k, line: l, first: j == 0, capsuleStart: -1})
+							}
+						}
+					}
+					above = end - 1
+					for above >= i && s.entries[above].absorbed {
+						above--
+					}
+					if above < i {
+						above = i
+					}
+					i = end - 1
+					continue
+				}
+			}
+
 			if s.entries[i].absorbed {
 				continue
 			}
@@ -407,10 +565,10 @@ func (s *Scrollback) rows(th Theme, width int) []rowRef {
 			// a line break leaves one, and two blank rows read as a section
 			// break the transcript does not have.
 			if above >= 0 && gapBefore(s.entries[above], s.entries[i]) && !blankTail(out) {
-				out = append(out, rowRef{entry: i, gap: true})
+				out = append(out, rowRef{entry: i, gap: true, capsuleStart: -1})
 			}
 			for j, l := range s.entries[i].Lines(th, width) {
-				out = append(out, rowRef{entry: i, line: l, first: j == 0})
+				out = append(out, rowRef{entry: i, line: l, first: j == 0, capsuleStart: -1})
 			}
 			above = i
 		}
@@ -443,7 +601,7 @@ func (s *Scrollback) slotFor(theme string, width int) *layoutSlot {
 	s.useTick++
 	pick := -1
 	for i := range s.slots {
-		if s.slots[i].used && s.slots[i].width == width && s.slots[i].theme == theme {
+		if s.slots[i].used && s.slots[i].width == width && s.slots[i].theme == theme && s.slots[i].stackWork == s.StackWork {
 			pick = i
 			break
 		}
@@ -455,7 +613,7 @@ func (s *Scrollback) slotFor(theme string, width int) *layoutSlot {
 		}
 		// The row slice is reused rather than reallocated; a slot changes
 		// width on a resize, and the rows it held are all replaced.
-		s.slots[pick] = layoutSlot{rows: s.slots[pick].rows[:0], width: width, theme: theme, used: true}
+		s.slots[pick] = layoutSlot{rows: s.slots[pick].rows[:0], width: width, theme: theme, stackWork: s.StackWork, used: true}
 	}
 	s.slotUse[pick] = s.useTick
 	return &s.slots[pick]
@@ -467,7 +625,7 @@ func (s *Scrollback) slotFor(theme string, width int) *layoutSlot {
 func (s *Scrollback) retain(theme string, w1, w2 int) {
 	for i := range s.slots {
 		sl := &s.slots[i]
-		if sl.used && (sl.theme != theme || (sl.width != w1 && sl.width != w2)) {
+		if sl.used && (sl.theme != theme || sl.stackWork != s.StackWork || (sl.width != w1 && sl.width != w2)) {
 			s.slots[i] = layoutSlot{}
 		}
 	}
@@ -564,64 +722,312 @@ func maxScroll(viewport, total int) int {
 	return total - viewport
 }
 
-// SelectDelta moves the selection by n entries and scrolls it into view.
+func isEntryPinned(e *Entry) bool {
+	if e.absorbed {
+		return false
+	}
+	switch e.Status() {
+	case StatusBlock, StatusGranted, StatusDegraded, StatusWarn:
+		return true
+	}
+	return false
+}
+
+// capsuleRange returns the [start, end) entry range of the work capsule that
+// encloses idx when StackWork is active and the run has at least 2 visible
+// entries.
+func (s *Scrollback) capsuleRange(idx int) (start, end int, ok bool) {
+	if !s.StackWork || idx < 0 || idx >= len(s.entries) || !isWorkEntry(s.entries[idx].Event.Kind) {
+		return -1, -1, false
+	}
+	start = idx
+	for start > 0 && isWorkEntry(s.entries[start-1].Event.Kind) {
+		start--
+	}
+	end = idx + 1
+	for end < len(s.entries) && isWorkEntry(s.entries[end].Event.Kind) {
+		end++
+	}
+	visible := 0
+	for k := start; k < end; k++ {
+		if !s.entries[k].absorbed {
+			visible++
+			if visible >= 2 {
+				return start, end, true
+			}
+		}
+	}
+	return -1, -1, false
+}
+
+// capsuleOf returns the start entry index of the work capsule enclosing idx,
+// or -1 if idx is not inside a stacked work capsule.
+func (s *Scrollback) capsuleOf(idx int) int {
+	start, _, ok := s.capsuleRange(idx)
+	if !ok {
+		return -1
+	}
+	return start
+}
+
+// selectable reports whether entry idx currently has a visible row that
+// keyboard navigation can land on. Collapsed capsules expose their header row
+// (at capsule start) and any safety-pinned rows inside them.
+func (s *Scrollback) selectable(idx int) bool {
+	if idx < 0 || idx >= len(s.entries) {
+		return false
+	}
+	if start, _, ok := s.capsuleRange(idx); ok {
+		if idx == start {
+			return true
+		}
+		if s.expandedCapsules[start] {
+			return !s.entries[idx].absorbed
+		}
+		return isEntryPinned(s.entries[idx])
+	}
+	return !s.entries[idx].absorbed
+}
+
+func (s *Scrollback) snapSelected(primaryDir int) {
+	for _, dir := range []int{primaryDir, -primaryDir} {
+		for i := s.selected; i >= 0 && i < len(s.entries); i += dir {
+			if s.selectable(i) {
+				s.selected = i
+				return
+			}
+		}
+	}
+	s.selected = -1
+}
+
+// SelectDelta moves the selection by n visible stops and scrolls it into view.
+// Collapsed work capsules are traversed as header + pinned stops without
+// auto-expanding them; only search and explicit Enter expand capsules.
 func (s *Scrollback) SelectDelta(n int, th Theme) {
 	if len(s.entries) == 0 {
 		return
 	}
 	if s.selected < 0 {
-		// Entering selection from the bottom selects the newest entry, which is
-		// what the operator was already looking at.
-		s.selected = len(s.entries) - 1
-	} else {
-		s.selected += n
-	}
-	if s.selected < 0 {
-		s.selected = 0
+		// Entering selection from the bottom selects the newest selectable
+		// entry, which is what the operator was already looking at.
+		for i := len(s.entries) - 1; i >= 0; i-- {
+			if s.selectable(i) {
+				s.selected = i
+				s.revealSelected(th)
+				return
+			}
+		}
+		return
 	}
 	if s.selected >= len(s.entries) {
 		s.selected = len(s.entries) - 1
 	}
-	// A call absorbed by its result has no row to select. The selection goes on
-	// in the direction it was moving, and turns back only at the end of the
-	// transcript.
-	step := 1
-	if n <= 0 {
-		step = -1
-	}
-	for _, dir := range []int{step, -step} {
-		i := s.selected
-		for i >= 0 && i < len(s.entries) && s.entries[i].absorbed {
-			i += dir
+	if n == 0 {
+		if !s.selectable(s.selected) {
+			s.snapSelected(-1)
 		}
-		if i >= 0 && i < len(s.entries) {
-			s.selected = i
+		if s.selected >= 0 {
+			s.revealSelected(th)
+		}
+		return
+	}
+	dir := 1
+	steps := n
+	if n < 0 {
+		dir = -1
+		steps = -n
+	}
+	cur := s.selected
+	for step := 0; step < steps; step++ {
+		next := cur + dir
+		for next >= 0 && next < len(s.entries) && !s.selectable(next) {
+			next += dir
+		}
+		if next < 0 || next >= len(s.entries) {
 			break
 		}
+		cur = next
 	}
-	s.revealSelected(th)
+	s.selected = cur
+	if !s.selectable(s.selected) {
+		s.snapSelected(dir)
+	}
+	if s.selected >= 0 {
+		s.revealSelected(th)
+	}
 }
 
 // SelectNone clears the selection and returns to following.
 func (s *Scrollback) SelectNone() { s.selected = -1 }
 
-// SelectAt selects whichever entry owns a screen row, for a mouse click.
-//
-// It reads the layout the last frame was built from rather than rebuilding one,
-// so the row the operator clicked is the row that was on screen.
-func (s *Scrollback) SelectAt(y int) bool {
+// RowAt maps a screen Y coordinate to a layout row index, returning false if
+// outside the rendered transcript rows.
+func (s *Scrollback) RowAt(y int) (int, bool) {
 	if s.view.H == 0 || y < s.view.Y || y >= s.view.Bottom() {
-		return false
+		return -1, false
 	}
 	idx := s.scroll + (y - s.view.Y - s.pad)
 	if s.dropped > 0 {
 		idx--
 	}
 	if idx < 0 || idx >= len(s.layout) {
+		return -1, false
+	}
+	return idx, true
+}
+
+// ColAt maps a screen X coordinate to a viewport-relative column clamped to
+// the transcript body width.
+func (s *Scrollback) ColAt(x int) int {
+	col := x - s.view.X
+	if col < 0 {
+		return 0
+	}
+	if s.viewW > 0 && col >= s.viewW {
+		return s.viewW - 1
+	}
+	return col
+}
+
+// SelectAt selects whichever entry owns a screen row, for a mouse click.
+//
+// It reads the layout the last frame was built from rather than rebuilding one,
+// so the row the operator clicked is the row that was on screen.
+func (s *Scrollback) SelectAt(y int) bool {
+	idx, ok := s.RowAt(y)
+	if !ok {
 		return false
 	}
 	s.selected = s.layout[idx].entry
 	return true
+}
+
+// CapsuleAt reports the capsule start index if screen row y is a capsule header,
+// or -1 otherwise.
+func (s *Scrollback) CapsuleAt(y int) int {
+	idx, ok := s.RowAt(y)
+	if !ok {
+		return -1
+	}
+	return s.layout[idx].capsuleStart
+}
+
+// ToggleCapsule opens or closes the work capsule starting at startIdx.
+func (s *Scrollback) ToggleCapsule(startIdx int) bool {
+	start, end, ok := s.capsuleRange(startIdx)
+	if !ok || start != startIdx {
+		return false
+	}
+	if s.expandedCapsules == nil {
+		s.expandedCapsules = map[int]bool{}
+	}
+	open := !s.expandedCapsules[startIdx]
+	s.expandedCapsules[startIdx] = open
+	if !open && s.selected > start && s.selected < end && !s.selectable(s.selected) {
+		s.selected = start
+	}
+	s.sel.Clear()
+	s.changed(startIdx)
+	return true
+}
+
+// ToggleStackWork switches between compact stacked work capsules and the full
+// verbose work stream (Ctrl+O), returning the new StackWork value.
+func (s *Scrollback) ToggleStackWork() bool {
+	s.StackWork = !s.StackWork
+	if s.StackWork && s.selected >= 0 && !s.selectable(s.selected) {
+		if capStart := s.capsuleOf(s.selected); capStart >= 0 {
+			s.selected = capStart
+		}
+	}
+	s.sel.Clear()
+	s.touch()
+	return s.StackWork
+}
+
+// HoverAt updates the hovered entry under screen point (x, y) and reports
+// whether it changed.
+func (s *Scrollback) HoverAt(x, y int) bool {
+	next := -1
+	if s.Contains(x, y) {
+		if idx, ok := s.RowAt(y); ok {
+			next = s.layout[idx].entry
+		}
+	}
+	if next == s.hoverEntry {
+		return false
+	}
+	s.hoverEntry = next
+	return true
+}
+
+// BeginDrag starts a cell-level text selection at screen point (x, y).
+func (s *Scrollback) BeginDrag(x, y int) bool {
+	row, ok := s.RowAt(y)
+	if !ok {
+		s.sel.Clear()
+		return false
+	}
+	s.sel.Begin(row, s.ColAt(x))
+	return true
+}
+
+// UpdateDrag extends a cell-level selection as the pointer moves, autoscrolling
+// when dragged past the top or bottom edge of the viewport.
+func (s *Scrollback) UpdateDrag(x, y int) bool {
+	if !s.sel.Dragging {
+		return false
+	}
+	row, ok := s.RowAt(y)
+	if !ok {
+		if len(s.layout) == 0 {
+			return false
+		}
+		switch {
+		case y < s.view.Y:
+			s.ScrollBy(-1)
+			row = s.scroll
+			if s.dropped > 0 {
+				row--
+			}
+		case y >= s.view.Bottom():
+			s.ScrollBy(1)
+			row = s.scroll + s.view.H - 1
+			if s.dropped > 0 {
+				row--
+			}
+		default:
+			row = 0
+		}
+		if row < 0 {
+			row = 0
+		}
+		if row >= len(s.layout) {
+			row = len(s.layout) - 1
+		}
+	}
+	return s.sel.Update(row, s.ColAt(x))
+}
+
+// EndDrag completes a drag and returns the extracted plain text if a non-empty
+// selection was dragged.
+func (s *Scrollback) EndDrag() string {
+	if !s.sel.End() {
+		return ""
+	}
+	return s.sel.Extract(s.layout)
+}
+
+// ClearSelection clears any active drag selection.
+func (s *Scrollback) ClearSelection() { s.sel.Clear() }
+
+// DragSelectedText returns the current drag-selected text, or empty if none.
+func (s *Scrollback) DragSelectedText() string {
+	if !s.sel.Active {
+		return ""
+	}
+	return s.sel.Extract(s.layout)
 }
 
 // Contains reports whether a screen point falls inside the last drawn viewport.
@@ -665,26 +1071,51 @@ func (s *Scrollback) revealSelected(th Theme) {
 	s.follow = s.scroll >= maxScroll(viewport, len(rows))
 }
 
-// ToggleFold folds or unfolds the selected entry.
+// ToggleFold folds or unfolds the selected entry (or its work capsule header).
 func (s *Scrollback) ToggleFold() bool {
+	if s.StackWork && s.selected >= 0 && s.capsuleOf(s.selected) == s.selected {
+		return s.ToggleCapsule(s.selected)
+	}
 	e := s.Selected()
 	if e == nil || !e.Foldable {
 		return false
 	}
 	e.Folded = !e.Folded
 	e.foldSet = true
+	s.sel.Clear()
 	s.changed(s.selected)
 	return true
 }
 
-// SetFoldAll folds or unfolds everything foldable.
+// SetFoldAll folds or unfolds everything foldable (and collapses/expands work capsules).
 func (s *Scrollback) SetFoldAll(folded bool) {
+	if s.StackWork {
+		if folded {
+			s.expandedCapsules = nil
+		} else {
+			if s.expandedCapsules == nil {
+				s.expandedCapsules = map[int]bool{}
+			}
+			for i := 0; i < len(s.entries); i++ {
+				if start, end, ok := s.capsuleRange(i); ok && start == i {
+					s.expandedCapsules[start] = true
+					i = end - 1
+				}
+			}
+		}
+	}
 	for _, e := range s.entries {
 		if e.Foldable {
 			e.Folded = folded
 			e.foldSet = true
 		}
 	}
+	if folded && s.selected >= 0 && !s.selectable(s.selected) {
+		if capStart := s.capsuleOf(s.selected); capStart >= 0 {
+			s.selected = capStart
+		}
+	}
+	s.sel.Clear()
 	s.touch()
 }
 
@@ -759,13 +1190,31 @@ func (s *Scrollback) SetSearch(query string, th Theme) bool {
 			}
 		}
 	}
-	s.selected = s.matches[s.matchIdx]
-	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
-		s.entries[s.selected].Folded = false
-		s.changed(s.selected)
+	s.revealMatch(s.matches[s.matchIdx], th)
+	return true
+}
+
+// revealMatch selects idx, expanding any enclosing collapsed work capsule and
+// unfolding the entry if folded so the matched text is visible on screen.
+func (s *Scrollback) revealMatch(idx int, th Theme) {
+	s.selected = idx
+	if idx < 0 || idx >= len(s.entries) {
+		return
+	}
+	if capStart := s.capsuleOf(idx); capStart >= 0 && !s.expandedCapsules[capStart] {
+		if s.expandedCapsules == nil {
+			s.expandedCapsules = map[int]bool{}
+		}
+		s.expandedCapsules[capStart] = true
+		s.sel.Clear()
+		s.changed(capStart)
+	}
+	if s.entries[idx].Foldable && s.entries[idx].Folded {
+		s.entries[idx].Folded = false
+		s.sel.Clear()
+		s.changed(idx)
 	}
 	s.revealSelected(th)
-	return true
 }
 
 // NextMatch jumps to the next search match.
@@ -774,12 +1223,7 @@ func (s *Scrollback) NextMatch(th Theme) bool {
 		return false
 	}
 	s.matchIdx = (s.matchIdx + 1) % len(s.matches)
-	s.selected = s.matches[s.matchIdx]
-	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
-		s.entries[s.selected].Folded = false
-		s.changed(s.selected)
-	}
-	s.revealSelected(th)
+	s.revealMatch(s.matches[s.matchIdx], th)
 	return true
 }
 
@@ -789,12 +1233,7 @@ func (s *Scrollback) PrevMatch(th Theme) bool {
 		return false
 	}
 	s.matchIdx = (s.matchIdx - 1 + len(s.matches)) % len(s.matches)
-	s.selected = s.matches[s.matchIdx]
-	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
-		s.entries[s.selected].Folded = false
-		s.changed(s.selected)
-	}
-	s.revealSelected(th)
+	s.revealMatch(s.matches[s.matchIdx], th)
 	return true
 }
 
@@ -841,6 +1280,9 @@ func (s *Scrollback) Draw(b *render.Buffer, r render.Rect, th Theme, focused boo
 		s.barCol = r.Right() - 1
 	}
 
+	if s.viewW > 0 && body.W != s.viewW {
+		s.sel.Clear()
+	}
 	s.view, s.viewW = body, body.W
 	if s.follow {
 		s.scroll = maxScroll(r.H, total)
@@ -901,6 +1343,14 @@ func (s *Scrollback) Draw(b *render.Buffer, r render.Rect, th Theme, focused boo
 			if focused && rows[i].first {
 				b.SetString(r.X, y, th.Glyphs().Caret, render.Style{Fg: th.Accent, Bg: th.Selection})
 			}
+		} else if s.hoverEntry >= 0 && rows[i].entry == s.hoverEntry && rows[i].capsuleStart >= 0 {
+			// Gentle hover wash on interactive capsule headers so they read as clickable.
+			band := render.Rect{X: body.X, Y: y, W: body.W, H: 1}
+			b.BlendBackground(band, th.Selection, 0.25)
+		}
+		if c0, c1, ok := s.sel.RowSpan(i, body.W); ok {
+			band := render.Rect{X: body.X + c0, Y: y, W: c1 - c0 + 1, H: 1}
+			b.BlendBackground(band, th.Info, 0.45)
 		}
 		row++
 	}

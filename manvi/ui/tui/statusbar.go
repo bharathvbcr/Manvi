@@ -575,6 +575,8 @@ func DrawSessionTabBar(b *render.Buffer, r render.Rect, th Theme, views []*Agent
 
 	var tabs []TabRef
 	curX := r.X + 1
+	drawnCount := 0
+	hiddenApprovals := 0
 
 	for i, v := range views {
 		selected := i == active
@@ -617,6 +619,11 @@ func DrawSessionTabBar(b *render.Buffer, r render.Rect, th Theme, views []*Agent
 
 		w := tabLine.Width()
 		if curX+w >= r.Right()-18 {
+			for j := i; j < len(views); j++ {
+				if views[j].Approval() != nil {
+					hiddenApprovals++
+				}
+			}
 			break
 		}
 
@@ -624,6 +631,18 @@ func DrawSessionTabBar(b *render.Buffer, r render.Rect, th Theme, views []*Agent
 		tabLine.Draw(b, curX, r.Y)
 		tabs = append(tabs, TabRef{SessionIndex: i, Rect: tabRect})
 		curX += w + 1
+		drawnCount++
+	}
+
+	// Never drop overflow tabs silently: show +N overflow and surface any
+	// off-screen session waiting on human approval.
+	if hidden := len(views) - drawnCount; hidden > 0 && curX < r.Right()-6 {
+		ov := render.Styled("+"+itoa(hidden), render.Style{Fg: th.FgMuted, Bg: bg})
+		if hiddenApprovals > 0 {
+			ov = ov.Append(" "+g.Warn+itoa(hiddenApprovals), render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold})
+		}
+		ov.Truncate(r.Right()-curX-1).Draw(b, curX, r.Y)
+		curX += ov.Width() + 1
 	}
 
 	// "+ New" tab button

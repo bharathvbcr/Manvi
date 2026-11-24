@@ -186,11 +186,39 @@ func findMarker(dir, home string) (path, name string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	home = filepath.Clean(home)
-	for dir != home {
+	// Each directory is compared with home as a resolved path. Textual
+	// comparison let a working directory spelled through a symlink to home walk
+	// straight past it and read the marker in home, which would pin every
+	// directory on the machine. The marker path reported stays the one the
+	// operator's own spelling led to, so "source" names a place they recognise.
+	resolvedHome, err := filepath.EvalSymlinks(filepath.Clean(home))
+	if err != nil {
+		return "", "", fmt.Errorf("resolving %s: %w", home, err)
+	}
+	for {
+		resolvedDir, err := filepath.EvalSymlinks(dir)
+		switch {
+		case err == nil:
+			if resolvedDir == resolvedHome {
+				return "", "", nil
+			}
+		case errors.Is(err, os.ErrNotExist):
+			// A directory that is not there holds no marker; the walk goes on
+			// to its parent, as it always has for a --repo that is missing.
+		default:
+			return "", "", fmt.Errorf("resolving %s: %w", dir, err)
+		}
 		candidate := filepath.Join(dir, markerName)
 		data, err := readSmall(candidate, maxMarkerBytes)
 		if err == nil {
+			// O_NOFOLLOW guards only the last path component. A marker read
+			// through a symlinked directory sits somewhere the repository
+			// does not own, so it is refused rather than honoured.
+			if link, linkErr := symlinkedBelow(dir, home); linkErr != nil {
+				return "", "", linkErr
+			} else if link != "" {
+				return "", "", fmt.Errorf("%s is reached through the symbolic link %s; the account marker must sit in the directory tree it names", candidate, link)
+			}
 			fields := strings.Fields(string(data))
 			if len(fields) == 0 {
 				return "", "", fmt.Errorf("%s is empty", candidate)
@@ -209,13 +237,64 @@ func findMarker(dir, home string) (path, name string, err error) {
 	return "", "", nil
 }
 
+// symlinkedBelow returns the first symbolic link among the components of dir
+// that the operator did not put there, or "" when there is none. Components at
+// or above home are the operator's own environment (and a top-level link such
+// as macOS's /var or /tmp is how the platform spells its temporary directory);
+// anything below them is part of the tree being walked.
+func symlinkedBelow(dir, home string) (string, error) {
+	home = filepath.Clean(home)
+	var prefix string
+	for _, part := range strings.Split(filepath.Clean(dir), string(filepath.Separator)) {
+		prefix = filepath.Join(prefix, string(filepath.Separator)+part)
+		if prefix == string(filepath.Separator) || filepath.Dir(prefix) == string(filepath.Separator) {
+			continue
+		}
+		if prefix == home || strings.HasPrefix(home, prefix+string(filepath.Separator)) {
+			continue
+		}
+		info, err := os.Lstat(prefix)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return prefix, nil
+		}
+	}
+	return "", nil
+}
+
+// readSmall reads a marker file and nothing else that happens to sit at its path.
+//
+// The marker chooses which Console organisation is billed, and it lives in a
+// directory a repository controls. So it is opened through openMarker. On Unix
+// that is O_NOFOLLOW (a symlink is a refusal, not a redirect to a file the
+// repository does not own) and O_NONBLOCK (opening a named pipe for reading
+// otherwise waits for a writer forever, and the launcher with it), and the
+// opened descriptor is checked to be a regular file before a byte is read. That
+// check is on the descriptor, not the path, so nothing can be swapped in between
+// the check and the read.
+//
+// On Windows openMarker is an Lstat followed by an Open, so a link swapped in
+// between the two is not caught by the open itself (a time-of-check to
+// time-of-use window the platform has no O_NOFOLLOW to close). It still fails
+// closed: a symlink or any entry that is not a regular file is refused before
+// the open, and the opened handle is checked to be a regular file before a byte
+// is read.
 func readSmall(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := openMarker(path)
 	if err != nil {
 		return nil, err
 	}
 	// Read-only: a close failure cannot change bytes already read.
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file (%s)", path, info.Mode().Type())
+	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
@@ -314,6 +393,11 @@ type envNames struct {
 	strip map[string]bool
 }
 
+// baseURLEnv is where the Anthropic SDK sends requests when it is set. It is
+// not a credential, but it decides who receives the one this launcher injects,
+// so an inherited value is cleared unless the operator asks to keep it.
+const baseURLEnv = "ANTHROPIC_BASE_URL"
+
 func anthropicEnvNames() (envNames, error) {
 	names := envNames{strip: map[string]bool{}}
 	for _, req := range credentials.DefaultRequirements() {
@@ -332,11 +416,13 @@ func anthropicEnvNames() (envNames, error) {
 	if names.key == "" {
 		return envNames{}, errors.New("the credential catalogue has no anthropic key variable")
 	}
+	names.strip[baseURLEnv] = true
 	return names, nil
 }
 
-// childEnv is base with every inherited Anthropic credential removed and the
-// chosen ones set. Nothing from the parent survives under these names: an
+// childEnv is base with every inherited Anthropic credential, and the inherited
+// ANTHROPIC_BASE_URL unless the caller removed it from names.strip, removed and
+// the chosen ones set. Nothing from the parent survives under these names: an
 // inherited key would otherwise pair with the chosen workspace, or outlive a
 // --no-fallback, and bill an organisation nobody picked.
 func childEnv(base []string, names envNames, primary account, key string, fallback *account, fallbackKey string) []string {

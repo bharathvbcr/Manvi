@@ -410,18 +410,21 @@ func LocalLoopbackTransport() *http.Transport {
 // travel to an arbitrary host just because that host was configured here. See
 // llm/local.checkCredentialDestination.
 //
-// A URL that will not parse is treated as non-loopback by the substring
-// fallback only when it actually contains a loopback literal, so the failure
-// direction is "assume remote", which is the safe one for a caller deciding
-// whether to send a secret.
+// A URL that will not parse is not loopback. The previous fallback searched the
+// raw string for a loopback literal, which a hostile or mistaken value defeats
+// by carrying one anywhere (a query, a path, a userinfo) while its host is
+// elsewhere. A caller deciding whether to send a secret must fail closed, and
+// "assume remote" is the closed direction.
 func IsLoopbackURL(rawURL string) bool { return isLoopbackURL(rawURL) }
 
 func isLoopbackURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return strings.Contains(rawURL, "127.0.0.1") || strings.Contains(rawURL, "localhost") || strings.Contains(rawURL, "::1")
+		return false
 	}
-	host := u.Hostname()
+	// Hostnames are case-insensitive (RFC 4343) and may carry a root-label dot,
+	// so "LOCALHOST" and "localhost." name this machine as "localhost" does.
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "0.0.0.0" {
 		return true
 	}

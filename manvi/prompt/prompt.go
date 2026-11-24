@@ -182,10 +182,23 @@ type Omitted struct {
 	Reason string `json:"reason"`
 }
 
+// Overrun records an essential section that was kept although it did not fit
+// the budget. It is the opposite of Omitted — the section is in the prompt — so
+// it is kept apart: listing a kept section among the omitted ones reads, in a
+// session log and an evidence packet, as a section the model never saw.
+type Overrun struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	Reason string `json:"reason"`
+}
+
 // Report accounts for every section.
 type Report struct {
 	Included []Included `json:"included"`
 	Omitted  []Omitted  `json:"omitted,omitempty"`
+	// Overrun names the essential sections that are Included but spent past the
+	// budget, so a prompt over its budget still says so.
+	Overrun []Overrun `json:"overrun,omitempty"`
 	// Failed names sources that errored. A prompt assembled while a
 	// contributor was failing is not the prompt that was intended, and the run
 	// must be able to say so.
@@ -259,7 +272,7 @@ func (a *Assembler) Assemble() (string, Report) {
 				} else {
 					reason = fmt.Sprintf("exceeded the %d-rune budget but was kept: an essential section is never trimmed", a.MaxRunes)
 				}
-				report.Omitted = append(report.Omitted, Omitted{
+				report.Overrun = append(report.Overrun, Overrun{
 					Name: e.section.Name, Source: e.source,
 					Reason: reason,
 				})

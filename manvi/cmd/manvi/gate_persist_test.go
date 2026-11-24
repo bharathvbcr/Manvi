@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/grants"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // persistedGrants reads the ledger file the way the next process will.
@@ -106,7 +107,9 @@ func TestWatchNamesALeaseTheStoreCouldNotRead(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "state.sqlite")
 	t.Setenv("MANVI_STORE_BINARY", binary)
 	t.Setenv("MANVI_STORE_DB", db)
-	if _, err := storeClient().ActiveLeases(t.Context()); err != nil {
+	warm := storeClient()
+	t.Cleanup(warm.Close)
+	if _, err := warm.ActiveLeases(t.Context()); err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	testsupport.SeedTask(t, db, testsupport.TaskSeed{ID: "TASK-BAD", Title: "t"})
@@ -129,4 +132,33 @@ func TestWatchNamesALeaseTheStoreCouldNotRead(t *testing.T) {
 	if !strings.Contains(out.String(), "L-BAD") {
 		t.Fatalf("the unreadable lease is not in the report:\n%s", out.String())
 	}
+}
+
+// TestLeaseAndWatchCloseTheStoreClientTheyBuild. Each command builds a store
+// client, which keeps a dcstore child alive until it is closed. The process
+// exits right after a CLI command, but the TUI runs both in-process, and a
+// client nobody closes holds its child for the idle TTL.
+func TestLeaseAndWatchCloseTheStoreClientTheyBuild(t *testing.T) {
+	t.Setenv("MANVI_STORE_BINARY", testsupport.DCStore(t))
+	t.Setenv("MANVI_STORE_DB", filepath.Join(t.TempDir(), "state.sqlite"))
+	reg, err := flags.NewHarnessRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("lease list", func(t *testing.T) {
+		storeguard.NoNewChildren(t, func() {
+			var out strings.Builder
+			if err := lease(&out, []string{"list"}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	t.Run("watch", func(t *testing.T) {
+		storeguard.NoNewChildren(t, func() {
+			var out strings.Builder
+			if err := watch(&out, reg, []string{"--json"}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
 }
