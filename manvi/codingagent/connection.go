@@ -661,7 +661,12 @@ func (c *connection) close() (Exit, error) {
 	result := Exit{Reaped: true, Code: c.cmd.ProcessState.ExitCode()}
 	var err error
 	var exit *exec.ExitError
-	if c.waitErr != nil && !errors.As(c.waitErr, &exit) && !errors.Is(c.waitErr, context.Canceled) {
+	// io.ErrClosedPipe is this side hanging up: close() closed the reader of the
+	// stdout pipe, and a provider still writing when it is killed (Windows kills
+	// it after the reader is gone more often than a unix SIGKILL does) has its
+	// write refused, which Wait reports as its copy error. It is not a failure of
+	// the provider, and the reap and the group are judged below.
+	if c.waitErr != nil && !errors.As(c.waitErr, &exit) && !errors.Is(c.waitErr, context.Canceled) && !errors.Is(c.waitErr, io.ErrClosedPipe) {
 		err = c.waitErr
 	}
 	// The group's budget starts now, not with close(): had Wait used most of the

@@ -1,0 +1,77 @@
+name: Feature Request
+description: Propose a new capability or an improvement to an existing one.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement.
+
+        Two standing constraints shape what can be accepted, so it is worth knowing
+        them up front:
+
+        - **MANVI links no DevCouncil component.** Components are resolved as
+          binaries and spoken to in JSON over stdio. A change that is really about
+          the code graph, the task store or diff verification belongs in
+          [DevCouncil](https://github.com/bharathvbcr/DevCouncil). See
+          [CONTRIBUTING.md](https://github.com/bharathvbcr/Manvi/blob/main/CONTRIBUTING.md#5-which-repository-does-this-change-belong-in).
+        - **New dependencies need justification.** The Go plane holds its direct
+          dependencies to an allowlist that `verify.sh` enforces.
+
+        If the idea is still open-ended, start in
+        [Discussions](https://github.com/bharathvbcr/Manvi/discussions) instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the situation you are in, not the solution you have in mind. What
+        are you trying to do, and where does MANVI get in the way today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should MANVI do instead? Sketch the command line or API if it has one.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      options:
+        - Policy ladder / gate / grants
+        - Agent turn loop
+        - Providers / local models
+        - Tools (native or MCP)
+        - TUI / watch
+        - manvi serve (embedding)
+        - DevCouncil component integration
+        - Session log / replay
+        - Benchmarks
+        - Packaging / releases
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Including "do nothing" — what happens if MANVI does not add this? Existing
+        workarounds are useful context.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and discussions for this proposal.
+          required: true

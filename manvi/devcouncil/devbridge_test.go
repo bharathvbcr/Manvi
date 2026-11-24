@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,9 @@ import (
 // canned payload, returning the path to hand to MANVI_DEVCOUNCIL_BINARY.
 func writeFakeCLI(t *testing.T, dir, output string, exitCode int) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake devcouncil CLI is a #!/bin/sh script that records its arguments, which Windows cannot start")
+	}
 	path := filepath.Join(dir, "fake-devcouncil")
 	script := "#!/bin/sh\necho \"$@\" > " + filepath.Join(dir, "args.txt") + "\n" +
 		"cat <<'EOF'\n" + output + "\nEOF\nexit " + itoa(exitCode) + "\n"

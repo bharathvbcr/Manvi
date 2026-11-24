@@ -16,7 +16,7 @@ import (
 func wrapperScript(t *testing.T, dir, name string) (path, ranMarker string) {
 	t.Helper()
 	ranMarker = filepath.Join(t.TempDir(), "ran")
-	path = filepath.Join(dir, name)
+	path = filepath.Join(dir, exeName(name))
 	body := "#!/bin/sh\ntouch '" + ranMarker + "'\nexec /bin/echo '1.0.0 (Claude Code)'\n"
 	// #nosec G306 -- a test wrapper that has to be executable, in a temp dir.
 	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
@@ -86,7 +86,7 @@ func TestStartClaudeNamesWhereASymlinkedScriptLeads(t *testing.T) {
 		t.Fatal(err)
 	}
 	script, marker := wrapperScript(t, dir, "real-script")
-	link := filepath.Join(dir, "claude")
+	link := filepath.Join(dir, exeName("claude"))
 	if err := os.Symlink(script, link); err != nil {
 		t.Fatal(err)
 	}

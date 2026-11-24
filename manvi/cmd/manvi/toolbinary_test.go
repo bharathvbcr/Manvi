@@ -13,8 +13,11 @@ import (
 // it, including when it does not exist — silently substituting something else
 // would run a different binary than the one they asked for.
 func TestAnExplicitPathIsNeverSecondGuessed(t *testing.T) {
-	t.Setenv("MANVI_TEST_BINARY", "/nowhere/in/particular/dcstore")
-	if got := toolBinary("MANVI_TEST_BINARY", "dcstore"); got != "/nowhere/in/particular/dcstore" {
+	// Absolute on this platform: "/nowhere/..." is rooted but not absolute on
+	// Windows, where toolBinary anchors it to a drive and the answer differs.
+	explicit := filepath.Join(t.TempDir(), "nowhere", "in", "particular", "dcstore")
+	t.Setenv("MANVI_TEST_BINARY", explicit)
+	if got := toolBinary("MANVI_TEST_BINARY", "dcstore"); got != explicit {
 		t.Fatalf("toolBinary = %q; an explicit path must win outright", got)
 	}
 }
@@ -44,7 +47,7 @@ func TestASiblingBuildIsFoundWhenPATHHasNothing(t *testing.T) {
 			if err := os.MkdirAll(release, 0o750); err != nil {
 				t.Fatal(err)
 			}
-			built := filepath.Join(release, "dcstore-testonly")
+			built := filepath.Join(release, exe("dcstore-testonly"))
 			writeExecutable(t, built, "#!/bin/sh\nexit 0\n")
 
 			buildTreeBinary(t, root)
@@ -177,7 +180,7 @@ func TestADeveloperBuildNeverWalksFromTheWorkingDirectory(t *testing.T) {
 func TestAReleaseBuildFindsACompanionNextToItself(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	install := t.TempDir()
-	companion := filepath.Join(install, "dcstore-sibling")
+	companion := filepath.Join(install, exe("dcstore-sibling"))
 	writeExecutable(t, companion, "#!/bin/sh\nexit 0\n")
 	releaseStandIn(t, install)
 	if got := toolBinary("MANVI_TEST_UNSET_SIB", "dcstore-sibling"); got != resolvedPath(t, companion) {
@@ -187,12 +190,13 @@ func TestAReleaseBuildFindsACompanionNextToItself(t *testing.T) {
 
 func TestAReleaseBuildStillHonoursExplicitConfigurationAndPATH(t *testing.T) {
 	releaseStandIn(t, t.TempDir())
-	t.Setenv("MANVI_TEST_REL_EXPLICIT", "/operator/chose/dcverify")
-	if got := toolBinary("MANVI_TEST_REL_EXPLICIT", "dcverify"); got != "/operator/chose/dcverify" {
+	chosen := filepath.Join(t.TempDir(), "operator", "chose", "dcverify")
+	t.Setenv("MANVI_TEST_REL_EXPLICIT", chosen)
+	if got := toolBinary("MANVI_TEST_REL_EXPLICIT", "dcverify"); got != chosen {
 		t.Fatalf("explicit path not honoured: %q", got)
 	}
 	pathDir := t.TempDir()
-	onPath := filepath.Join(pathDir, "dcstore-onpath")
+	onPath := filepath.Join(pathDir, exe("dcstore-onpath"))
 	writeExecutable(t, onPath, "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", pathDir)
 	if got := toolBinary("MANVI_TEST_UNSET_PATH", "dcstore-onpath"); got != resolvedPath(t, onPath) {
@@ -205,10 +209,10 @@ func TestAReleaseBuildStillHonoursExplicitConfigurationAndPATH(t *testing.T) {
 func TestAReleaseBuildSkipsAPATHEntryInsideTheWorkspace(t *testing.T) {
 	root := t.TempDir()
 	inRepo := filepath.Join(root, "bin")
-	planted := filepath.Join(inRepo, "dcverify-pathin")
+	planted := filepath.Join(inRepo, exe("dcverify-pathin"))
 	advWriteScript(t, planted, filepath.Join(root, "marker"))
 	trusted := t.TempDir()
-	good := filepath.Join(trusted, "dcverify-pathin")
+	good := filepath.Join(trusted, exe("dcverify-pathin"))
 	advWriteScript(t, good, filepath.Join(root, "marker2"))
 	advChdir(t, root)
 	releaseStandIn(t, filepath.Join(t.TempDir(), "install"))
@@ -306,7 +310,7 @@ func TestAReleaseBuildNeverFallsBackToExecTimePATHSearch(t *testing.T) {
 	root := t.TempDir()
 	inRepo := filepath.Join(root, "bin")
 	marker := filepath.Join(root, "marker")
-	advWriteScript(t, filepath.Join(inRepo, "dcverify"), marker)
+	advWriteScript(t, filepath.Join(inRepo, exe("dcverify")), marker)
 	advChdir(t, root)
 	t.Setenv("MANVI_PROJECT_ROOT", root)
 	releaseStandIn(t, filepath.Join(t.TempDir(), "install"))
@@ -322,7 +326,7 @@ func TestAReleaseBuildNeverFallsBackToExecTimePATHSearch(t *testing.T) {
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatalf("planted dcverify in an agent-writable PATH entry ran via %q", got)
 	}
-	if note := untrustedNote("dcverify", got); !strings.Contains(note, filepath.Join(inRepo, "dcverify")) || !strings.Contains(note, "agent-writable") {
+	if note := untrustedNote("dcverify", got); !strings.Contains(note, filepath.Join(inRepo, exe("dcverify"))) || !strings.Contains(note, "agent-writable") {
 		t.Fatalf("untrustedNote = %q, want it to name the untrusted candidate", note)
 	}
 	t.Setenv("PATH", t.TempDir())

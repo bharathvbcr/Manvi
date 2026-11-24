@@ -26,7 +26,8 @@ func TestGraphPathExtractorAcceptsCompactAndPrettyJSONAndOnlyFiles(t *testing.T)
 		if err != nil {
 			t.Fatalf("fixture %d: %v: %s", i, err, out)
 		}
-		if got := strings.TrimSpace(string(out)); got != "a.go\nb.go" {
+		// Python writes its newlines as the platform does, so Windows answers CRLF.
+		if got := strings.ReplaceAll(strings.TrimSpace(string(out)), "\r\n", "\n"); got != "a.go\nb.go" {
 			t.Fatalf("fixture %d paths = %q", i, got)
 		}
 	}

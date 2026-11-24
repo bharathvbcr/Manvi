@@ -259,6 +259,9 @@ func TestZadvW17SharedParentHomesAreNotUsable(t *testing.T) {
 // a marker planted in a sibling user's tree steers the launch. Records current
 // behaviour; the assertion is that the launch is NOT steered.
 func TestZadvW17MarkerInSiblingUserTreeDoesNotSteerSharedParentHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fixture is a shared parent with the sticky bit (mode 1777), which is what makes the HOME refusable; Windows has no such mode, so the directory cannot be made to look shared")
+	}
 	users := t.TempDir()
 	checkout := filepath.Join(users, "alice", "proj")
 	if err := os.MkdirAll(checkout, 0o750); err != nil {

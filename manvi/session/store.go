@@ -623,7 +623,16 @@ func writeNew(dir, target string, body []byte, step func(string)) error {
 		return fmt.Errorf("session: creating a temporary file in %s: %w", dir, err)
 	}
 	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
+	// A panic or an early return must close the file before it is removed:
+	// Windows will not delete an open file, so the temporary file would outlive
+	// the failed save.
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
 	at("created")
 
 	if _, err := tmp.Write(body); err != nil {
@@ -636,6 +645,7 @@ func writeNew(dir, target string, body []byte, step func(string)) error {
 		return fmt.Errorf("session: syncing %s: %w", tmpName, err)
 	}
 	at("synced")
+	closed = true
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("session: closing %s: %w", tmpName, err)
 	}

@@ -269,7 +269,7 @@ func TestAgyPreSpawnRefusalsGuaranteeNoProcessStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	wrapper := filepath.Join(t.TempDir(), "agy")
+	wrapper := filepath.Join(t.TempDir(), exeName("agy"))
 	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec true\n"), 0o700); err != nil { //nolint:gosec // an executable stand-in under t.TempDir
 		t.Fatal(err)
 	}

@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 
@@ -127,7 +130,7 @@ func Publish(dir *os.Root, name string, data []byte, o PublishOptions) (result e
 	}
 
 	if o.Replace {
-		if err := dir.Rename(stage, name); err != nil {
+		if err := renameOverReaders(dir, stage, name); err != nil {
 			return fmt.Errorf("treefile: publishing %s: %w", name, err)
 		}
 	} else if err := publishNew(dir, stage, name); err != nil {
@@ -140,6 +143,27 @@ func Publish(dir *os.Root, name string, data []byte, o PublishOptions) (result e
 			name, ErrPublishedUnsynced, err)
 	}
 	return nil
+}
+
+// renameOverReaders is dir.Rename, retried on Windows while a reader has the
+// destination open. There a rename over an open file fails with an access
+// denied or sharing violation instead of unlinking it. A reader holds the file
+// for microseconds, so the failure is a collision with a reader and not a
+// refusal. The wait is bounded; past it the error is the rename's.
+func renameOverReaders(dir *os.Root, from, to string) error {
+	const windowsAccessDenied, windowsSharingViolation = 5, 32
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := dir.Rename(from, to)
+		if err == nil || runtime.GOOS != "windows" || time.Now().After(deadline) {
+			return err
+		}
+		var errno syscall.Errno
+		if !errors.As(err, &errno) || (errno != windowsAccessDenied && errno != windowsSharingViolation) {
+			return err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // errNoAtomicRename says renameNoReplace is not available here.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -195,6 +196,9 @@ func TestWorkspaceWarmMCPHelperProcess(t *testing.T) {
 
 func writeWarmHelperScript(t *testing.T, root string) (string, func() []string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the warm-helper wrapper is a #!/bin/sh script that re-execs the test binary, which Windows cannot start")
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

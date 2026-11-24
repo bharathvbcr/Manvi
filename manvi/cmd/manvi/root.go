@@ -12,6 +12,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 
 	"github.com/bharathvbcr/Manvi/manvi/artifacts"
+	"github.com/bharathvbcr/Manvi/manvi/internal/rootedpath"
 )
 
 var (
@@ -330,7 +331,7 @@ func sessionsDir() string {
 //   - If the file does not exist yet (creating a new file in cwd), it resolves relative to cwd.
 //   - Absolute paths are preserved for root containment checking.
 func resolveCLIPath(root, cwd, target string) string {
-	if target == "" || filepath.IsAbs(target) {
+	if target == "" || filepath.IsAbs(target) || rootedpath.NotAbsolute(target) {
 		return target
 	}
 

@@ -17,7 +17,7 @@ func buildDeafServer(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.go")
-	bin := filepath.Join(dir, "deaf")
+	bin := filepath.Join(dir, exeName("deaf"))
 	const script = `package main
 
 import "time"
@@ -89,7 +89,7 @@ func TestATimedOutStdinWriteRetiresTheConnection(t *testing.T) {
 func TestAnOversizedResourceReadIsRefusedRatherThanReturned(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.go")
-	bin := filepath.Join(dir, "loud")
+	bin := filepath.Join(dir, exeName("loud"))
 	script := `package main
 
 import (

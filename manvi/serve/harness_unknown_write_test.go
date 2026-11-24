@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -117,6 +118,9 @@ func TestAWriteThatCannotHaveChangedTheFileLeavesNoRecord(t *testing.T) {
 // The run is aborted, finish cannot take the block out either, and the record,
 // kept, is what the next attempt on the checkout takes it out with.
 func TestManagedUnknownBlockWriteIsTakenOutByTheNextAttempt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the write is made unconfirmable by chmod 0, a unix mode Windows ignores, so the file stays readable and the write is confirmed")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("permissions do not stop root from reading the file")
 	}

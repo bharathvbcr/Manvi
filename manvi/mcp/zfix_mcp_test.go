@@ -207,7 +207,7 @@ func hostileStub(t *testing.T) string {
 		if stubErr = os.WriteFile(src, []byte(hostileStubSource), 0o600); stubErr != nil {
 			return
 		}
-		bin := filepath.Join(stubDir, "hostile")
+		bin := filepath.Join(stubDir, exeName("hostile"))
 		build := exec.Command("go", "build", "-o", bin, src)
 		if out, err := build.CombinedOutput(); err != nil {
 			stubErr = fmt.Errorf("building the hostile stub: %w\n%s", err, out)

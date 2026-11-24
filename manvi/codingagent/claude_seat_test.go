@@ -499,8 +499,15 @@ func TestClaudeSeatHomeRootDoesNotWalkToSharedAncestors(t *testing.T) {
 	if err := os.MkdirAll(checkout, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", "/")
-	t.Setenv("USERPROFILE", "/")
+	// The filesystem root as this platform spells it: "/" is rooted but not
+	// absolute on Windows, where it would be refused for being no usable path at
+	// all, which is a different refusal from the one this test is about.
+	root := string(filepath.Separator)
+	if vol := filepath.VolumeName(shared); vol != "" {
+		root = vol + root
+	}
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
 	ov, err := claudeSeatOverrides(checkout)
 	if err != nil {
 		t.Fatalf("shared-ancestor marker must not deny a HOME=/ launch: %v", err)

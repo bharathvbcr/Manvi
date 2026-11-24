@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -33,6 +34,9 @@ const impactTwoCallers = `{"hidden":0,"items":[` +
 
 func newStubIndex(t *testing.T, f *fixture, generation int, fresh bool) *stubIndex {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the devmap stand-in is a #!/bin/sh script, which Windows cannot launch as a program")
+	}
 	s := &stubIndex{dir: t.TempDir()}
 	script := "#!/bin/sh\n" +
 		"case \" $* \" in *\" --help \"*) printf '      --graph-output <PATH>\\n'; exit 0;; esac\n" +

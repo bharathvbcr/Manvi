@@ -514,7 +514,7 @@ func TestLeakOnADetachedHeadOfALinkedWorktreeIsRestored(t *testing.T) {
 	f := shellCommitFixture(t, false)
 	base := headOf(t, f.root)
 	wt := filepath.Join(filepath.Dir(f.root), "wt-guard")
-	write(t, f.root, "mk.sh", "#!/bin/sh\nset -e\ngit worktree add -q --detach "+wt+"\ncp notes.txt "+wt+"/leak.txt\ncd "+wt+"\ngit add leak.txt\ngit commit -qm leak-in-worktree\n")
+	write(t, f.root, "mk.sh", "#!/bin/sh\nset -e\ngit worktree add -q --detach "+filepath.ToSlash(wt)+"\ncp notes.txt "+filepath.ToSlash(wt)+"/leak.txt\ncd "+filepath.ToSlash(wt)+"\ngit add leak.txt\ngit commit -qm leak-in-worktree\n")
 	res := shell(f, "sh mk.sh")
 	if !res.IsError || res.Rule != string(policy.RuleSecretPath) || !strings.Contains(res.Text, "worktree:") || !strings.Contains(res.Text, "leak.txt") {
 		t.Fatalf("the worktree leak was not reported: %+v", res)
@@ -532,7 +532,7 @@ func TestLeakOnAPerWorktreeRefOfALinkedWorktreeIsRestored(t *testing.T) {
 	f := shellCommitFixture(t, false)
 	wt := filepath.Join(filepath.Dir(f.root), "wt-own")
 	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
-	write(t, f.root, "mk.sh", "#!/bin/sh\nset -e\ncp notes.txt "+wt+"/leak.txt\ncd "+wt+"\ngit add leak.txt\ngit update-ref refs/worktree/leak \"$(git commit-tree \"$(git write-tree)\" -p HEAD -m x)\"\n")
+	write(t, f.root, "mk.sh", "#!/bin/sh\nset -e\ncp notes.txt "+filepath.ToSlash(wt)+"/leak.txt\ncd "+filepath.ToSlash(wt)+"\ngit add leak.txt\ngit update-ref refs/worktree/leak \"$(git commit-tree \"$(git write-tree)\" -p HEAD -m x)\"\n")
 	res := shell(f, "sh mk.sh")
 	if !res.IsError || res.Rule != string(policy.RuleSecretPath) || !strings.Contains(res.Text, "refs/worktree/leak") {
 		t.Fatalf("the per-worktree ref leak was not reported: %+v", res)

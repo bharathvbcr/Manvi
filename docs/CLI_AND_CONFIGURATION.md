@@ -258,7 +258,7 @@ is still honoured, because naming a root is a deliberate act.
 operating system defines, and carry no harness meaning: `HOME` and `TMPDIR` are two of
 the directories the project-root search stops at instead of adopting (a stray
 `.devcouncil` or `.git` there is debris, not a project), `USER` is the operator name
-recorded on a grant issued from the CLI, and `PATH` is program lookup.
+recorded on a grant issued from the CLI, and `PATH` is program lookup (on Windows `PATHEXT` lists the extensions that make a file a program, read the way the OS resolver reads it).
 
 <a id="child-processes"></a>**Child processes.** No child of this process inherits a
 provider credential. The names are every variable in the credential catalogue —

@@ -23,7 +23,7 @@ func buildFakeMCPServer(t *testing.T, defect string) ServerConfig {
 	t.Helper()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.go")
-	bin := filepath.Join(dir, "fakeserver")
+	bin := filepath.Join(dir, exeName("fakeserver"))
 	// Per-run marker directory: a marker left in the shared temp root made
 	// the second run of a test skip its own scripted death.
 	markerDir := filepath.Join(dir, "markers")
@@ -187,6 +187,9 @@ func TestManagerReplacesADeadClient(t *testing.T) {
 	if err := mgr.RegisterServer(cfg); err != nil {
 		t.Fatal(err)
 	}
+	// The respawned server is still running when the test ends; Windows will
+	// not delete the executable of a running process with the temp directory.
+	defer mgr.CloseAll()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

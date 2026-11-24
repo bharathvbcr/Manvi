@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,9 @@ func TestAdvW21SeparateGitDirRootPseudoRefs(t *testing.T) {
 // A name that is a directory symlink inside the git dir: git resolves
 // `lnk/x` through it, the walk does not follow symlinks.
 func TestAdvW21DirectorySymlinkInGitDirIsAPseudoRefSource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fixture links a directory with the shell's ln -s, which Git for Windows' sh does not make a native symlink git can resolve through")
+	}
 	f := shellCommitFixture(t, true)
 	write(t, f.root, "park.sh", parkLeak+"mkdir sidecar\necho $c > sidecar/x\nln -s \"$PWD/sidecar\" $d/lnk\n")
 	res := shell(f, "sh park.sh")
@@ -230,7 +234,7 @@ func TestAdvW21RestoreRootFileRefusesAFileRewrittenSinceTheScan(t *testing.T) {
 func TestAdvW21DanglingAdminDirWithOnlyAHeadIsARefSource(t *testing.T) {
 	f := shellCommitFixture(t, true)
 	script := "set -e\nc=$(git commit-tree $(git write-tree) -m leak)\n" +
-		"a=" + filepath.Join(gitCommon(t, f.root), "worktrees", "evil") + "\n" +
+		"a=" + filepath.ToSlash(filepath.Join(gitCommon(t, f.root), "worktrees", "evil")) + "\n" +
 		"mkdir -p $a\necho ../.. > $a/commondir\necho /nonexistent/evil/.git > $a/gitdir\necho $c > $a/HEAD\n"
 	write(t, f.root, "mk.sh", script)
 	res := shell(f, "sh mk.sh")
@@ -250,8 +254,8 @@ func TestAdvW21AdminDirWithAForeignCommondir(t *testing.T) {
 	other := t.TempDir()
 	run(t, other, "init", "-q", "-b", "main")
 	script := "set -e\nc=$(git commit-tree $(git write-tree) -m leak)\nh=$(git rev-parse HEAD)\n" +
-		"a=" + filepath.Join(gitCommon(t, f.root), "worktrees", "evil") + "\n" +
-		"mkdir -p $a/refs/worktree\necho " + filepath.Join(other, ".git") + " > $a/commondir\necho /nonexistent/evil/.git > $a/gitdir\n" +
+		"a=" + filepath.ToSlash(filepath.Join(gitCommon(t, f.root), "worktrees", "evil")) + "\n" +
+		"mkdir -p $a/refs/worktree\necho " + filepath.ToSlash(filepath.Join(other, ".git")) + " > $a/commondir\necho /nonexistent/evil/.git > $a/gitdir\n" +
 		"echo $c > $a/refs/worktree/leak\necho $h > $a/HEAD\n"
 	write(t, f.root, "mk.sh", script)
 	res := shell(f, "sh mk.sh")
@@ -262,7 +266,7 @@ func TestAdvW21AdminDirWithAForeignCommondir(t *testing.T) {
 func TestAdvW21AdminDirPackedRefs(t *testing.T) {
 	f := shellCommitFixture(t, true)
 	script := "set -e\nc=$(git commit-tree $(git write-tree) -m leak)\nh=$(git rev-parse HEAD)\n" +
-		"a=" + filepath.Join(gitCommon(t, f.root), "worktrees", "evil") + "\n" +
+		"a=" + filepath.ToSlash(filepath.Join(gitCommon(t, f.root), "worktrees", "evil")) + "\n" +
 		"mkdir -p $a\necho ../.. > $a/commondir\necho /nonexistent/evil/.git > $a/gitdir\necho $h > $a/HEAD\n" +
 		"printf '# pack-refs with: peeled fully-peeled sorted\\n%s refs/worktree/x\\n' $c > $a/packed-refs\n"
 	write(t, f.root, "mk.sh", script)

@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
@@ -239,7 +241,7 @@ func toolBinary(envKey, name string) string {
 		return p
 	}
 	for _, dir := range workspaceBuildDirs() {
-		candidate := filepath.Join(dir, name)
+		candidate := executablePath(filepath.Join(dir, name))
 		if isExecutableFile(candidate) {
 			return candidate
 		}
@@ -254,7 +256,7 @@ func toolBinary(envKey, name string) string {
 // with different accept rules, so their sources and order cannot drift.
 func releaseSearch(name string, installs func() []string, accept func(path string) (string, bool)) (string, bool) {
 	if dir := ownDir(); dir != "" {
-		if candidate := filepath.Join(dir, name); isExecutableFile(candidate) {
+		if candidate := executablePath(filepath.Join(dir, name)); isExecutableFile(candidate) {
 			if got, ok := accept(candidate); ok {
 				return got, true
 			}
@@ -386,7 +388,54 @@ func isExecutableFile(path string) bool {
 	if err != nil || info.IsDir() {
 		return false
 	}
+	if runtime.GOOS == "windows" {
+		// Windows files carry no execute bits: Go reports every file as 0666 or
+		// 0444, so the bit test below is false for everything and no companion
+		// beside the binary, and no workspace build, would ever be found. What
+		// makes a file runnable there is its extension.
+		return hasExecutableExtension(path)
+	}
 	return info.Mode()&0o111 != 0
+}
+
+// executableExtensions are the extensions Windows runs a file by, in the order
+// PATHEXT lists them, lower-cased with their dot. Empty off Windows.
+func executableExtensions() []string {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	pathext := os.Getenv("PATHEXT")
+	if pathext == "" {
+		pathext = ".COM;.EXE;.BAT;.CMD"
+	}
+	var exts []string
+	for _, ext := range strings.Split(pathext, ";") {
+		if ext = strings.ToLower(strings.TrimSpace(ext)); ext != "" {
+			exts = append(exts, ext)
+		}
+	}
+	return exts
+}
+
+func hasExecutableExtension(path string) bool {
+	return slices.Contains(executableExtensions(), strings.ToLower(filepath.Ext(path)))
+}
+
+// executablePath is path as the file that would run when path names a program:
+// itself where it already has an executable extension or the platform has none,
+// else the first path+extension that exists, as exec.LookPath resolves a name
+// on Windows ("dcstore" is "dcstore.exe"). A name nothing matches comes back
+// unchanged, for the caller's own existence check to refuse.
+func executablePath(path string) string {
+	if hasExecutableExtension(path) {
+		return path
+	}
+	for _, ext := range executableExtensions() {
+		if _, err := os.Stat(path + ext); err == nil {
+			return path + ext
+		}
+	}
+	return path
 }
 
 // maxVersionCandidates bounds how many installed versions are tried, newest first.

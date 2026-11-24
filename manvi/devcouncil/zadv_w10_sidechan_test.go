@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -461,6 +462,9 @@ func TestAdvCandidateRefusalsNeverMoreLenientThanReadRefusal(t *testing.T) {
 // one a file refused at listing time gives. A wrapper binary makes the link
 // deterministically after the listing returns.
 func TestAdvGrepHardLinkCreatedBetweenListingAndSearchIsWithheldOnRetry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the searcher stand-in is a #!/bin/sh wrapper that makes the hard link, which Windows cannot launch as a program")
+	}
 	f := newFixture(t)
 	real := testsupport.DCGrep(t)
 	writeRepoFile(t, f.root, "token.txt", "needle LATE\n")

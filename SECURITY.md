@@ -6,9 +6,11 @@ a way around it is the vulnerability class that matters here.
 
 ## Reporting
 
-Use GitHub's private vulnerability reporting: **Security → Report a
-vulnerability** on this repository. It is enabled. Please do not open a public
-issue for something you believe is exploitable.
+Use GitHub's private vulnerability reporting:
+**<https://github.com/bharathvbcr/Manvi/security/advisories/new>** (or **Security
+→ Report a vulnerability** on this repository). It is enabled, and it is the only
+channel: no email address is published for reports. Please do not open a public
+issue or a discussion for something you believe is exploitable.
 
 Include the posture the run was under (`manvi doctor` prints it), the decision
 payload from the run report, and the session log if you have one — every tool

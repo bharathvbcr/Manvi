@@ -30,6 +30,9 @@ func advBase(t *testing.T) string {
 // two in-tree callers Clean their path first (trustFilePath, userConfigPath), so
 // only a direct caller of the exported function is exposed.
 func TestZAdvW9DotDotAfterSymlinkIsResolvedByTheKernelNotLexically(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the scenario puts a '..' after a symlink, which POSIX resolves through the link and Windows folds out of the path text before following any link, so the kernel cannot open the file this test says it names")
+	}
 	base := advBase(t)
 	repo := filepath.Join(base, "repo")
 	out := filepath.Join(base, "out")
@@ -255,7 +258,12 @@ func TestZAdvW9AbsentRootIsOutsideNotAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustInside(t, repo, other, false)
-	mustInside(t, repo, filepath.Join(base, "GONE-REPO", "x"), false)
+	// A case variant of a root that is not there cannot be settled by asking the
+	// file system. Where names are compared by spelling (filepath.Rel on Windows
+	// folds case, as NTFS does by default) the variant is the root and the answer
+	// is inside, the side every caller of PathIsInside fails toward; elsewhere it
+	// is a different name.
+	mustInside(t, repo, filepath.Join(base, "GONE-REPO", "x"), runtime.GOOS == "windows")
 }
 
 // A root that is a prefix-alias of an unrelated config directory: the config

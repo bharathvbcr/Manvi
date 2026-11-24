@@ -259,7 +259,7 @@ func pinForOp(root, rel, op string) (*pinnedTarget, error) {
 		next := filepath.Join(current, part)
 		resolved, err := filepath.EvalSymlinks(next)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				firstMissing = i
 				break
 			}
@@ -292,7 +292,7 @@ func pinForOp(root, rel, op string) (*pinnedTarget, error) {
 		// symlink. (Distinct names, not re-used err: a shadowed error once
 		// made every missing file look like an existing one.)
 		leafFi, leafErr := safefile.Lstat(physical)
-		if leafErr != nil && !os.IsNotExist(leafErr) {
+		if leafErr != nil && !errors.Is(leafErr, fs.ErrNotExist) {
 			return nil, fmt.Errorf("inspecting %q: %w", physical, leafErr)
 		}
 		if leafErr == nil && leafFi.Mode()&fs.ModeSymlink != 0 {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -782,6 +783,9 @@ func stagedNames(t *testing.T, root string) []string {
 // commit-time refusal then wedged the session. A path is a path: a name no file
 // has stages nothing, and a directory is judged by the files it would stage.
 func TestGitStagePathsAreLiteral(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fixture file is named we*rd.txt, and a * is not a legal file name character on Windows")
+	}
 	f := newFixtureWith(t, map[string]string{
 		flags.HarnessPosture:      flags.PostureYolo,
 		flags.GrantsAgentCommands: "true",

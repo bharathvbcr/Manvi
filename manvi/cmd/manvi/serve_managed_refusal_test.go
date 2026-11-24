@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -98,6 +99,9 @@ func managedProviderFixture(t *testing.T, provider, scenario string) string {
 // read of the run, naming the callback, or the person sees a failed run with
 // no idea that the agent was waiting on them.
 func TestServeRecordsARefusedProviderCallbackAsTheRunsVisibleReason(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the provider fixtures are a symlink to the test binary and sh wrappers, which Windows cannot launch as a provider executable")
+	}
 	for _, tc := range []struct {
 		provider, scenario, want string
 	}{

@@ -28,9 +28,15 @@ func enhancementFixture(t *testing.T) *store.Client {
 
 func enhancementCall(t *testing.T, client *store.Client, method, input string) json.RawMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), storeguard.CallTimeout)
 	defer cancel()
+	start := time.Now()
 	result, err := client.Workbench(ctx, method, json.RawMessage(input))
+	// Recorded so the bound can be read against what calls actually take on a
+	// loaded runner: a slow one is named in the test output.
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Logf("STORECALL %s took %s (bound %s)", method, took.Round(time.Millisecond), storeguard.CallTimeout)
+	}
 	if err != nil {
 		t.Fatalf("%s: %v", method, err)
 	}
@@ -40,7 +46,7 @@ func enhancementCall(t *testing.T, client *store.Client, method, input string) j
 // enhancementCallErr is enhancementCall for a call that is allowed to fail:
 // it returns the store's refusal instead of ending the test on it.
 func enhancementCallErr(client *store.Client, method, input string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), storeguard.CallTimeout)
 	defer cancel()
 	_, err := client.Workbench(ctx, method, json.RawMessage(input))
 	return err

@@ -152,7 +152,14 @@ func (s *Store) sanitizeName(name string) (string, error) {
 		return "", errors.New("artifacts: name cannot be empty")
 	}
 	clean := filepath.Clean(name)
-	if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
+	// A name is relative to the store on every platform. filepath.IsAbs is not
+	// enough on Windows, where a leading slash or backslash is rooted without
+	// being absolute (no drive) and "C:x" is drive-relative; a rooted name
+	// would be accepted and joined under the store. Both separators and any
+	// volume are refused on every platform, so the same name means the same
+	// thing everywhere.
+	if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" ||
+		strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, `\`) {
 		return "", fmt.Errorf("artifacts: invalid artifact path %q", name)
 	}
 	// "<name>.meta.json" is where the metadata of <name> is kept. A name in that
@@ -169,7 +176,10 @@ func (s *Store) sanitizeName(name string) (string, error) {
 			return "", fmt.Errorf("artifacts: invalid artifact name %q: that shape is reserved for the store's temporary files", name)
 		}
 	}
-	return clean, nil
+	// The name is slash-separated whatever the platform: it is what List reports
+	// (relName) and what a caller passed, so Get and Create must not hand it
+	// back as "lessons\\a.md" on Windows.
+	return filepath.ToSlash(clean), nil
 }
 
 // metaSuffix is appended to an artifact's name to give its metadata file.

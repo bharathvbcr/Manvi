@@ -133,7 +133,9 @@ func (m *Module) pos(n ast.Node) string {
 	if err != nil {
 		rel = p.Filename
 	}
-	return fmt.Sprintf("%s:%d", rel, p.Line)
+	// Slash form: the position is an identifier that allowlists and findings are
+	// keyed by, and it must read the same on every platform.
+	return fmt.Sprintf("%s:%d", filepath.ToSlash(rel), p.Line)
 }
 
 // selectorUses counts uses of `.name` — a field read or a method call — across
