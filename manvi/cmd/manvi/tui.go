@@ -629,14 +629,14 @@ func (h *harnessHost) Cancel(string) {}
 func (h *harnessHost) Files(query string) []string {
 	root, err := os.Getwd()
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // file suggestions are best-effort: no working directory means no suggestions, and the prompt still works
 	}
 	const maxFiles = 200
 	q := strings.ToLower(strings.TrimSpace(query))
 	var out []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return nil
+			return nil //nolint:nilerr // an unreadable entry is skipped so the rest of the suggestions still come back
 		}
 		name := d.Name()
 		if d.IsDir() {
@@ -647,7 +647,7 @@ func (h *harnessHost) Files(query string) []string {
 		}
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // a path that cannot be made relative to the root is skipped, not offered
 		}
 		rel = filepath.ToSlash(rel)
 		if q == "" || strings.Contains(strings.ToLower(rel), q) {
@@ -678,7 +678,7 @@ func (h *harnessHost) Command(ctx context.Context, sessionID, name, args string)
 	fields, err := splitArgs(args)
 	if err != nil {
 		sink.Emit(ui.Event{Kind: ui.KindError, At: time.Now().UTC(), Text: err.Error()})
-		return nil
+		return nil //nolint:nilerr // the argument error is reported to the transcript as an error event, which is where the user reads it
 	}
 	// changed is the flag a `/flags set` moved, or "". Returned rather than acted
 	// on inside runCommand because what a moved flag invalidates is this host's

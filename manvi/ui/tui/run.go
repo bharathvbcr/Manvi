@@ -1033,7 +1033,7 @@ func (r *Runner) emitOSC52(text string, getenv func(string) string) {
 		getenv = os.Getenv
 	}
 	seq, truncated := osc52Sequence(text, getenv)
-	if out := r.term.Out(); out != nil {
+	if out := r.term.Out(); out != nil { // Out is a true nil interface when the terminal has no file
 		_, _ = io.WriteString(out, seq)
 	}
 	// The painter believes it owns the screen, and this wrote past it.

@@ -62,7 +62,10 @@ func newInputPoller(src io.Reader) (inputPoller, io.Closer, error) {
 			continue
 		}
 		if err != nil || probe[0].Revents&(unix.POLLNVAL|unix.POLLERR) != 0 {
-			return nil, nil, nil
+			// Not an error: the probe failing means this descriptor cannot be
+			// polled, and the nil poller is the documented signal to fall back to
+			// non-cancellable reads.
+			return nil, nil, nil //nolint:nilerr // see above: a failed probe selects the fallback reader
 		}
 		break
 	}

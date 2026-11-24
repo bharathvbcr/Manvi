@@ -111,11 +111,25 @@ func (t *Terminal) Border() render.Border {
 	return render.ASCII
 }
 
-// Out is the writer frames are painted to.
-func (t *Terminal) Out() io.Writer { return t.out }
+// Out is the writer frames are painted to, or nil when the terminal has none.
+// The nil check is on the concrete file: returning a nil *os.File as an
+// io.Writer would make a non-nil interface, and every caller's `out != nil`
+// guard would pass and then write through a nil pointer.
+func (t *Terminal) Out() io.Writer {
+	if t.out == nil {
+		return nil
+	}
+	return t.out
+}
 
-// In is the reader keystrokes arrive on.
-func (t *Terminal) In() io.Reader { return t.in }
+// In is the reader keystrokes arrive on, or nil when the terminal has none
+// (see Out for why the check is on the concrete file).
+func (t *Terminal) In() io.Reader {
+	if t.in == nil {
+		return nil
+	}
+	return t.in
+}
 
 // Options configures what Start turns on.
 type Options struct {
