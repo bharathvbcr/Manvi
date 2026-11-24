@@ -191,7 +191,18 @@ func PickTheme(profile render.Profile, unicode bool) Theme {
 	return PickThemeByNameUnchecked("dark", profile, unicode)
 }
 
-// PickThemeByName resolves a theme by name ("dark", "light", "plain").
+// TerminalTheme uses the host terminal's own background colour (render.Default)
+// so Manvi blends natively into Ghostty, Kitty, WezTerm, or iTerm2 themes while
+// keeping Manvi's Fold M crimson accent and full status separability.
+func TerminalTheme() Theme {
+	t := Dark()
+	t.Name = "terminal"
+	t.Bg = render.Default
+	t.BgInset = render.Default
+	return t
+}
+
+// PickThemeByName resolves a theme by name ("dark", "light", "terminal", "plain").
 func PickThemeByName(name string, profile render.Profile, unicode bool) (Theme, bool) {
 	var t Theme
 	switch strings.ToLower(strings.TrimSpace(name)) {
@@ -199,6 +210,8 @@ func PickThemeByName(name string, profile render.Profile, unicode bool) (Theme, 
 		t = Light()
 	case "dark":
 		t = Dark()
+	case "terminal", "transparent", "adaptive":
+		t = TerminalTheme()
 	case "plain", "none", "mono", "nocolor":
 		t = NoColorTheme()
 	default:

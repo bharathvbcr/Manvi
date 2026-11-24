@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
@@ -32,6 +33,10 @@ const (
 	OverlaySearch
 	// OverlayRename is the session rename modal.
 	OverlayRename
+	// OverlayCopy is the contextual smart copy picker (reply, code blocks, diffs, thinking).
+	OverlayCopy
+	// OverlayHistory is the fuzzy prompt history picker (Ctrl+R).
+	OverlayHistory
 )
 
 // Item is one row in an overlay.
@@ -383,9 +388,10 @@ func SessionsOverlay(views []*AgentView, active int) *Overlay {
 // ThemeOverlay lists available color palettes.
 func ThemeOverlay(current string) *Overlay {
 	items := []Item{
-		{Label: "Dark", Detail: "GitHub Dark palette with distinct status hues (default)", Value: "dark", Status: StatusPass},
+		{Label: "Dark", Detail: "GitHub Dark palette with Fold M crimson accent (default)", Value: "dark", Status: StatusPass},
 		{Label: "Light", Detail: "High-contrast light background theme", Value: "light", Status: StatusInfo},
 		{Label: "Plain", Detail: "Monochrome / NO_COLOR attribute-only fallback", Value: "plain", Status: StatusNeutral},
+		{Label: "Terminal", Detail: "Adaptive transparent background blending into host terminal", Value: "terminal", Status: StatusInfo},
 	}
 	for i := range items {
 		if strings.EqualFold(items[i].Value, current) {
@@ -467,6 +473,80 @@ func RenameOverlay(current string) *Overlay {
 	return o
 }
 
+// CopyOverlay builds a contextual smart-copy menu for a session: drag
+// selection, selected entry, last reply, every fenced code block in the last
+// reply, last edit diff, and latest thinking trace.
+func CopyOverlay(v *AgentView) *Overlay {
+	if v == nil {
+		return nil
+	}
+	var items []Item
+	add := func(label, detail, val string) {
+		if strings.TrimSpace(val) == "" {
+			return
+		}
+		items = append(items, Item{
+			Label:  label,
+			Detail: detail + " (" + sizeLabel(len(val)) + ")",
+			Value:  val,
+			Status: StatusInfo,
+		})
+	}
+	if drag := v.Scroll.DragSelectedText(); drag != "" {
+		add("Selection", "active drag highlight", drag)
+	}
+	if sel := v.Scroll.SelectedText(); sel != "" {
+		add("Selected entry", "currently highlighted row", sel)
+	}
+	entries := v.Scroll.Entries()
+	// Last assistant reply + every fenced code block inside it.
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Event.Kind == ui.KindText && strings.TrimSpace(entries[i].text()) != "" {
+			reply := entries[i].text()
+			add("Last reply", "full assistant markdown", reply)
+			for _, cb := range extractCodeBlocks(reply) {
+				lang := cb.Lang
+				if lang == "" {
+					lang = "code"
+				}
+				lines := strings.Count(cb.Code, "\n") + 1
+				add(fmt.Sprintf("Code block #%d (%s)", cb.Index, lang), fmt.Sprintf("%d lines", lines), cb.Code)
+			}
+			break
+		}
+	}
+	if eds := editsOf(entries); len(eds) > 0 {
+		last := eds[len(eds)-1]
+		add("Last edit diff", last.Path, formatUnifiedDiffText(last))
+	}
+	if ts := thoughtsOf(entries); len(ts) > 0 {
+		last := ts[len(ts)-1]
+		add("Latest thinking", last.thoughtLabel(), last.text())
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return NewOverlay(OverlayCopy, "copy to clipboard", items, true)
+}
+
+// HistoryOverlay builds a searchable list of past prompt submissions (Ctrl+R).
+func HistoryOverlay(history []string) *Overlay {
+	if len(history) == 0 {
+		return nil
+	}
+	items := make([]Item, 0, len(history))
+	for i := len(history) - 1; i >= 0; i-- {
+		h := history[i]
+		label := render.TruncateWidth(oneLine(h), 72, "…")
+		detail := fmt.Sprintf("%d chars", len(h))
+		if lines := strings.Count(h, "\n") + 1; lines > 1 {
+			detail = fmt.Sprintf("%d lines · %s", lines, detail)
+		}
+		items = append(items, Item{Label: label, Detail: detail, Value: h, Status: StatusNeutral})
+	}
+	return NewOverlay(OverlayHistory, "prompt history", items, true)
+}
+
 func (a *App) acceptOverlay() []Effect {
 	o := a.overlay
 	if o == nil {
@@ -544,6 +624,17 @@ func (a *App) acceptOverlay() []Effect {
 		a.overlay = nil
 		// Resolved against the terminal's capability, not the outgoing theme's.
 		a.Theme = PickThemeByNameUnchecked(item.Value, a.Profile, a.Unicode)
+		return nil
+	case OverlayCopy:
+		a.overlay = nil
+		a.setNotice("copied "+item.Label+" ("+sizeLabel(len(item.Value))+")", StatusInfo)
+		return []Effect{EffectCopy{Text: item.Value}}
+	case OverlayHistory:
+		a.overlay = nil
+		if v := a.Current(); v != nil {
+			v.Focus = CtxPrompt
+			v.Prompt.SetValue(item.Value)
+		}
 		return nil
 	case OverlayHelp:
 		return nil

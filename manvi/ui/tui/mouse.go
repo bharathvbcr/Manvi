@@ -39,6 +39,10 @@ func (a *App) scroll(t ActionScroll) []Effect {
 	if len(a.views) > 1 && a.tabRow.Contains(t.X, t.Y) {
 		return a.cycleSession(sign(t.Delta))
 	}
+	if v.Inspector != nil && v.Inspector.Contains(t.X, t.Y) {
+		v.Inspector.ScrollBy(t.Delta)
+		return nil
+	}
 	v.Scroll.ScrollBy(t.Delta)
 	return nil
 }
@@ -160,11 +164,33 @@ func (a *App) click(t ActionClick) []Effect {
 		return nil
 	}
 
+	// Inspector Drawer owns clicks inside its pane.
+	if t.Button == 1 && v.Inspector != nil && v.Inspector.Contains(t.X, t.Y) {
+		v.Focus = CtxInspector
+		v.Scroll.ClearSelection()
+		if label, text := v.Inspector.Click(t.X, t.Y, v); text != "" {
+			a.setNotice("copied "+label+" ("+itoa(len(text))+" bytes)", StatusInfo)
+			return []Effect{EffectCopy{Text: text}}
+		}
+		if !v.Inspector.Open && v.Focus == CtxInspector {
+			v.Focus = CtxPrompt
+		}
+		return nil
+	}
+
+	// Floating "↓ latest" jump pill when scrolled back.
+	if t.Button == 1 && !v.latestPill.Empty() && v.latestPill.Contains(t.X, t.Y) {
+		v.Scroll.ScrollToBottom()
+		v.Scroll.ClearSelection()
+		return nil
+	}
+
 	// The composer: click focuses it and puts the caret where the click
 	// landed, the courtesy every text field extends.
 	if t.Button == 1 && v.promptRect.Contains(t.X, t.Y) {
 		v.Focus = CtxPrompt
 		v.Scroll.SelectNone()
+		v.Scroll.ClearSelection()
 		v.Prompt.SetCursor(v.Prompt.IndexAt(v.promptRect.W,
 			t.Y-v.promptRect.Y, t.X-v.promptRect.X))
 		return nil
@@ -186,7 +212,11 @@ func (a *App) click(t ActionClick) []Effect {
 	if v.Scroll.Contains(t.X, t.Y) {
 		v.Focus = CtxScrollback
 		if t.Button == 3 {
-			// Right-click copies the entry under the pointer, matching y.
+			// Right-click copies active drag selection if any, else the entry under pointer.
+			if drag := v.Scroll.DragSelectedText(); drag != "" {
+				a.setNotice("copied selection ("+itoa(len(drag))+" bytes)", StatusInfo)
+				return []Effect{EffectCopy{Text: drag}}
+			}
 			if v.Scroll.SelectAt(t.Y) {
 				if text := v.Scroll.SelectedText(); text != "" {
 					a.setNotice("copied "+itoa(len(text))+" bytes", StatusInfo)
@@ -195,23 +225,43 @@ func (a *App) click(t ActionClick) []Effect {
 			}
 			return nil
 		}
-		if v.Scroll.SelectAt(t.Y) && a.doubleClick(t.X, t.Y) {
-			v.Scroll.ToggleFold()
+		if t.Button == 0 || t.Button == 1 {
+			// Single click on a work capsule header immediately expands/collapses it.
+			if capStart := v.Scroll.CapsuleAt(t.Y); capStart >= 0 {
+				v.Scroll.SelectAt(t.Y)
+				v.Scroll.ClearSelection()
+				v.Scroll.ToggleCapsule(capStart)
+				return nil
+			}
+			if t.Button == 1 {
+				v.Scroll.BeginDrag(t.X, t.Y)
+			}
+			if v.Scroll.SelectAt(t.Y) && a.doubleClick(t.X, t.Y) {
+				v.Scroll.ClearSelection()
+				v.Scroll.ToggleFold()
+			}
 		}
 		return nil
 	}
 
 	v.Focus = CtxPrompt
 	v.Scroll.SelectNone()
+	v.Scroll.ClearSelection()
 	return nil
 }
 
-// motion handles the pointer moving: a scrollbar drag in progress, or a hover
-// crossing the rows of whatever list is on top.
+// motion handles the pointer moving: a scrollbar drag or text selection drag
+// in progress, or a hover crossing the rows of whatever surface is on top.
 func (a *App) motion(t ActionMotion) []Effect {
 	if a.dragBar {
 		if v := a.Current(); v != nil && v.Scroll.ScrollbarCol() >= 0 {
 			v.Scroll.ScrollToFraction(scrollFraction(t.Y, v.Scroll.view))
+		}
+		return nil
+	}
+	if t.Button == 1 {
+		if v := a.Current(); v != nil && a.overlay == nil && a.mode == ModeSession && v.Approval() == nil {
+			v.Scroll.UpdateDrag(t.X, t.Y)
 		}
 		return nil
 	}
@@ -224,6 +274,10 @@ func (a *App) motion(t ActionMotion) []Effect {
 	}
 	if a.mode == ModeDashboard {
 		a.dashboard.HoverAt(t.X, t.Y)
+		return nil
+	}
+	if v := a.Current(); v != nil && v.Approval() == nil {
+		v.Scroll.HoverAt(t.X, t.Y)
 	}
 	return nil
 }

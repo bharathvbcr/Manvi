@@ -237,9 +237,10 @@ flowchart TB
     end
 
     subgraph AgentView["AgentView (Per-Session State)"]
-        Transcript["Scrollback Transcript (Virtual Scroll)"]
+        Transcript["Scrollback Transcript (Virtual Scroll & Work Capsules)"]
+        Inspector["Inspector Drawer (Ctrl+B: Think / Steps / Diffs / Info)"]
         ApprovalModal["Escalation Modal (Human Decision Prompt)"]
-        PromptEditor["Multi-line Composer (Enter to send)"]
+        PromptEditor["Multi-line Composer (Enter to send, Alt+E external editor)"]
     end
 
     AppView --> AgentView
@@ -252,7 +253,7 @@ flowchart TB
    - Real-time status badges: busy spinner (`⠋`), pending human approval (`⚠`), and errors (`✕`).
    - Direct session navigation via `Ctrl+T` / `Shift+Tab` (next / previous), `Ctrl+N` (new session), mouse click hit-testing, and wheel-over-strip cycling.
 2. **Live Dynamic Theme Switcher (`/theme`, `Ctrl+Y`)**:
-   - Instant live switching between **Dark**, **Light**, and **Plain** (monochrome) themes without restarting the process.
+   - Instant live switching between **Dark**, **Light**, **Terminal** (transparent `render.Default` background blending into the host terminal while keeping Fold M crimson accents and full status separability; also selectable via `MANVI_TUI_THEME=terminal`, `transparent`, or `adaptive`), and **Plain** (monochrome) themes without restarting the process.
    - Interactive theme picker overlay modal with live palette preview.
 3. **Interactive Session Switcher Modal (`/sessions`, `Ctrl+S`)**:
    - Searchable overlay modal displaying all running and idle sessions with task IDs, token counts, elapsed time, and status chips.
@@ -281,10 +282,25 @@ flowchart TB
 9. **Working Row**:
    - While a turn runs, the row above the composer shows a spinner, what the turn is doing (`Thinking`, `Writing`, what a running call is doing — `Reading reader.go`, `Using <tool>` — otherwise `Working`), how long it has run, how long since it last produced anything once that passes fifteen seconds, and `ctrl+c to interrupt`. An approval card takes its place.
    - The status holds what the session is, not what it is doing: posture, task and lease, model, branch, context use, tokens, grants. It is the left of the footer row under the composer, on the screen's own ground; nothing is pinned to the top of the screen. Too narrow for all of it, it drops whole segments, least important first; the posture is never dropped and the grant count goes last. The posture is a word, not a filled chip: quiet for strict, bold for a relaxed posture, the failure colour for yolo. A run that is not strict says so on a row of its own directly above the composer, and the composer's frame is a neutral rule rather than the brand colour.
-10. **Numbered Composer Paste Chips & Ordered Expansion**:
-   - Pastes collapsed into numbered chips (`[pasted N chars #k]`) with monotonically increasing sequence IDs.
-   - Chips are pruned when deleted from the editor buffer, dropped completely on prompt submit, and expanded strictly left-to-right once to prevent recursive or out-of-order expansion.
-11. **Clean Signal Shutdown & Crash Resilience**:
+10. **Numbered Composer Paste Chips, Clipboard Paste (`Ctrl+V`), History Search (`Ctrl+R`), `@` Completion & External Editor (`Alt+E`)**:
+   - **Paste Chips (`Ctrl+O` expands)**: Pastes larger than 200 characters collapse into numbered chips (`[pasted N chars #k]` or `[pasted L lines · N chars #k]`) with monotonically increasing sequence IDs. Chips are pruned when deleted from the editor buffer, dropped completely on prompt submit, and expanded strictly left-to-right once to prevent recursive or out-of-order expansion.
+   - **Clipboard Paste (`Ctrl+V`)**: Reads plain text from the local OS clipboard (`pbpaste`, `wl-paste`, `xclip`, `xsel`) when not in an SSH session (`SSH_TTY` / `SSH_CONNECTION`) and delivers it as an `ActionPaste`.
+   - **Prompt History Search (`Ctrl+R`)**: Opens a searchable overlay (`HistoryOverlay`) over prior prompt submissions and loads the chosen entry back into the composer.
+   - **`@` File Context Completion**: Typing `@` at a word boundary opens an inline completion dropdown populated by `Host.(FileCompleter).Files(query)` alongside `/` slash-command completion.
+   - **External `$VISUAL`/`$EDITOR` Composition (`Alt+E` / `F4` / `/edit`)**: Expands any paste chips into a private `0600` temporary markdown file (`manvi-prompt-*.md`), closes it before launching the editor, stops and joins the input reader via `CloseAndWait()` (`poll(2)` + self-pipe on Unix so no keystrokes are stolen), pauses frame, desktop notification, and OSC 52 writes (`ttyPaused`), temporarily leaves raw mode, alternate screen, mouse, focus, and Kitty keyboard modes via `term.Terminal.RunExternal`, runs `$VISUAL` (falling back to `$EDITOR`, resolving bare names across trusted absolute `PATH` directories outside cwd/repo and accepting operator-pinned absolute paths, never via `sh -c`) off-loop with `childenv.Inherit()` so running turns keep draining without blocking, restores terminal modes, restarts input reading, re-queries terminal size, invalidates the painter, sanitizes C0/C1 controls, and delivers the edited draft to the originating `SessionID` via `ActionSetDraft` (staying undoable with `Ctrl+Z`, and preserving the original draft on non-zero exit or unchanged content). Note: on macOS terminals where "Use Option as Meta" is disabled, `Option+E` sends a dead key (`´`); use `F4` or `/edit` as a fallback.
+11. **Turn Work Capsules & Pinned Safety Invariant (`Ctrl+O` / `/stack`)**:
+   - In interactive sessions (`adaptiveWork`), contiguous runs of intermediate turn work (`KindReasoning`, `KindToolStart`, `KindToolResult`, `KindPolicy`, `KindApproval`, `KindApprovalDone`) collapse into a single expandable **Work Capsule** header showing disclosure chevron, elapsed duration, activity counts, and edit diff totals (`Worked 4s · 1 thought · 1 read · 1 edit (+2 -1)`).
+   - **Safety-Pinned Invariant**: Collapsing a capsule never hides a non-routine outcome. Any entry with `StatusBlock`, `StatusGranted`, `StatusDegraded`, or `StatusWarn` — covering hard/soft policy rules, approvals, `IsError` tool failures, `Weakened` checks, and `Demoted` rules — stays pinned visibly beneath the collapsed capsule row.
+   - `Enter` or `e` (or double-clicking the header) expands or collapses an individual capsule; `Ctrl+O` (when no paste chips are present in the composer) or `/stack` (alias `/compact`) toggles between stacked capsules and the full verbose stream.
+12. **Toggleable Inspector Drawer (`Ctrl+B` / `/inspector`)**:
+   - Right-hand Adaptive Workbench drawer (`manvi/ui/tui/inspector.go`) split side-by-side when terminal width is at least `116` columns (below `116` columns the drawer stays hidden so the transcript never cramps; auto-opens on new sessions at width `>= 132` columns).
+   - Four tabs (`]` / `[` or click): **Think** (live regenerating reasoning trace with `h`/`l` or `←`/`→` step selection), **Steps** (turn steps and nested sub-agent activity), **Diffs** (synthesized unified diffs of edited files with `h`/`l` or file-list selection), and **Info** (posture, model, git branch, and session token/cost summary).
+   - Press `y` or click the copy button to copy the active tab's content, `Tab` to cycle focus into the drawer, and `Esc` to return to the composer.
+13. **Cell Drag-to-Select, Smart Copy Menu (`Y` / `/copy`) & Clipboard Output**:
+   - **Cell Drag-to-Select (`selection.go`)**: Left-dragging across the transcript tracks selection in layout-row coordinates (surviving scrollback movement), strips the 3-column left gutter and leading code-block rules (`│ `), trims trailing spaces, and copies on mouse release.
+   - **Smart Copy Menu (`Y` in transcript, `/copy`)**: Searchable overlay (`CopyOverlay`) offering active drag selection, selected transcript entry, full last assistant reply, each fenced code block individually (`Code block #N (lang)`), last edit diff, and latest thinking trace.
+   - **Local + DCS-Wrapped OSC 52 Clipboard (`clipboard.go`, `run.go`)**: In local sessions (not over SSH), writes the full untruncated text off-loop via native OS tools (`pbcopy`, `wl-copy`, `xclip`, `xsel`) so large copies are never truncated or stall the UI loop. Over SSH (`SSH_TTY` / `SSH_CONNECTION`) or when native copy fails, falls back to OSC 52 (capped at 96 KB) wrapped automatically in tmux (`$TMUX`: `\x1bPtmux;\x1b...\x1b\\`) or GNU screen (`$STY`: `\x1bP...\x1b\\`) DCS passthrough. Inside tmux 3.3+, ensure `set -g allow-passthrough on` is enabled in `~/.tmux.conf` so DCS-wrapped OSC 52 reaches the host terminal.
+14. **Clean Signal Shutdown & Crash Resilience**:
    - Stop signals (`SIGTERM`, `SIGHUP`, `SIGINT`) follow the clean quit pathway: the alternate screen is exited, mouse reporting and bracketed paste are disabled, the tty is restored to cooked mode, running turns are cancelled and waited for, and held task leases are released before exit with status 1 (`stopped by <signal>`).
    - Panics on turn goroutines are caught and converted to transcript errors, persisting the session log and writing stack traces to stderr only after the terminal is restored. Any open tool calls left by an interrupted turn receive explicit error results so that durable session logs never hold orphan `tool_use` entries.
 
@@ -294,17 +310,41 @@ flowchart TB
 |---|---|---|
 | `Ctrl+P` | Global | Open Command Palette / Fuzzy Tool Action Picker |
 | `Ctrl+N` | Global | Spawn new concurrent agent session tab |
-| `Ctrl+X` | Dashboard | Close the highlighted agent session |
-| `Ctrl+S` | Global | Open Interactive Session Switcher Modal |
+| `Ctrl+S` | Global | Open Interactive Session Switcher Modal (`/sessions`) |
 | `Ctrl+Y` | Global | Open Live Theme Switcher Modal (`/theme`) |
 | `Ctrl+G` | Global | Toggle System Telemetry Dashboard & Active Lease Inspector |
-| `Ctrl+T` / `Shift+Tab` | Navigation | Cycle to the next / previous session |
-| `Tab` | Navigation | Cycle focus between composer and transcript |
-| `PgUp` / `PgDn` | Overlays & Dashboard | Page through long lists |
-| `←→` / `h` / `l`, `g` / `G` | Dashboard | Step through sessions, jump to first / last |
-| `Enter` | Composer | Send prompt / Confirm modal decision |
-| `Ctrl+C` | Agent Turn | Cancel currently executing turn (releasing all held leases) |
-| `Ctrl+Z` | Shell | Suspend TUI and restore host terminal |
+| `Ctrl+B` | Global | Toggle Inspector Drawer (`Think` / `Steps` / `Diffs` / `Info`) |
+| `Ctrl+O` | Global / Prompt | Expand paste chips in composer, or toggle Work Capsules (`/stack`) |
+| `Ctrl+T` / `Shift+Tab` | Global | Cycle to the next / previous session |
+| `Tab` | Global | Cycle focus: Composer → Transcript → Inspector (when open) |
+| `F1` / `Ctrl+X` | Global | Show keyboard shortcuts and help (`/help`) |
+| `Ctrl+C` | Global | Cancel running turn (or double-press to clear draft when idle) |
+| `Ctrl+Q` / `Ctrl+D` | Global | Quit (double-press confirmation; `Ctrl+D` deletes in Prompt) |
+| `Ctrl+Z` | Global | Suspend TUI and restore host terminal |
+| `Ctrl+L` | Global | Force full terminal redraw |
+| `Enter` | Prompt | Send prompt (or insert newline in multiline mode) |
+| `Shift+Enter` / `Alt+Enter` | Prompt | Insert newline |
+| `Ctrl+M` | Prompt | Toggle multiline mode |
+| `Alt+E` / `F4` | Prompt | Compose/edit draft in external `$VISUAL` / `$EDITOR` (`/edit` fallback) |
+| `Ctrl+R` | Prompt | Open searchable prompt history (`HistoryOverlay`) |
+| `Ctrl+V` | Prompt | Paste plain text from local OS clipboard |
+| `Ctrl+Z` / `Ctrl+_` | Prompt | Undo prompt edit |
+| `Ctrl+Y` | Prompt | Yank from kill ring |
+| `Esc` (2×) | Prompt | Clear current draft |
+| `↑` / `k`, `↓` / `j` | Transcript | Select previous / next entry |
+| `e` / `Enter`, `E`, `R` | Transcript | Toggle entry or capsule fold / fold all / expand all |
+| `Ctrl+F` / `/`, `n` / `N` | Transcript | Search transcript / next or previous match |
+| `y` / `Y` | Transcript | Copy drag selection or entry / open Smart Copy Menu (`/copy`) |
+| `i` | Transcript | Toggle Inspector Drawer |
+| `PgUp` / `PgDn`, `Ctrl+U` / `Ctrl+D`, `g` / `G` | Transcript | Page / half-page / jump to top or bottom |
+| `Esc` | Transcript | Return focus to composer & clear selection |
+| `]` / `[` | Inspector | Next / previous tab (`Think`, `Steps`, `Diffs`, `Info`) |
+| `←` / `h`, `→` / `l` | Inspector | Previous / next reasoning step or edited file diff |
+| `↑` / `k`, `↓` / `j`, `PgUp` / `PgDn` | Inspector | Scroll drawer body |
+| `y` | Inspector | Copy active tab content |
+| `Esc` | Inspector | Return focus to composer |
+| `↑↓←→` / `hjkl`, `PgUp` / `PgDn`, `g` / `G` | Dashboard | Navigate sessions |
+| `Enter` / `r` / `Ctrl+X` / `Esc` | Dashboard | Open / rename / close highlighted session / back |
 
 ### The Mark, the Tab Title and Progress
 
@@ -345,8 +385,8 @@ sequenceDiagram
 
 ### Benefits
 
-- **Zero Flicker**: No full-screen clear codes (`\x1b[2J`) during normal updates.
-- **Minimal Bandwidth**: Idle ticks write exactly 0 bytes over SSH connections.
+- **Zero Flicker & DEC 2026 Synchronized Output**: No full-screen clear codes (`\x1b[2J`) during normal updates. `Painter.SetSynchronized(true)` wraps non-empty frame flushes in DEC Mode 2026 (`\x1b[?2026h` … `\x1b[?2026l`) so terminals supporting synchronized updates paint atomically without tearing.
+- **Minimal Bandwidth**: Idle ticks write exactly 0 bytes over SSH connections (even with synchronized output enabled).
 - **Accurate Widths**: Full East Asian Width (Ambiguous / Fullwidth) and emoji handling in pure Go.
 - **Combining Marks Cap**: Cells limit combining marks to at most 30 (`render.MaxCombPerCell`, conforming to UAX #15 Stream-Safe Text Format) to eliminate rendering stalls from runaway or adversarial Unicode combining sequences.
 - **Linear-Time Long Line Layout**: Long unbroken lines (minified JSON, base64 blobs) wrap in linear time (`render.Line.Wrap`). Streamed open lines keep rows before the last two in their final form, redrawing only the tail each frame.
@@ -376,7 +416,7 @@ flowchart TD
 
 ### Ambiguities Resolved by Unit Test
 
-1. **Tab vs Ctrl+I**: Disambiguated in raw mode by tracking modifier state.
+1. **Tab vs Ctrl+I & Kitty CSI-u Negotiation**: `term.Options.KittyKeyboard` negotiates Kitty keyboard disambiguation (`\x1b[>1u` on start/resume, `\x1b[<u` on stop, suspend, or external-editor yield), and `decodeCSI` parses `ESC [ codepoint ; modifiers u` while validating `utf8.ValidRune` so `Shift+Enter`, `Alt+E`, and `Tab` vs `Ctrl+I` resolve unambiguously without letting invalid or surrogate codepoints enter the composer.
 2. **Esc vs Arrow Keys**: Lone `0x1B` emits `KeyEscape` only when no CSI bytes follow within the read deadline.
 3. **Bracketed Paste**: Multi-line pasted text is parsed as a single `EventPaste` payload in linear time, bookmarking search offsets across chunk reads to avoid quadratic re-scans, and preventing premature submission if the paste contains carriage returns.
 

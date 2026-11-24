@@ -47,12 +47,13 @@ type Terminal struct {
 
 	profile render.Profile
 	unicode bool
-	// mouse, motion, paste, and focus record what was enabled, so teardown disables
-	// exactly what setup turned on.
+	// mouse, motion, paste, focus, and kitty record what was enabled, so
+	// teardown disables exactly what setup turned on.
 	mouse  bool
 	motion bool
 	paste  bool
 	focus  bool
+	kitty  bool
 
 	// status is the title and progress indicator this run has written, so
 	// both can be taken back. See status.go.
@@ -135,8 +136,22 @@ type Options struct {
 	BracketedPaste bool
 	// Focus enables focus in/out reporting (CSI ?1004h).
 	Focus bool
+	// KittyKeyboard pushes Kitty keyboard disambiguation mode (CSI >1u) so
+	// Shift+Enter, Ctrl+Shift+letter, and Tab vs Ctrl+I arrive unambiguously on
+	// modern terminals; terminals that do not support it ignore the sequence.
+	KittyKeyboard bool
 	// Title, when set, is written to the window title and restored on exit.
 	Title string
+}
+
+// Started reports whether the terminal is currently owned in raw mode.
+func (t *Terminal) Started() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.started
 }
 
 // Start puts the terminal into raw mode and applies the options.
@@ -173,6 +188,7 @@ func (t *Terminal) Start(opts Options) error {
 	t.motion = opts.Mouse && opts.Motion
 	t.paste = opts.BracketedPaste
 	t.focus = opts.Focus
+	t.kitty = opts.KittyKeyboard
 	b.WriteString(t.enableModesLocked())
 	b.WriteString("\x1b[?25l") // hide the cursor; the painter places it
 	if _, err := io.WriteString(t.out, b.String()); err != nil {
@@ -188,46 +204,59 @@ func (t *Terminal) Start(opts Options) error {
 
 // enableModesLocked is the sequence that turns on every reporting mode this
 // terminal was started with, and nothing else. Start, and the resume after a
-// suspend, both write it, so what is turned back on is by construction what
-// was on.
-func (t *Terminal) enableModesLocked() string {
+// suspend or an external program, all write it (through modesOn), so what is
+// turned back on is by construction what was on.
+func (t *Terminal) enableModesLocked() string { return modesOn(t.snapshotLocked()) }
+
+// disableModesLocked is the sequence that takes back exactly what
+// enableModesLocked turned on, in the reverse order. Stop, Suspend and
+// RunExternal all write it (through modesOff): a shell that is handed the
+// terminal with focus or any-motion reporting still on receives every focus
+// change and pointer move as input.
+func (t *Terminal) disableModesLocked() string { return modesOff(t.snapshotLocked()) }
+
+// modesOn is the enable sequence for exactly the modes the snapshot holds.
+func modesOn(snap ttyModeSnapshot) string {
 	var b strings.Builder
-	if t.mouse {
+	if snap.mouse {
 		// 1000 button events, 1002 drag, 1006 SGR encoding.
 		// SGR matters: the original encoding packs coordinates into single
 		// bytes and simply cannot address a column past 223, which any
 		// full-width terminal has.
 		b.WriteString("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
 	}
-	if t.motion {
+	if snap.motion {
 		// 1003 any-motion, layered on 1002's drag-only reporting.
 		b.WriteString("\x1b[?1003h")
 	}
-	if t.paste {
+	if snap.paste {
 		b.WriteString("\x1b[?2004h")
 	}
-	if t.focus {
+	if snap.focus {
 		b.WriteString("\x1b[?1004h")
+	}
+	if snap.kitty {
+		b.WriteString("\x1b[>1u")
 	}
 	return b.String()
 }
 
-// disableModesLocked is the sequence that takes back exactly what
-// enableModesLocked turned on, in the reverse order. Stop and Suspend both
-// write it: a shell that is handed the terminal with focus or any-motion
-// reporting still on receives every focus change and pointer move as input.
-func (t *Terminal) disableModesLocked() string {
+// modesOff is modesOn's inverse, in the reverse order.
+func modesOff(snap ttyModeSnapshot) string {
 	var b strings.Builder
-	if t.focus {
+	if snap.kitty {
+		b.WriteString("\x1b[<u")
+	}
+	if snap.focus {
 		b.WriteString("\x1b[?1004l")
 	}
-	if t.paste {
+	if snap.paste {
 		b.WriteString("\x1b[?2004l")
 	}
-	if t.motion {
+	if snap.motion {
 		b.WriteString("\x1b[?1003l")
 	}
-	if t.mouse {
+	if snap.mouse {
 		b.WriteString("\x1b[?1006l\x1b[?1002l\x1b[?1000l")
 	}
 	return b.String()
@@ -279,7 +308,7 @@ func (t *Terminal) restoreLocked() error {
 
 	var b strings.Builder
 	b.WriteString(t.disableModesLocked())
-	t.focus, t.paste, t.motion, t.mouse = false, false, false, false
+	t.kitty, t.focus, t.paste, t.motion, t.mouse = false, false, false, false, false
 	b.WriteString("\x1b[0m")     // drop any style the last frame left set
 	b.WriteString("\x1b[?25h")   // show the cursor again
 	b.WriteString("\x1b[?1049l") // leave the alternate screen
@@ -333,6 +362,76 @@ func (t *Terminal) Resized() <-chan struct{} { return t.resize }
 // been put back into raw mode and the screen must be repainted from scratch.
 func (t *Terminal) Resumed() <-chan struct{} { return t.suspended }
 
+// ttyModeSnapshot records the active terminal modes across a temporary yield
+// (Ctrl+Z suspend or an external interactive process).
+type ttyModeSnapshot struct {
+	saved  *state
+	mouse  bool
+	motion bool
+	paste  bool
+	focus  bool
+	kitty  bool
+}
+
+func (t *Terminal) snapshotLocked() ttyModeSnapshot {
+	return ttyModeSnapshot{
+		saved:  t.saved,
+		mouse:  t.mouse,
+		motion: t.motion,
+		paste:  t.paste,
+		focus:  t.focus,
+		kitty:  t.kitty,
+	}
+}
+
+func leaveTTY(out io.Writer, fd uintptr, snap ttyModeSnapshot, settle string) error {
+	_, _ = io.WriteString(out, modesOff(snap)+"\x1b[0m\x1b[?25h\x1b[?1049l"+settle)
+	return setState(fd, snap.saved)
+}
+
+func enterTTY(out io.Writer, fd uintptr, snap ttyModeSnapshot) error {
+	if _, err := makeRaw(fd); err != nil {
+		return err
+	}
+	_, err := io.WriteString(out, "\x1b[?1049h"+modesOn(snap)+"\x1b[?25l")
+	return err
+}
+
+// RunExternal temporarily leaves raw mode, alternate screen, mouse, paste,
+// focus, and Kitty keyboard modes, runs fn, and restores the active TUI modes
+// afterwards so an interactive program (such as $VISUAL/$EDITOR) can own tty.
+func (t *Terminal) RunExternal(fn func() error) (retErr error) {
+	if fn == nil {
+		return nil
+	}
+	if t == nil {
+		return fn()
+	}
+
+	t.mu.Lock()
+	started := t.started
+	snap := t.snapshotLocked()
+	settle := ""
+	if started && snap.saved != nil {
+		settle = t.settleStatusLocked()
+	}
+	t.mu.Unlock()
+
+	if !started || snap.saved == nil {
+		return fn()
+	}
+
+	if err := leaveTTY(t.out, t.in.Fd(), snap, settle); err != nil {
+		return err
+	}
+	defer func() {
+		if rErr := enterTTY(t.out, t.in.Fd(), snap); rErr != nil {
+			retErr = errors.Join(retErr, rErr)
+		}
+	}()
+	return fn()
+}
+
 // Suspend performs a Ctrl+Z: restore the terminal, stop this process, and on
 // resume put everything back and ask for a repaint.
 // afterRestoreForTest runs after the tty is restored and before the process
@@ -346,23 +445,22 @@ func (t *Terminal) Suspend() error {
 	}
 
 	t.mu.Lock()
-	saved, off, on := t.saved, t.disableModesLocked(), t.enableModesLocked()
+	snap := t.snapshotLocked()
 	// The tab must not go on saying an agent is running while the process is
 	// stopped and a shell has the terminal. Settling also forgets what was
 	// written, so the first frame after the resume writes both again.
 	settle := ""
-	if saved != nil {
+	if snap.saved != nil {
 		settle = t.settleStatusLocked()
 	}
 	t.mu.Unlock()
-	if saved == nil {
+	if snap.saved == nil {
 		return nil
 	}
 
 	// Hand the terminal back before stopping. A process suspended while the tty
 	// is raw leaves the shell with no echo and no line editing.
-	_, _ = io.WriteString(t.out, off+"\x1b[0m\x1b[?25h\x1b[?1049l"+settle)
-	if err := setState(t.in.Fd(), saved); err != nil {
+	if err := leaveTTY(t.out, t.in.Fd(), snap, settle); err != nil {
 		return err
 	}
 	if afterRestoreForTest != nil {
@@ -381,14 +479,7 @@ func (t *Terminal) Suspend() error {
 	// Resumed: re-establish everything, then ask for a full repaint. The screen
 	// contents are gone and the painter's diff would otherwise skip every cell
 	// it believes is already correct.
-	if _, err := makeRaw(t.in.Fd()); err != nil {
-		return err
-	}
-	var b strings.Builder
-	b.WriteString("\x1b[?1049h")
-	b.WriteString(on)
-	b.WriteString("\x1b[?25l")
-	if _, err := io.WriteString(t.out, b.String()); err != nil {
+	if err := enterTTY(t.out, t.in.Fd(), snap); err != nil {
 		return err
 	}
 	// Signals are deliberately not re-armed here: the notification registered

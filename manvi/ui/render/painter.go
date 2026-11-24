@@ -38,6 +38,8 @@ type Painter struct {
 	// what keeps a styled frame from costing an SGR sequence per cell.
 	style    Style
 	styleSet bool
+	// curLink is the active OSC 8 LinkID currently open in the terminal.
+	curLink uint16
 
 	// lastCursor is where the caret was left. Together with "no cell changed"
 	// it is what lets an idle frame write nothing at all.
@@ -45,7 +47,13 @@ type Painter struct {
 	// painted records that at least one frame has been written, so the first
 	// call cannot be mistaken for an idle one.
 	painted bool
+	// synchronized wraps non-empty frames in DEC 2026 synchronized output
+	// (\x1b[?2026h ... \x1b[?2026l) so terminals that support it avoid tearing.
+	synchronized bool
 }
+
+// SetSynchronized enables or disables DEC 2026 synchronized output wrapping.
+func (p *Painter) SetSynchronized(on bool) { p.synchronized = on }
 
 // NewPainter builds a painter for a screen of the given size.
 func NewPainter(w, h int, p Profile) *Painter {
@@ -91,6 +99,7 @@ func (p *Painter) Resize(w, h int) {
 func (p *Painter) Invalidate() {
 	p.full = true
 	p.styleSet = false
+	p.curLink = 0
 }
 
 // Flush writes the difference to out and adopts the new frame as current.
@@ -98,12 +107,16 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 	p.scratch.Reset()
 	b := &p.scratch
 
+	if p.synchronized {
+		b.WriteString("\x1b[?2026h")
+	}
 	// The cursor is hidden for the duration of the paint. Without this it
 	// visibly races across the screen following the writes, which on a frame
 	// with many small changes looks like flicker.
 	b.WriteString("\x1b[?25l")
 	prefix := b.Len()
 	p.styleSet = false
+	p.curLink = 0
 
 	// Position is tracked so a run that continues where the last one ended
 	// needs no cursor move. On text-heavy frames most runs do.
@@ -133,6 +146,10 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 			}
 
 			if lastY != y || lastX != start {
+				if p.curLink != 0 {
+					b.WriteString("\x1b]8;;\x1b\\")
+					p.curLink = 0
+				}
 				b.WriteString("\x1b[")
 				b.WriteString(strconv.Itoa(y + 1))
 				b.WriteByte(';')
@@ -149,6 +166,7 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 					col++
 					continue
 				}
+				p.applyLink(b, cell.LinkID)
 				p.applyStyle(b, cell.Style)
 				if cell.R == 0 {
 					b.WriteByte(' ')
@@ -171,6 +189,13 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 		}
 	}
 
+	// Any open OSC 8 hyperlink must be closed before the final SGR reset so
+	// trailing output never inherits a clickable link and frames still end with
+	// "\x1b[0m" when styled.
+	if p.curLink != 0 {
+		b.WriteString("\x1b]8;;\x1b\\")
+		p.curLink = 0
+	}
 	// The style is reset at the end of every frame. Leaving the terminal in a
 	// coloured state means anything else that writes — a panic trace, a shell
 	// prompt after a crash — inherits it.
@@ -198,7 +223,11 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 	if p.painted && !p.full && !changed && cur == p.lastCursor {
 		return nil
 	}
+	if p.synchronized {
+		b.WriteString("\x1b[?2026l")
+	}
 
+	p.prev.links = append(p.prev.links[:0], p.cur.links...)
 	p.full = false
 	p.painted = true
 	p.lastCursor = cur
@@ -209,7 +238,13 @@ func (p *Painter) Flush(out io.Writer, cur Cursor) error {
 // same reports whether a cell is already correct on screen.
 func (p *Painter) same(x, y int) bool {
 	a, b := p.cur.Cell(x, y), p.prev.Cell(x, y)
-	return a.R == b.R && a.Comb == b.Comb && a.Style.Equal(b.Style)
+	if a.R != b.R || a.Comb != b.Comb || !a.Style.Equal(b.Style) || a.LinkID != b.LinkID {
+		return false
+	}
+	if a.LinkID != 0 && p.cur.LinkURL(a.LinkID) != p.prev.LinkURL(b.LinkID) {
+		return false
+	}
+	return true
 }
 
 // runEnd finds the last column worth including in one run starting at start.
@@ -247,14 +282,14 @@ func (p *Painter) eraseRest(b *bytes.Buffer, x, y int, lastX, lastY *int) bool {
 		return false
 	}
 	want := p.cur.Cell(x, y)
-	if want.R != ' ' || want.Comb != "" {
+	if want.R != ' ' || want.Comb != "" || want.LinkID != 0 {
 		return false
 	}
 	// EL paints with the current background, so it can only stand in for a run
-	// of blanks that all share one style.
+	// of blanks that all share one style and carry no hyperlink.
 	for col := x; col < p.cur.W; col++ {
 		c := p.cur.Cell(col, y)
-		if c.R != ' ' || c.Comb != "" || !c.Style.Equal(want.Style) {
+		if c.R != ' ' || c.Comb != "" || !c.Style.Equal(want.Style) || c.LinkID != 0 {
 			return false
 		}
 	}
@@ -277,6 +312,10 @@ func (p *Painter) eraseRest(b *bytes.Buffer, x, y int, lastX, lastY *int) bool {
 		}
 	}
 
+	if p.curLink != 0 {
+		b.WriteString("\x1b]8;;\x1b\\")
+		p.curLink = 0
+	}
 	if *lastY != y || *lastX != x {
 		b.WriteString("\x1b[")
 		b.WriteString(strconv.Itoa(y + 1))
@@ -291,6 +330,30 @@ func (p *Painter) eraseRest(b *bytes.Buffer, x, y int, lastX, lastY *int) bool {
 	}
 	*lastX, *lastY = x, y
 	return true
+}
+
+// applyLink emits an OSC 8 open or close sequence when the cell's LinkID changes.
+func (p *Painter) applyLink(b *bytes.Buffer, id uint16) {
+	if id == p.curLink {
+		return
+	}
+	if id == 0 {
+		b.WriteString("\x1b]8;;\x1b\\")
+		p.curLink = 0
+		return
+	}
+	url := p.cur.LinkURL(id)
+	if url == "" {
+		if p.curLink != 0 {
+			b.WriteString("\x1b]8;;\x1b\\")
+			p.curLink = 0
+		}
+		return
+	}
+	b.WriteString("\x1b]8;;")
+	b.WriteString(url)
+	b.WriteString("\x1b\\")
+	p.curLink = id
 }
 
 // applyStyle emits an SGR only when the terminal's state differs.

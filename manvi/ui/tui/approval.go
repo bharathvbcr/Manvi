@@ -78,6 +78,8 @@ type ApprovalCard struct {
 	// uses it: an allow/deny card and a single-select question both answer from
 	// option alone.
 	picked map[int]bool
+	// diffExpanded reveals up to 40 diff preview lines instead of the default 8.
+	diffExpanded bool
 
 	// Index and Total track position in the pending approval queue.
 	Index int
@@ -315,6 +317,16 @@ func (c *ApprovalCard) options() []string {
 		"deny — the operation is refused [esc]",
 		"allow once — record a scoped, reasoned grant [enter]",
 	}
+}
+
+// ToggleDiff expands or collapses the approval card's diff preview beyond the
+// default 8-line cap so operators can inspect full patches before deciding.
+func (c *ApprovalCard) ToggleDiff() bool {
+	if c == nil || c.Request.Diff == "" {
+		return false
+	}
+	c.diffExpanded = !c.diffExpanded
+	return true
 }
 
 // Toggle ticks or unticks the highlighted row of a multi-select question, and
@@ -566,12 +578,22 @@ func (c *ApprovalCard) content(th Theme, width int) (lines []render.Line, reason
 
 	// Syntax-colored diff preview for file writes and edits.
 	if c.Request.Diff != "" {
-		add(render.Styled("┌─ diff preview ", render.Style{Fg: th.Info, Bg: th.BgOverlay, Attrs: render.Bold}))
 		diffLines := strings.Split(c.Request.Diff, "\n")
 		maxDiff := 8
+		toggleHint := ""
+		if len(diffLines) > maxDiff {
+			if c.diffExpanded {
+				maxDiff = 40
+				toggleHint = "  [v collapse]"
+			} else {
+				toggleHint = "  [v expand]"
+			}
+		}
+		add(render.Styled("┌─ diff preview ", render.Style{Fg: th.Info, Bg: th.BgOverlay, Attrs: render.Bold}).
+			Append(toggleHint, muted))
 		for idx, dl := range diffLines {
 			if idx >= maxDiff {
-				add(render.Styled(fmt.Sprintf("│ … %d more diff lines", len(diffLines)-maxDiff), muted))
+				add(render.Styled(fmt.Sprintf("│ … %d more diff lines (press v to toggle)", len(diffLines)-maxDiff), muted))
 				break
 			}
 			st := muted

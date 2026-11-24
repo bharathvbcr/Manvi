@@ -6,10 +6,11 @@ import (
 	"unicode/utf8"
 )
 
-// Span is a run of text sharing one style.
+// Span is a run of text sharing one style and an optional OSC 8 hyperlink.
 type Span struct {
 	Text  string
 	Style Style
+	Link  string
 }
 
 // Line is a styled line of text, built from spans.
@@ -49,6 +50,14 @@ func (l Line) Append(text string, s Style) Line {
 		return l
 	}
 	return append(l, Span{Text: text, Style: s})
+}
+
+// AppendLink adds a hyperlinked span, returning the extended line.
+func (l Line) AppendLink(text, url string, s Style) Line {
+	if text == "" {
+		return l
+	}
+	return append(l, Span{Text: text, Style: s, Link: url})
 }
 
 // Concat joins two lines into one.
@@ -96,9 +105,9 @@ func (l Line) Truncate(w int) Line {
 		}
 		cut := TruncateWidth(span.Text, budget-used, "")
 		if cut != "" {
-			out = append(out, Span{Text: cut, Style: span.Style})
+			out = append(out, Span{Text: cut, Style: span.Style, Link: span.Link})
 		}
-		out = append(out, Span{Text: "…", Style: span.Style})
+		out = append(out, Span{Text: "…", Style: span.Style, Link: span.Link})
 		return out
 	}
 	return out
@@ -108,7 +117,11 @@ func (l Line) Truncate(w int) Line {
 func (l Line) Draw(b *Buffer, x, y int) int {
 	used := 0
 	for _, span := range l {
-		used += b.SetString(x+used, y, span.Text, span.Style)
+		var linkID uint16
+		if span.Link != "" {
+			linkID = b.RegisterLink(span.Link)
+		}
+		used += b.SetStringLinked(x+used, y, span.Text, span.Style, linkID)
 	}
 	return used
 }
@@ -170,7 +183,7 @@ func (l Line) Wrap(width int) []Line {
 				// then keep the space only if the line is not already full.
 				flushWord()
 				if curWidth+ww <= width {
-					cur = cur.Append(word, span.Style)
+					cur = cur.AppendLink(word, span.Link, span.Style)
 					curWidth += ww
 				} else if curWidth > 0 {
 					breakLine()
@@ -191,7 +204,7 @@ func (l Line) Wrap(width int) []Line {
 				// word's length.
 				for ww > width {
 					cut, cutWidth := hardBreak(word, width)
-					cur = cur.Append(word[:cut], span.Style)
+					cur = cur.AppendLink(word[:cut], span.Link, span.Style)
 					breakLine()
 					word = word[cut:]
 					ww -= cutWidth
@@ -210,7 +223,7 @@ func (l Line) Wrap(width int) []Line {
 				}
 			}
 			if word != "" {
-				pending = pending.Append(word, span.Style)
+				pending = pending.AppendLink(word, span.Link, span.Style)
 				pendingWidth += ww
 			}
 		}
