@@ -637,6 +637,16 @@
         "go-test"
       ],
       "why": "Environment-dependent (b31-llmops): the subtest skips when the host answers the plain-HTTP request to a TLS listener with an HTTP status instead of a transport failure (not a 502), which depends on the host's network stack."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestAdvB31StreamedListingNonUTF8Name",
+      "os": [
+        "macos-latest"
+      ],
+      "legs": [
+        "go-test"
+      ],
+      "why": "Environment-dependent (b31-adv): APFS refuses a non-UTF-8 directory name (mkdir: illegal byte sequence), so the test cannot build its fixture on macOS and skips; Linux filesystems accept the name and run it."
     }
   ],
   "fuzz_floors": [

@@ -102,6 +102,9 @@ test("the macos verdict CI produced is fully expected", () => {
     "github.com/bharathvbcr/Manvi/manvi/agent.TestOpenB31SettleMergeDecodingKeepsUnknownKinds",
     "github.com/bharathvbcr/Manvi/manvi/agent.TestOpenB31SettleLoopReportsUnknownKindsOnTheOutcomeAndLog",
     "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestOpenB31SettleOutcomeNoticeNamesUnknownKinds",
+    // Since the 2026-11-25 consolidation: APFS refuses the non-UTF-8 directory
+    // name this b31 adversarial test needs (mkdir: illegal byte sequence).
+    "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestAdvB31StreamedListingNonUTF8Name",
   ];
   const log = [
     "PASS with gates that did not run:",
