@@ -1,6 +1,7 @@
 {
   "name": "manvi-devtools",
   "private": true,
+  "license": "MIT OR Apache-2.0",
   "description": "Dev-time tooling for documentation gates. Nothing here ships in the manvi binary.",
   "homepage": "https://manvi.vbcr.dev",
   "repository": {
