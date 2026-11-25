@@ -294,6 +294,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- DevCouncil pin moved from `84b97f0b` to `2acef200` (origin/main; 50 commits).
+  DevCouncil's extraction schema moves 101 to 102 and `devmap --version` now
+  names the stack lease format (2); devmap-store 29, dc-store 11 and workbench
+  17 are unchanged, and the docs schema re-read gate is re-read at the new pin.
+  DevCouncil is now dual-licensed `MIT OR Apache-2.0`, so `crates/Cargo.toml`
+  mirrors that license for the linked `dc-*` crates (crate_pins_test compares
+  it). gusset stays at `19383ad`.
+
 - DevCouncil pin moved from `8286e445` to `84b97f0b` (origin/main; 11 commits,
   none touching `rust/`). Schema constants are unchanged (dc-store 11,
   workbench 17), so no cross-app schema carry is needed, and the docs schema
