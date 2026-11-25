@@ -137,6 +137,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- DevCouncil pin moved from `2acef200` to `63ca82ea` (10 commits). It carries
+  the policy fix that stops `command.secret_read` treating a search or text
+  tool's program (`grep -o 'gh:.*'`, a sed script, an awk program, a jq
+  filter) as a file path, which refused that grep as a read of `.env.local`.
+  devmap-store 29, dc-store 11 and workbench 17 are unchanged (re-read at the
+  new pin), and `backend/contracts` is identical. gusset stays at `19383ad`.
+
 - DevCouncil pin moved from `84b97f0b` to `2acef200` (origin/main; 50 commits).
   DevCouncil's extraction schema moves 101 to 102 and `devmap --version` now
   names the stack lease format (2); devmap-store 29, dc-store 11 and workbench
