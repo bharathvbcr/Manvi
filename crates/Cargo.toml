@@ -16,7 +16,7 @@ edition = "2024"
 # the mirror must define it or the whole workspace fails to load. The pin test
 # does not compare rust-version; it is a floor, not a dependency spec.
 rust-version = "1.100"
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 
 # Canonical sources live in DevCouncil rust/, where `dc-store` inherits
 # rusqlite, `dc-evidence` inherits sha2, `dc-proc` inherits libc and
