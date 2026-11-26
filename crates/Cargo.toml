@@ -2,7 +2,7 @@
 resolver = "3"
 # Canonical sources live in DevCouncil rust/. These members are
 # symlinks for local `cargo build` / verify.sh; release consumers pin or vendor
-# from DevCouncil (see README note below and GitPulse vendor-crates.mjs).
+# from DevCouncil (see README note below and Waylode vendor-crates.mjs).
 members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence", "dc-proc", "dc-redact"]
 
 # Every value a symlinked member inherits from here must equal DevCouncil's

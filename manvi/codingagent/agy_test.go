@@ -681,9 +681,9 @@ func TestAgyMcpServersAndGracefulCancelCloseOnShutdown(t *testing.T) {
 
 	// Pre-spawn MCP server validation rejects invalid entries without spawning.
 	for name, servers := range map[string][]McpServer{
-		"relative-command": {{Name: "gitpulse", Command: "gitpulse-mcp"}},
-		"duplicate-name":   {{Name: "gp", Command: bin}, {Name: "gp", Command: bin}},
-		"invalid-env-key":  {{Name: "gp", Command: bin, Env: []McpEnvVar{{Name: "A=B", Value: "1"}}}},
+		"relative-command": {{Name: "waylode", Command: "waylode-mcp"}},
+		"duplicate-name":   {{Name: "wl", Command: bin}, {Name: "wl", Command: bin}},
+		"invalid-env-key":  {{Name: "wl", Command: bin, Env: []McpEnvVar{{Name: "A=B", Value: "1"}}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, err := StartAgy(t.Context(), Options{
@@ -710,7 +710,7 @@ func TestAgyMcpServersAndGracefulCancelCloseOnShutdown(t *testing.T) {
 		Cwd:     root,
 		Mode:    "ask",
 		McpServers: []McpServer{{
-			Name:    "gitpulse",
+			Name:    "waylode",
 			Command: bin,
 		}},
 	}, agyFixtureArgs("silent"))
@@ -721,7 +721,7 @@ func TestAgyMcpServersAndGracefulCancelCloseOnShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(loggedNew), `"name":"gitpulse"`) || !strings.Contains(string(loggedNew), `"args":[]`) || !strings.Contains(string(loggedNew), `"env":[]`) {
+	if !strings.Contains(string(loggedNew), `"name":"waylode"`) || !strings.Contains(string(loggedNew), `"args":[]`) || !strings.Contains(string(loggedNew), `"env":[]`) {
 		t.Fatalf("unexpected session/new mcpServers payload: %s", string(loggedNew))
 	}
 

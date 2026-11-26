@@ -99,11 +99,11 @@ failure, so read the message on stderr and the tool's own text on stdout):
   No status above 1 is returned. 'dev tool call' differs: 0 answered, 1 refused,
   2 malformed, 3 could not run here; 'manvi tool' has no separate status for
   a refusal, a malformed request or a tool that could not run.
-  'gitpulse-mcp call' differs in arguments and exits. It takes TOOL key=value ...,
+  'waylode-mcp call' differs in arguments and exits. It takes TOOL key=value ...,
   --json OBJECT, --json - (stdin) or --json @file, and --write for a tool that is
   not read-only; 'manvi tool' takes only --json VALUE or --json=VALUE, with no
   key=value, no - or @file, and no --write (the policy gate governs writes).
-  gitpulse-mcp exits 0 answered, 1 tool error, 2 bad command line,
+  waylode-mcp exits 0 answered, 1 tool error, 2 bad command line,
   3 answer incomplete, 4 timed out; manvi tool has no 2, 3 or 4.
 
 Options (any command):

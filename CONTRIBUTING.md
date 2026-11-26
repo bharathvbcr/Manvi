@@ -164,7 +164,7 @@ changed, and say so in the commit. The methodology is in
 
 Ask what the change is *about*, not which checkout is open. MANVI wraps
 DevCouncil; **DevCouncil owns the components and modules**, and DevCouncil is
-upstream for all of them. GitPulse consumes both and vendors selected crates.
+upstream for all of them. Waylode consumes both and vendors selected crates.
 
 | The change is about… | It belongs in |
 |---|---|

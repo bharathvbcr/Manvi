@@ -418,7 +418,7 @@ manvi run -p "remove unused imports from helper.go"
 manvi serve
 ```
 
-Hosts such as GitPulse resolve `manvi` from PATH, `~/go/bin`, Homebrew, and
+Hosts such as Waylode resolve `manvi` from PATH, `~/go/bin`, Homebrew, and
 `GITPULSE_MANVI_BIN`. Point `GITPULSE_MANVI_ROOT` at this checkout when installing
 from the app UI. A configured `GITPULSE_MANVI_BIN` that does not exist is refused
 rather than searched past.

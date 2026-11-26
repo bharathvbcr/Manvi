@@ -427,7 +427,7 @@ func sameCheckout(a, b os.FileInfo) bool {
 // subdirectory of a worktree (a monorepo package is where agents are most often
 // pointed) writes files the worktree's other runs and verifications read, and a
 // run at the root writes the subdirectory's, so a hold or a live harness on either
-// holds the other. A linked worktree nested in a repository (GitPulse puts them
+// holds the other. A linked worktree nested in a repository (Waylode puts them
 // under <repo>/.claude/worktrees and .gitpulse/worktrees) is another working tree
 // with its own files, and a submodule is a repository of its own: neither is
 // overlapped by its container. The paths are the resolved ones (resolvedCheckout),
@@ -1244,7 +1244,7 @@ func (j *managedJob) claimActivation(owner, session string, pid int) (receipt js
 //
 //   - The permission mode decides whether the agent may finish the task. An
 //     inspect attempt must not change the task's status, so it is never told
-//     how to. The external-terminal lane states the same scope in GitPulse's
+//     how to. The external-terminal lane states the same scope in Waylode's
 //     launch argument; the wording matches on purpose.
 //   - The turn is unattended and single: approvals reach the host's decision
 //     queue, but a question asked in prose gets no answer before it ends.
@@ -1255,7 +1255,7 @@ func (j *managedJob) claimActivation(owner, session string, pid int) (receipt js
 //     works with none of the repository's rules.
 func managedTurn(provider, mode, brief string) string {
 	parts := []string{
-		"You are a managed coding agent that Manvi started for a saved GitPulse task, in the checkout that is your working directory. This is one unattended turn: permission requests go to the host's approval queue, but nobody can answer a question you ask in text before the turn ends, so when you need a person's decision, stop and say what is needed.",
+		"You are a managed coding agent that Manvi started for a saved Waylode task, in the checkout that is your working directory. This is one unattended turn: permission requests go to the host's approval queue, but nobody can answer a question you ask in text before the turn ends, so when you need a person's decision, stop and say what is needed.",
 	}
 	switch provider {
 	case "claude":
@@ -1266,14 +1266,14 @@ func managedTurn(provider, mode, brief string) string {
 	if mode == "inspect" {
 		parts = append(parts, "Inspect and propose a plan; do not modify files or change the task's status.")
 	} else {
-		parts = append(parts, "Carry out the saved task within the selected permission mode. When every acceptance criterion is met and your verification passed, mark the task done with the gitpulse_complete_task tool, using the id on the brief's Task: line and a short summary of what changed and how you verified it; if anything is unfinished or needs a person's judgement, use status review instead and say what remains. If this session has no gitpulse_complete_task tool (Manvi attaches it only when gitpulse-mcp resolves, and your own MCP servers are not loaded here), end your turn by stating the task id, the status you would have set and that summary.")
+		parts = append(parts, "Carry out the saved task within the selected permission mode. When every acceptance criterion is met and your verification passed, mark the task done with the waylode_complete_task tool (a legacy gitpulse-mcp build names it gitpulse_complete_task), using the id on the brief's Task: line and a short summary of what changed and how you verified it; if anything is unfinished or needs a person's judgement, use status review instead and say what remains. If this session has neither tool (Manvi attaches it only when waylode-mcp or gitpulse-mcp resolves, and your own MCP servers are not loaded here), end your turn by stating the task id, the status you would have set and that summary.")
 	}
 	parts = append(parts, "Do not publish changes (push, merge, release) on the user's behalf.")
 	// Say the brief carries guidance only when this brief does. Manvi and the
 	// store that renders briefs ship separately, so a store that predates the
 	// section must not be described as having it.
 	if strings.Contains(brief, managedGuidanceHeading) {
-		parts = append(parts, "The task brief follows. It opens with the agent guidance every GitPulse handoff carries, then the saved task.")
+		parts = append(parts, "The task brief follows. It opens with the agent guidance every Waylode handoff carries, then the saved task.")
 	} else {
 		parts = append(parts, "The task brief follows. Before you change anything, read the repository's own instructions and the code the task touches, and verify your work with the project's own checks.")
 	}

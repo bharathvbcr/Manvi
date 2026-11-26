@@ -33,8 +33,8 @@ Pin or vendor from DevCouncil rather than copying sources here:
 
 - **git dependency** (preferred once published): path to the DevCouncil revision
   that owns the crates, or a tagged release of that repo.
-- **GitPulse**: `scripts/vendor-crates.mjs` origins `dc-*` from DevCouncil
-  `rust/` (not from these symlinks). GitPulse selects the modules it needs and
+- **Waylode**: `scripts/vendor-crates.mjs` origins `dc-*` from DevCouncil
+  `rust/` (not from these symlinks). Waylode selects the modules it needs and
   updates them independently of this wrap.
 
 Do not edit through the symlink and commit only on the Manvi side — the change

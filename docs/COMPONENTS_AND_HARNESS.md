@@ -15,7 +15,7 @@ session log, the TUI, and `manvi serve` for embedding into other applications. I
 supplies what a component cannot — judgement, conversation, model calls, and the
 decision about *when* to invoke which block.
 
-**GitPulse uses both for their respective jobs.** It wraps MANVI for policy,
+**Waylode uses both for their respective jobs.** It wraps MANVI for policy,
 workbench, and agent hosting, and it vendors selected DevCouncil crates (`devmap-*`)
 plus the `devmap` CLI for code intelligence. An app can update one module, or take
 only the subset it needs.
@@ -23,7 +23,7 @@ only the subset it needs.
 ```mermaid
 flowchart TB
     subgraph Apps["Host applications"]
-        GitPulse["GitPulse (selects modules)"]
+        Waylode["Waylode (selects modules)"]
         IDE["IDEs / editors"]
         Other["Other apps embedding the harness"]
         Term["Terminal (manvi tui / run)"]
@@ -69,12 +69,12 @@ that needed MANVI to run would stop being a building block.
 
 ## 1. The division
 
-| | DevCouncil | MANVI | GitPulse |
-|---|---|---|---|
+| | DevCouncil | MANVI | Waylode |
+|---|---|---|
 | **Is** | A set of components and modules, each answering one question well | The harness that wraps them into a working agent | A host that selects Manvi and DevCouncil modules for their jobs |
 | **Ships** | Standalone binaries and crates, one contract each | One static Go binary, plus `manvi serve` | Desktop app that vendors selected crates and runs `manvi serve` |
 | **Owns** | Code intelligence, task/lease state, verification, search — and the planning council as it lands | Turn loop, provider seam, policy ladder, grants, session log, TUI, tool suite | Git UI, ledger, worktrees, and the surfaces that present Manvi/DevCouncil results |
-| **Consumed by** | MANVI, GitPulse, and anything else that speaks JSON on stdio or links a crate | IDEs, editors, host applications, CI | Operators of the desktop app |
+| **Consumed by** | MANVI, Waylode, and anything else that speaks JSON on stdio or links a crate | IDEs, editors, host applications, CI | Operators of the desktop app |
 | **Depends on** | Nothing in MANVI | Every component it wraps, at the process boundary only | Selected modules only — not the whole suite |
 
 That one-way dependency is what keeps the components reusable: a component that
@@ -94,7 +94,7 @@ make a component consumable by an agent that is not MANVI.
    links a component: linking would forfeit static binaries, cross-compilation
    and process isolation. The one exception is the Gusset umbrella archive,
    which carries the policy matcher and is linked (statically on Linux). Other hosts may *also* link a
-   selected crate (GitPulse vendors `devmap-query` in-process). Both seams are
+   selected crate (Waylode vendors `devmap-query` in-process). Both seams are
    valid; neither requires taking every module.
 2. **Every outcome is JSON on stdout, including failures.** A caller never parses
    prose or infers from an exit code alone. The exit code is a coarse duplicate.
@@ -485,7 +485,7 @@ ported there, but authorship is history, not ownership. They are edited in
 DevCouncil now; MANVI's `crates/` copy is a development convenience. Note that
 only the *sources* are duplicated — nothing in MANVI links, so the deployed
 arrangement is already correct: one set of component binaries, one harness wrapping
-them. GitPulse vendors selected crates from DevCouncil rather than from this
+them. Waylode vendors selected crates from DevCouncil rather than from this
 mirror.
 
 **MANVI's `mcp/` being a client is correct, not a gap.** An earlier assessment

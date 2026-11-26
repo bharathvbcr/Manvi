@@ -2,7 +2,7 @@
 
 Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-performance coding-agent harness built in Go and Rust with native tool execution and dual-plane determinism. It ships as one binary with no interpreter or runtime to install; the only linked native code is the Gusset policy engine.
 
-**Start here if you are new:** MANVI *wraps* DevCouncil **components and modules**. DevCouncil owns `devmap`, `dcstore`, `dcverify` and `dcgrep` — standalone binaries with a JSON-on-stdio contract — and MANVI is the harness that turns them into a runnable agent while linking none of them. Host apps such as GitPulse use MANVI and selected DevCouncil modules independently, and can update one without taking the rest. That boundary is what makes MANVI embeddable. See [**Components and Harness**](COMPONENTS_AND_HARNESS.md).
+**Start here if you are new:** MANVI *wraps* DevCouncil **components and modules**. DevCouncil owns `devmap`, `dcstore`, `dcverify` and `dcgrep` — standalone binaries with a JSON-on-stdio contract — and MANVI is the harness that turns them into a runnable agent while linking none of them. Host apps such as Waylode use MANVI and selected DevCouncil modules independently, and can update one without taking the rest. That boundary is what makes MANVI embeddable. See [**Components and Harness**](COMPONENTS_AND_HARNESS.md).
 
 ---
 
@@ -37,7 +37,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**Components and Harness**](COMPONENTS_AND_HARNESS.md)  
   **Start here.** How MANVI and DevCouncil relate: DevCouncil is the component
   and module layer (building blocks with a JSON-on-stdio contract, usable by any
-  coding agent or host), MANVI wraps them, and GitPulse selects both for their
+  coding agent or host), MANVI wraps them, and Waylode selects both for their
   respective jobs. Defines the contract a component satisfies, the inventory, how
   each binary is resolved, which language each remaining component belongs in,
   where a given change belongs, the checklist a newly ported one must meet, and

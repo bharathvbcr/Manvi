@@ -19,6 +19,19 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
+// containsEither reports whether s holds any of the spellings. Waylode's MCP
+// tools moved from gitpulse_* to waylode_*; DevCouncil's agent guidance (read
+// from the pinned DevCouncil) says one or the other depending on which commit
+// is pinned, so a test about the guidance accepts both.
+func containsEither(s string, spellings ...string) bool {
+	for _, spelling := range spellings {
+		if strings.Contains(s, spelling) {
+			return true
+		}
+	}
+	return false
+}
+
 type managedTestSession struct {
 	ctx            context.Context
 	config         codingagent.Effective
@@ -411,10 +424,10 @@ func TestManagedHostPersistsCallbacksAndRequiresNativeActivationBeforeOneTurn(t 
 			// store's brief verbatim, which itself opens with the agent guidance.
 			turn, _ := session.sent.Load().(string)
 			preface, brief, found := strings.Cut(turn, "\n\n# Task brief v1\n\n")
-			if !found || !strings.HasPrefix(brief, "## Agent guidance\n") || !strings.Contains(brief, "gitpulse_insights") || !strings.Contains(brief, "## Title\nInspect fixture\n") {
+			if !found || !strings.HasPrefix(brief, "## Agent guidance\n") || !containsEither(brief, "waylode_insights", "gitpulse_insights") || !strings.Contains(brief, "## Title\nInspect fixture\n") {
 				t.Fatalf("the managed turn did not deliver the recorded brief with its guidance:\n%s", turn)
 			}
-			if !strings.Contains(preface, "gitpulse_complete_task") || !strings.Contains(preface, "Do not publish changes") {
+			if !strings.Contains(preface, "waylode_complete_task") || !strings.Contains(preface, "Do not publish changes") {
 				t.Fatalf("an ask-mode turn lost its completion or publishing rule:\n%s", preface)
 			}
 			if withRequest && session.replies.Load() != 1 {
@@ -450,8 +463,12 @@ func TestManagedTurnScopesTheAttemptAndKeepsTheBriefVerbatim(t *testing.T) {
 			if !found {
 				t.Fatalf("%s/%s: the brief is not carried verbatim at the end:\n%s", provider, mode, turn)
 			}
-			if strings.Contains(preface, "gitpulse_complete_task") == (mode == "inspect") {
+			if strings.Contains(preface, "waylode_complete_task") == (mode == "inspect") {
 				t.Fatalf("%s/%s: completion rule is wrong for the mode:\n%s", provider, mode, preface)
+			}
+			// An inspect turn names neither spelling of the completion tool.
+			if mode == "inspect" && containsEither(preface, "waylode_complete_task", "gitpulse_complete_task") {
+				t.Fatalf("%s/inspect: names a completion tool it must not use:\n%s", provider, preface)
 			}
 			if mode == "inspect" && !strings.Contains(preface, "do not modify files or change the task's status") {
 				t.Fatalf("%s/inspect: not told to leave files and status alone:\n%s", provider, preface)

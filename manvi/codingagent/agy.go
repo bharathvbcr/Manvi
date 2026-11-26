@@ -136,7 +136,7 @@ func startAgy(ctx context.Context, options Options, argv func(mode string) []str
 	}, nil
 }
 
-// agyPolicy maps GitPulse's six managed permission modes onto `agy acp`'s
+// agyPolicy maps Waylode's six managed permission modes onto `agy acp`'s
 // negotiated ACP mode (`plan`, `default`, `accept-edits`), recorded approval
 // policy, reviewer, and sandbox description.
 func agyPolicy(o Options) (acpMode, approval, reviewer string, sandbox Sandbox, err error) {

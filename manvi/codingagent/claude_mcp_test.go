@@ -19,10 +19,10 @@ func TestClaudeMcpConfigJSONAndRejectionCases(t *testing.T) {
 	}
 	raw, err := claudeMcpConfigJSON([]McpServer{
 		{
-			Name:    "gitpulse",
+			Name:    "waylode",
 			Command: bin,
 			Args:    []string{"--stdio"},
-			Env:     []McpEnvVar{{Name: "GITPULSE_HOST", Value: "claude"}},
+			Env:     []McpEnvVar{{Name: "WAYLODE_HOST", Value: "claude"}},
 		},
 		{
 			Name:    "devmap",
@@ -44,9 +44,9 @@ func TestClaudeMcpConfigJSONAndRejectionCases(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		t.Fatalf("unmarshal config JSON: %v", err)
 	}
-	gp, ok := parsed.McpServers["gitpulse"]
-	if !ok || gp.Type != "stdio" || gp.Command != bin || !slices.Equal(gp.Args, []string{"--stdio"}) || gp.Env["GITPULSE_HOST"] != "claude" {
-		t.Fatalf("unexpected gitpulse entry: %+v", gp)
+	wl, ok := parsed.McpServers["waylode"]
+	if !ok || wl.Type != "stdio" || wl.Command != bin || !slices.Equal(wl.Args, []string{"--stdio"}) || wl.Env["WAYLODE_HOST"] != "claude" {
+		t.Fatalf("unexpected waylode entry: %+v", wl)
 	}
 	dm, ok := parsed.McpServers["devmap"]
 	if !ok || dm.Type != "stdio" || dm.Command != bin || !slices.Equal(dm.Args, []string{"mcp"}) || len(dm.Env) != 0 {
@@ -54,9 +54,9 @@ func TestClaudeMcpConfigJSONAndRejectionCases(t *testing.T) {
 	}
 
 	for name, servers := range map[string][]McpServer{
-		"relative-command": {{Name: "gitpulse", Command: "gitpulse-mcp"}},
-		"duplicate-server": {{Name: "gp", Command: bin}, {Name: "gp", Command: bin}},
-		"duplicate-env":    {{Name: "gp", Command: bin, Env: []McpEnvVar{{Name: "A", Value: "1"}, {Name: "A", Value: "2"}}}},
+		"relative-command": {{Name: "waylode", Command: "waylode-mcp"}},
+		"duplicate-server": {{Name: "wl", Command: bin}, {Name: "wl", Command: bin}},
+		"duplicate-env":    {{Name: "wl", Command: bin, Env: []McpEnvVar{{Name: "A", Value: "1"}, {Name: "A", Value: "2"}}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := claudeMcpConfigJSON(servers); err == nil {
@@ -83,10 +83,10 @@ func TestClaudeMcpStartPassesConfigFlagAndKeepsSettingSourcesUser(t *testing.T) 
 		Cwd:     root,
 		Mode:    "ask",
 		McpServers: []McpServer{{
-			Name:    "gitpulse",
+			Name:    "waylode",
 			Command: bin,
 			Args:    []string{},
-			Env:     []McpEnvVar{{Name: "GP_TEST", Value: "1"}},
+			Env:     []McpEnvVar{{Name: "WL_TEST", Value: "1"}},
 		}},
 	}, func(mode, session string) []string {
 		return append([]string{"-test.run=^TestClaudeMcpArgsChild$", "--", "claude-args-fixture"}, claudeArgs(mode, session)...)
@@ -110,8 +110,8 @@ func TestClaudeMcpStartPassesConfigFlagAndKeepsSettingSourcesUser(t *testing.T) 
 		t.Fatalf("expected --setting-sources user in %v", argv)
 	}
 	mcpIdx := slices.Index(argv, "--mcp-config")
-	if mcpIdx < 0 || mcpIdx+1 >= len(argv) || !strings.Contains(argv[mcpIdx+1], `"gitpulse"`) {
-		t.Fatalf("expected --mcp-config with gitpulse entry in %v", argv)
+	if mcpIdx < 0 || mcpIdx+1 >= len(argv) || !strings.Contains(argv[mcpIdx+1], `"waylode"`) {
+		t.Fatalf("expected --mcp-config with waylode entry in %v", argv)
 	}
 	if !slices.Contains(argv, "--strict-mcp-config") {
 		t.Fatalf("expected --strict-mcp-config, so the operator's own MCP servers do not load beside Manvi's, in %v", argv)

@@ -155,7 +155,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	defer stop()
 
 	// Every devmap client is built for a root the request named and the server
-	// validated, never for this process's working directory: GitPulse launches
+	// validated, never for this process's working directory: Waylode launches
 	// the sidecar in a scratch directory. WarmDevmapPool reuses one bounded
 	// `devmap mcp` stdio session per canonical root (`P0.3`).
 	devmapPool := serve.NewWarmDevmapPool(toolBinary("MANVI_MAP_BINARY", "devmap"))
@@ -475,9 +475,11 @@ func (g closingGaps) Close() error { g.Client.Close(); return nil }
 // non-empty path that is not an executable file (an empty value counts as
 // unset). The devmap server follows MANVI_DEVMAP_MCP_BINARY first, so it can be
 // turned off without touching MANVI_MAP_BINARY, which is also the devmap Manvi
-// itself navigates with.
+// itself navigates with. The waylode server follows MANVI_WAYLODE_MCP_BINARY /
+// waylode-mcp first, falling back to MANVI_GITPULSE_MCP_BINARY / gitpulse-mcp
+// when MANVI_WAYLODE_MCP_BINARY is unset and waylode-mcp is absent.
 //
-// An inspect session gets only devmap, whose tools are all read-only: gitpulse
+// An inspect session gets only devmap, whose tools are all read-only: waylode
 // can merge and prune worktrees, open terminals and edit the task board, which a
 // session started not to change anything has no business holding, whatever the
 // operator would approve (owner decision, 2026-11-19).
@@ -486,6 +488,7 @@ func managedMcpServers(mode string) []codingagent.McpServer {
 	if os.Getenv("MANVI_DEVMAP_MCP_BINARY") != "" {
 		devmap = toolBinary("MANVI_DEVMAP_MCP_BINARY", "devmap")
 	}
+	waylodeResolved, waylodeBin := resolveWaylodeMcpBinary()
 	var servers []codingagent.McpServer
 	for _, spec := range []struct {
 		name     string
@@ -493,13 +496,13 @@ func managedMcpServers(mode string) []codingagent.McpServer {
 		bin      string
 		args     []string
 	}{
-		{name: "gitpulse", resolved: toolBinary("MANVI_GITPULSE_MCP_BINARY", "gitpulse-mcp"), bin: "gitpulse-mcp", args: []string{}},
+		{name: "waylode", resolved: waylodeResolved, bin: waylodeBin, args: []string{}},
 		{name: "devmap", resolved: devmap, bin: "devmap", args: []string{"mcp"}},
 	} {
 		if mode == "inspect" && spec.name != "devmap" {
 			continue
 		}
-		if filepath.IsAbs(spec.resolved) && spec.resolved != unresolvedTool(spec.bin) && isExecutableFile(spec.resolved) {
+		if isUsableMcpBinary(spec.resolved, spec.bin) {
 			servers = append(servers, codingagent.McpServer{
 				Name:    spec.name,
 				Command: spec.resolved,
@@ -509,4 +512,21 @@ func managedMcpServers(mode string) []codingagent.McpServer {
 		}
 	}
 	return servers
+}
+
+func resolveWaylodeMcpBinary() (resolved, bin string) {
+	if os.Getenv("MANVI_WAYLODE_MCP_BINARY") != "" {
+		return toolBinary("MANVI_WAYLODE_MCP_BINARY", "waylode-mcp"), "waylode-mcp"
+	}
+	if os.Getenv("MANVI_GITPULSE_MCP_BINARY") != "" {
+		return toolBinary("MANVI_GITPULSE_MCP_BINARY", "gitpulse-mcp"), "gitpulse-mcp"
+	}
+	if p := toolBinary("MANVI_WAYLODE_MCP_BINARY", "waylode-mcp"); isUsableMcpBinary(p, "waylode-mcp") {
+		return p, "waylode-mcp"
+	}
+	return toolBinary("MANVI_GITPULSE_MCP_BINARY", "gitpulse-mcp"), "gitpulse-mcp"
+}
+
+func isUsableMcpBinary(resolved, bin string) bool {
+	return filepath.IsAbs(resolved) && resolved != unresolvedTool(bin) && isExecutableFile(resolved)
 }

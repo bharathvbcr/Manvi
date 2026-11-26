@@ -252,13 +252,14 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 	// Only the servers Manvi attached, always (owner decision, 2026-11-19).
 	// --setting-sources user keeps the operator's user settings, and with them
 	// their user-level MCP servers and plugins; those loaded beside Manvi's, so
-	// the MANVI_*_MCP_BINARY opt-outs removed Manvi's gitpulse while the
-	// operator's own gitpulse plugin (worktree_merge, terminal_spawn, …) stayed
-	// in every managed session, inspect included. Measured on Claude Code
+	// the MANVI_*_MCP_BINARY opt-outs removed Manvi's waylode server while the
+	// operator's own waylode/gitpulse plugin (worktree_merge, terminal_spawn, …)
+	// stayed in every managed session, inspect included. Measured on Claude Code
 	// 2.1.328 under a real user profile: MCP tools went from 129 to 2, and every
-	// configured and plugin MCP server (gitpulse, devmap, scholarlm, lightpanda,
-	// …) was gone. The two left were tools plugins register in-process
-	// (cockpit's and blast-radius's selfcheck), which the flag does not cover.
+	// configured and plugin MCP server (waylode/gitpulse, devmap, scholarlm,
+	// lightpanda, …) was gone. The two left were tools plugins register
+	// in-process (cockpit's and blast-radius's selfcheck), which the flag does
+	// not cover.
 	args = append(args, "--strict-mcp-config")
 	wire, err := startConnectionOverrides(ctx, program, args, cwd, childenv.Inherit(), seatOverrides, validateClaudeFrame)
 	if err != nil {
@@ -1191,7 +1192,7 @@ func (s *Claude) response(request Request, response Response) (any, error) {
 			}
 			return map[string]any{
 				"behavior": "deny",
-				"message":  "The operator declined this question in GitPulse.",
+				"message":  "The operator declined this question in Waylode.",
 			}, nil
 		}
 		if response.Decision != "answer" {
@@ -1249,7 +1250,7 @@ func (s *Claude) response(request Request, response Response) (any, error) {
 		}
 		return map[string]any{
 			"behavior": "deny",
-			"message":  "The operator denied this action in GitPulse.",
+			"message":  "The operator denied this action in Waylode.",
 		}, nil
 	}
 }

@@ -24,7 +24,7 @@ import (
 // cloud (Claude through the Anthropic API) or on a local model server.
 //
 // The choice is llm.provider.default in the operator's user config, the layer
-// every invocation reads whichever program started it — a shell, GitPulse, a
+// every invocation reads whichever program started it — a shell, Waylode, a
 // script. So a host that starts Manvi carries no copy of the choice, and
 // switching is one command rather than one per app. The environment still wins
 // over it, as it wins over every setting, and the status says so rather than
@@ -59,7 +59,7 @@ func modeOf(provider string) string {
 	return modeOther
 }
 
-// useStatus is what `manvi use --json` answers. It is a host contract: GitPulse
+// useStatus is what `manvi use --json` answers. It is a host contract: Waylode
 // reads it, so fields are added, never renamed or removed.
 type useStatus struct {
 	Mode         string `json:"mode"`

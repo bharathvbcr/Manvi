@@ -308,7 +308,7 @@ func (s *Codex) Initialize(ctx context.Context) error {
 	}
 	ready, stop := context.WithTimeout(ctx, 10*time.Second)
 	defer stop()
-	init := json.RawMessage(`{"clientInfo":{"name":"manvi_gitpulse","version":"1"},"capabilities":{"experimentalApi":false}}`)
+	init := json.RawMessage(`{"clientInfo":{"name":"manvi_waylode","version":"1"},"capabilities":{"experimentalApi":false}}`)
 	initialized, err := s.call(ready, "initialize", init)
 	if err != nil {
 		return err
