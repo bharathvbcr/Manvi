@@ -93,7 +93,7 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 	// On the screen's own ground, in the two quietest text colours. It was a
 	// raised bar across the top row with the model in bold: the first thing in
 	// the frame, saying what does not change from one turn to the next. What
-	// does need seeing — a grant, a full context window, a lease running out —
+	// does need seeing — a grant, a posture that is not strict —
 	// is still drawn strong, and is the only thing on the row that is.
 	bg := th.Bg
 	base := render.Style{Fg: th.FgSubtle, Bg: bg}

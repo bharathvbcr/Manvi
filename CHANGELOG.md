@@ -25,7 +25,9 @@ under **Unreleased** in the same commit as the code.
 
 - TUI status bar, dashboard and inspector: removed the segments no session could
   ever show (model provider suffix, task lease countdown, git branch chip,
-  context gauge, step counter). Nothing set the fields behind them;
+  context gauge, step counter) and the Info tab's Provider, Branch and Context
+  rows. The Info tab's `y` copy text no longer has a `branch:` line. Nothing
+  set the fields behind them;
   `TestEveryStatusFieldIsSetByProductionCode` now fails if a `Status` field has
   no production setter.
 - `devcouncil_read_file` / `devcouncil_write_file`: a whole-file read whose text

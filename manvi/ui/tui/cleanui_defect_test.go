@@ -112,12 +112,24 @@ func TestANarrowStatusBarKeepsTheModel(t *testing.T) {
 	th := Dark()
 	th.Unicode = true
 	st := Status{
-		Posture: "strict", Model: "claude-opus-5-5",
-		InputTokens: 18234, OutputTokens: 912, Grants: 1,
+		Posture: "strict", Model: "claude-opus-5-5", TaskID: "TASK-7",
+		InputTokens: 18234, OutputTokens: 912, Grants: 1, Sessions: 3,
+	}
+	// The fixture must overflow sixty columns, or the test cannot fail: drawn
+	// unconstrained, every segment is there.
+	wide := render.NewBuffer(120, 1)
+	DrawStatusBar(wide, wide.Bounds(), th, st, 0, nil, false)
+	full := bufferString(wide)
+	for _, want := range []string{"TASK-7", "3 sessions", "18.2k"} {
+		if !strings.Contains(full, want) {
+			t.Fatalf("the unconstrained bar lacks %q, so the fixture does not exercise dropping: %q", want, full)
+		}
 	}
 	b := render.NewBuffer(60, 1)
 	DrawStatusBar(b, b.Bounds(), th, st, 0, nil, false)
 	out := bufferString(b)
+	t.Logf("120 cols: %q", full)
+	t.Logf(" 60 cols: %q", out)
 	for _, want := range []string{"strict", "claude-opus-5-5", "1 granted"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("a sixty-column bar dropped %q: %q", want, out)

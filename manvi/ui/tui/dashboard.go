@@ -14,7 +14,7 @@ import (
 // orchestrator spawns builders, each holding a lease on a task, and the
 // question an operator actually has is not "what is this session doing" but
 // "which of these is blocked on me, which is burning tokens, and which is
-// holding a lease that is about to lapse". A single-session view cannot answer
+// holding which task". A single-session view cannot answer
 // any of those.
 type Dashboard struct {
 	sel int

@@ -35,7 +35,7 @@ const inspectorMinWidth = 116
 //   - Live regenerating thinking (without wasting main transcript space)
 //   - Current turn steps and nested sub-agent activity
 //   - Synthesized diffs of files modified in this session
-//   - DevCouncil posture, active lease countdown, and token/cost breakdown
+//   - DevCouncil posture, task, and token/cost breakdown
 type Inspector struct {
 	Open bool
 	Tab  InspectorTab
@@ -822,8 +822,7 @@ func (ins *Inspector) drawInfoTab(b *render.Buffer, r render.Rect, th Theme, v *
 	kv("Posture", orDash(st.Posture), th.Strong())
 	kv("Model", orDash(st.Model), th.Base())
 	if st.TaskID != "" {
-		task := st.TaskID
-		kv("Lease", task, th.Status(StatusInfo))
+		kv("Lease", st.TaskID, th.Status(StatusInfo))
 	}
 	kv("Tokens", fmt.Sprintf("%s in / %s out", groupDigits(st.InputTokens), groupDigits(st.OutputTokens)), th.Muted())
 

@@ -373,7 +373,7 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 	}
 
 	// Nothing is pinned to the top: the transcript has the screen down to the
-	// composer, and what the session is — posture, model, branch, context — is
+	// composer, and what the session is — posture, task, model, tokens — is
 	// one quiet row under it, shared with the keys of the moment.
 	area := r
 	area, footer := area.SplitBottom(1)
