@@ -233,7 +233,7 @@ func TestGapsFromUsesDevCouncilWording(t *testing.T) {
 	}{
 		{"secret_scan", "a/k.go", 3, "Remove the detected secret/finding from the diff and rotate any exposed credential."},
 		{"stub_detection", "a/s.go", 7, "Replace the stub/placeholder at a/s.go:7 with a real implementation, then re-verify. Do not mark work complete while placeholders remain."},
-		{"stub_detection", "", 0, "Replace the stub/placeholder at the affected file:0 with a real implementation, then re-verify. Do not mark work complete while placeholders remain."},
+		{"stub_detection", "", 0, "Replace the stub/placeholder at the affected file with a real implementation, then re-verify. Do not mark work complete while placeholders remain."},
 		{"stub_allowed", "a/s.go", 9, "Review the intentional stub declared at a/s.go:9; replace it before marking done."},
 		{"assert_free_test", "a/t_test.go", 4, "Make the added test assert on the behaviour it is named for, or call a helper that does."},
 		{"skipped_test", "a/t_test.go", 5, "Remove the unconditional skip, or make the skip conditional on what the test needs."},

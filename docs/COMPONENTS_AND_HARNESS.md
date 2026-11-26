@@ -81,6 +81,12 @@ That one-way dependency is what keeps the components reusable: a component that
 had to be told about the harness would be a harness feature wearing a
 component's name.
 
+### Waylode Primary (Free) & Waylode Labs Integration
+
+MANVI is 100% free, open source (`MIT OR Apache-2.0`), local-first, and requires no sign-in. Its local turn loop, policy enforcement + Gusset, local JSON audit export, solo AI spend accounting (`CostNanoUSD`, `StallCost`), and `manvi serve` host plane contain zero billing or paywall logic and power **Waylode Primary (Free)** directly (including BYOK SSH runners, cloud VMs, and user model keys).
+
+**Waylode Labs** (the optional paid ecosystem subscription backed by `gitpulse-relay`) layers hosted team and org capabilities *outside* MANVI's core through typed host seams: remote mobile/web approval of blocked commands over `manvi serve` (`Labs Geek` / `Labs Geek Squad`), Space-level team spend rollups aggregating MANVI's cost metrics (`Labs Geek Squad` / `Enterprise`), and org-signed `policy_bundles` enforced locally by `manvi serve` and Gusset (`Enterprise`).
+
 ---
 
 ## 2. The contract a component satisfies
@@ -278,11 +284,12 @@ ran and passed reports.
 **The Python is gone.** DevCouncil's Python package was deleted in Phase 7, and
 the port's status is a per-row decision table in
 [`DEVCOUNCIL_PORT_ROADMAP.md`](DEVCOUNCIL_PORT_ROADMAP.md), measured against
-DevCouncil's own `docs/PHASE7_LONG_TAIL.md`. The three things that once mattered
+`DevCouncil/docs/PHASE7_LONG_TAIL.md`. The three things that once mattered
 most have different outcomes: the MCP server is the Go host's 8 tools plus
-MANVI's native registry as the thick surface; the council has no code in either
-repository and its placement (decision D2) is still open; verification's
-AST stub detection landed in `dc-verify`.
+MANVI's native registry as the thick surface; DevCouncil's `planning/` and
+`council/` were hard-cut while MANVI later added `devcouncil_debate`
+(`manvi/devcouncil/debate.go`); and verification's AST stub detection landed in
+`dc-verify`.
 
 ---
 
@@ -293,18 +300,16 @@ no binary, and never appears on the boundary. Its Go counterpart is
 775-case CPython `fnmatch` parity fixture — the one rule both sides must agree
 on, so it is implemented twice on purpose and checked against a third party.
 
-**Not yet ported — still Python in DevCouncil.** Roughly 50k lines, of which the
-load-bearing pieces for the harness are the planning council (`planning/`,
-`council/`), the deeper verification gates (`verification/`), and the
-integrations layer (`integrations/`). Until a subsystem is ported and has a
-contract, MANVI does not reach it at all — there is deliberately no Python
-fallback path in the harness, because a fallback is what lets a broken primary
-path go unnoticed.
+**Historical note (pre-Phase 7):** Until Phase 7 deleted DevCouncil's Python
+tree, the deeper verification gates and integrations were still in Python and
+MANVI deliberately kept no Python fallback path, because a fallback is what lets
+a broken primary path go unnoticed. That invariant still holds: until a
+capability has a ported component contract, MANVI does not shim it.
 
-**In flight.** The task model now carries `requirement_ids` and
-`acceptance_criterion_ids` across the boundary, and `dc.Requirement` /
-`dc.AcceptanceCriterion` mirror DevCouncil's model field for field. That is the
-substrate the council port needs; the council itself has not moved.
+**Requirements substrate.** The task model carries `requirement_ids` and
+`acceptance_criterion_ids` across the boundary, and `Requirement` /
+`AcceptanceCriterion` in `DevCouncil/backend/go_orchestrator/dc/requirement.go`
+mirror DevCouncil's model field for field.
 
 ---
 
@@ -562,8 +567,8 @@ component. The Python `devcouncil` package has been deleted. The fixtures:
 | `testdata/fnmatch-parity.tsv` | 775 | `scripts/gen-fnmatch-parity.py`, which imports **CPython's** `fnmatch` | Unchanged — CPython is not being ported |
 
 Do not set `DEVCOUNCIL_SRC`, `uv run` a `devcouncil` module, or regenerate the
-command TSV from a deleted tree. `TestCommandParityWithPythonEngine` lives in
-DevCouncil (`backend/go_orchestrator/policy/command_test.go`) and reads the
+command TSV from a deleted tree. The command-parity test (TestCommandParityWithPythonEngine in
+`DevCouncil/backend/go_orchestrator/policy/command_test.go`) reads the
 committed TSV as the Go gate's expected answers, including the documented
 divergences. That is a snapshot of policy, not a claim that Python still runs.
 

@@ -10,7 +10,7 @@ This document provides a comprehensive architectural reference for **MANVI** (*o
 
 DevCouncil owns the components. Four are already Rust and ship as standalone binaries with a JSON-on-stdio contract: the code-intelligence graph (`devmap`), the task and lease store (`dcstore`), the deterministic verifier (`dcverify`), and the repository searcher (`dcgrep`). Each is useful on its own and to any coding agent or host that speaks the contract, not only this one. A host can update one module, or take only a subset.
 
-MANVI is the harness that wraps them into a working coding agent: it drives the turn loop, the provider seam, the policy ladder, the session log and the terminal, and it reaches every component across that one boundary. It is not a rewrite of DevCouncil and does not replace it; it is what turns a set of components into something an operator or another application can run. GitPulse uses that wrap for policy, workbench, and agent hosting, and selected DevCouncil crates for code intelligence.
+MANVI is the harness that wraps them into a working coding agent: it drives the turn loop, the provider seam, the policy ladder, the session log and the terminal, and it reaches every component across that one boundary. It is not a rewrite of DevCouncil and does not replace it; it is what turns a set of components into something an operator or another application can run. Waylode uses that wrap for policy, workbench, and agent hosting, and selected DevCouncil crates for code intelligence.
 
 **That makes MANVI embeddable.** Because the harness is a single Go binary (static on Linux) whose only external contract is `fork`/`exec` plus line-delimited JSON, it drops into other applications without dragging an interpreter, a shared library, or a package manager behind it. Release builds link exactly one Rust archive, the Gusset policy engine; no DevCouncil component is ever linked. `manvi serve` exposes the whole harness — policy enforcement, capability discovery, token budgeting, completion settling — over NDJSON on stdio, which is what an IDE, an editor extension, or a host process integrates against. See [`SERVE_HOST_PLANE.md`](SERVE_HOST_PLANE.md).
 
@@ -35,18 +35,18 @@ existing provider factory asynchronously. Cancellation requires actual worker
 acknowledgement; expired unresolved work is never an automatic retry. Storage
 CRUD does not start model calls. Hosts can read provider/model selection through
 `work.enhancements.configuration` without opening storage or resolving a provider.
-GitPulse exposes proposal review, edits preserving original model output, and
+Waylode exposes proposal review, edits preserving original model output, and
 selected acceptance/undo. Automatic preparation shares the existing proposal
 slot and quota; disabling automation cancels pending/running automatic work
 through the same lifecycle. A coalescing coordinator wakes after committed text
 saves, resumes prepared work after restart, and pauses uncertain claimed attempts.
-GitPulse exposes profile settings and worker status with one shared visible-board
+Waylode exposes profile settings and worker status with one shared visible-board
 timer; a failed wake cannot invalidate a committed save. Managed Codex supervision
 is implemented by the separate provider protocol described below.
 Schema five adds durable terminal attempt records and one immutable canonical
 brief per attempt. A launch claim is consumable once, including across host
 restart; exact claim replay returns `claim_consumed`. Recorded process outcomes
-never accept tasks. GitPulse validates actual checkout/branch observations at
+never accept tasks. Waylode validates actual checkout/branch observations at
 preparation and claim time. Process launch, provider permissions and termination
 proof remain host integration work, not properties of these storage records.
 Schema six records private activity entries transactionally with run/enhancement
@@ -54,17 +54,17 @@ outcomes. Schema seven adds opt-in notification preferences, scoped mutes, local
 quiet hours and delivery records. A unique claim records uncertainty before the
 host's OS side effect; a missing callback never authorizes another submission.
 Saved activation and acknowledgment remain separate from task/proposal acceptance.
-Manvi owns these store contracts; GitPulse owns OS authorization, delivery and
+Manvi owns these store contracts; Waylode owns OS authorization, delivery and
 activation callbacks. Store tests do not prove that an OS displayed a banner.
 Schema eight binds permission requests/questions to an immutable run, task,
 repository, payload digest and callback identity. Human decisions, one-use
 delivery claims and provider resolution are separate states of progress. The
 Go client hashes captured/retained payloads; the Rust store validates revisions,
-expiry and ownership. GitPulse exposes review controls while reserving capture,
+expiry and ownership. Waylode exposes review controls while reserving capture,
 claim and resolution for the owning host.
 Schema nine distinguishes managed and terminal run claims. `codingagent` owns
 Codex's bounded stdio protocol, effective-setting verification and one-use callback
-responses. Schema ten makes `serve.ManagedRunner` claim and spawn first; GitPulse
+responses. Schema ten makes `serve.ManagedRunner` claim and spawn first; Waylode
 records native process identity before Manvi initializes an ephemeral thread,
 verifies its effective settings and sends one model turn. Known pre-spawn failures
 release their claim; uncertain starts retain it. Failed initialization preserves

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manvi.local/specs/002/enforcement-boundary.schema.json",
+  "title": "Manvi Policy Enforcement and Hardening Boundary Contract",
+  "description": "Machine-readable ownership, verdict parity, and safety-guard bounds for specs/002.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_id",
+    "owner_repo",
+    "canonical_verdict_schema",
+    "verdict_classifications",
+    "manvi_check_exit_codes",
+    "containment_bounds",
+    "computer_mask_bounds"
+  ],
+  "properties": {
+    "spec_id": {
+      "const": "002-policy-enforcement-and-hardening"
+    },
+    "owner_repo": {
+      "const": "Manvi"
+    },
+    "canonical_verdict_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["definition_owner", "manvi_mirror", "ui_consumer"],
+      "properties": {
+        "definition_owner": { "const": "DevCouncil/backend/contracts/verdict.schema.json" },
+        "manvi_mirror": { "const": "Manvi/contracts/verdict.schema.json" },
+        "ui_consumer": { "const": "Waylode" }
+      }
+    },
+    "verdict_classifications": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["unchecked", "denied", "granted", "demoted", "widened", "degraded", "warned", "clean"]
+      },
+      "minItems": 8,
+      "maxItems": 8,
+      "uniqueItems": true
+    },
+    "manvi_check_exit_codes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed", "command_error", "soft_blocked", "hard_blocked"],
+      "properties": {
+        "allowed": { "const": 0 },
+        "command_error": { "const": 1 },
+        "soft_blocked": { "const": 6 },
+        "hard_blocked": { "const": 7 }
+      }
+    },
+    "containment_bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_walk_entries", "max_profile_bytes", "memguard_probe_seconds"],
+      "properties": {
+        "max_walk_entries": { "const": 2000000 },
+        "max_profile_bytes": { "const": 262144 },
+        "memguard_probe_seconds": { "const": 10 }
+      }
+    },
+    "computer_mask_bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_folded_runes", "max_split_siblings", "max_split_bytes", "max_remembered_masks", "remembered_overlap"],
+      "properties": {
+        "min_folded_runes": { "const": 6 },
+        "max_split_siblings": { "const": 8 },
+        "max_split_bytes": { "const": 4096 },
+        "max_remembered_masks": { "const": 256 },
+        "remembered_overlap": { "const": 0.5 }
+      }
+    }
+  }
+}

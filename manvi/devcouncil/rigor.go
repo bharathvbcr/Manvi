@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
@@ -222,42 +223,6 @@ func (c rigorClient) deadline(diff string) (time.Duration, *leanBound) {
 	return min(want, limit), &leanBound{files: files, importsPerFile: leanKernelMaxStaged}
 }
 
-// rigorActionText is DevCouncil's actionText (devcouncil/verify/next_actions.go)
-// for the gates dcverify emits, character for character, so one finding reads
-// the same whether it was raised through DevCouncil or through Manvi. The gate
-// names map to DevCouncil's gap types in devcouncil/verify/rigor.go
-// (gapsFromFindings): secret_scan is security_risk, stub_detection is
-// stub_detected, stub_allowed is stub_declared. assert_free_test and
-// skipped_test carry their text as the gap's recommended fix, which actionText
-// returns for a type it has no case for. A finding with no path names "the
-// affected file", and the stub texts always carry a line, as there.
-func rigorActionText(f Finding) string {
-	target := "the affected file"
-	if f.Path != "" {
-		target = f.Path
-	}
-	loc := target + ":" + strconv.Itoa(f.Line)
-	switch f.Gate {
-	case "secret_scan":
-		return "Remove the detected secret/finding from the diff and rotate any exposed credential."
-	case "stub_detection":
-		return "Replace the stub/placeholder at " + loc + " with a real implementation, then re-verify. " +
-			"Do not mark work complete while placeholders remain."
-	case "stub_allowed":
-		return "Review the intentional stub declared at " + loc + "; replace it before marking done."
-	case "assert_free_test":
-		return "Make the added test assert on the behaviour it is named for, or call a helper that does."
-	case "skipped_test":
-		return "Remove the unconditional skip, or make the skip conditional on what the test needs."
-	case "runner_hijack":
-		return "Remove the test-runner hijack in " + target + " so the real test harness executes and reports failures honestly."
-	case "lean_tcb":
-		return "Replace the Lean 4 TCB soundness hole, metaprogramming escape, or non-standard axiom/extern hook in " + target + " with a kernel- and lean4checker-verified proof, then re-verify."
-	default:
-		return f.Message
-	}
-}
-
 // run feeds a diff to the verifier and returns its findings.
 //
 // An unparseable diff is an error rather than an empty result, and the caller
@@ -398,10 +363,11 @@ func gapsFrom(taskID string, result *rigorResult) ([]Gap, []NextAction) {
 		gaps = append(gaps, gap)
 
 		action := NextAction{
-			GapID: gap.ID, Category: f.Gate, File: f.Path, Blocking: blocking,
+			GapID: gap.ID, Category: dc.CategoryForGapType(dc.GapTypeForRigorGate(f.Gate)),
+			File: f.Path, Blocking: blocking,
 			Tool: "devcouncil_read_file", Arguments: map[string]any{"path": f.Path},
+			Action: dc.RigorActionText(f.Gate, f.Path, f.Line, f.Message),
 		}
-		action.Action = rigorActionText(f)
 		actions = append(actions, action)
 	}
 

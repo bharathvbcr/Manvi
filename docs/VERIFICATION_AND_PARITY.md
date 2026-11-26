@@ -253,11 +253,25 @@ cross-boundary counts read that run's events rather than running it again.
 In CI, `scripts/check-verify-log.sh` runs after `verify.sh` in every job that
 runs it, including the nightly `--race` and `--fuzz` jobs, and fails the job on
 a missing analysis tool or on any NOT COVERED line or skipped test that
-`scripts/verify-expected-gaps.json` does not list for that runner, mode and leg.
+`scripts/verify-expected-gaps.json` does not list for that runner, mode and leg
+(for example, `TestAdvB31StreamedListingNonUTF8Name` on `macos-latest`, where
+APFS refuses non-UTF-8 directory names while Linux runs the test).
 A leg run prints `leg: <name> (<n> step(s) ran)` before its verdict, and the
 guard refuses a log without that line, a log that names another leg, and a leg
 that ran no step, so a job handed the wrong leg, or a leg whose region wrappers
 stopped selecting anything, cannot pass as an empty run.
+
+### Out-of-process bench verifier RPC (`b32-benchverify`)
+
+Benchmark episode verification in `bench/mh/rpc.py` isolates hidden tests
+(`CHECKER`) from candidate code (`WORKER`) across a typed RPC link that fails
+closed on malformed messages: replies without a value, of an unknown kind, or
+with invalid trees/handles/errors, and requests without an integer `rid` exit
+the checker with the transport failure status instead of raising a `KeyError` or
+`TypeError` that a hidden test's `except Exception` could swallow. On the
+worker, `len`, iteration, `next`, and item access on exported checker objects
+raise a readable `TypeError` (the checker serves only call, `getattr`, and
+`setattr`), with accepted limits pinned in `bench/mh/rpc.py` and `bench/stress_test.py`.
 
 ### Windows
 

@@ -12,7 +12,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 |---|---|---|
 | **Local LLMs & Fast Inference** | `local-llm`, `ollama`, `vllm`, `lm-studio`, `kv-prefix-cache`, `wire-recovery`, `think-sanitization` | [Local LLMs](LOCAL_LLMS.md) · [Stdio Host Plane](SERVE_HOST_PLANE.md) |
 | **Policy & Safety Invariants** | `policy-ladder`, `6-rung-ladder`, `5-outcome-states`, `grants-ledger`, `write-gate`, `command-gate` | [Policy & Safety](POLICY_AND_SAFETY.md) · [Hardening Ledger](HARDENING_LEDGER.md) · [Trade-offs](TRADE_OFFS.md) |
-| **Core Architecture & Planes** | `dual-plane`, `go-rust-partition`, `stdio-ipc`, `devcouncil-components`, `zero-cgo`, `gusset` | [Architecture](ARCHITECTURE.md) · [Components & Harness](COMPONENTS_AND_HARNESS.md) · [Visual Guide](04-visual-architecture-guide.html) · [Language Decision](01-language-decision.html) |
+| **Core Architecture & Planes** | `dual-plane`, `go-rust-partition`, `stdio-ipc`, `devcouncil-components`, `zero-cgo`, `gusset` | [Philosophy](PHILOSOPHY.md) · [Architecture](ARCHITECTURE.md) · [Components & Harness](COMPONENTS_AND_HARNESS.md) · [Visual Guide](04-visual-architecture-guide.html) · [Language Decision](01-language-decision.html) |
 | **Agent Loop & Task Leases** | `turn-loop`, `waterfalls`, `sqlite-leases`, `context-compaction`, `concurrency`, `workbench` | [Agent & Turn Lifecycle](AGENT_AND_TURN_LIFECYCLE.md) · [Workbench](WORKBENCH.md) |
 | **Native Tools, MCP & Desktop** | `native-tools`, `55-tools`, `mcp-client`, `mcp-2.0`, `computer-use`, `tool-discovery` | [Tools Reference](TOOLS_REFERENCE.md) · [Computer-Use Foundations](COMPUTER_USE_FOUNDATIONS.md) |
 | **Terminal & Developer UI** | `tui`, `elm-loop`, `damage-diffing`, `themes`, `cli`, `exit-codes`, `flag-registry` | [TUI & Events](TUI_AND_EVENT_SUBSYSTEM.md) · [CLI & Configuration](CLI_AND_CONFIGURATION.md) |
@@ -97,6 +97,8 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 
 ## Working on MANVI
 
+- [**Specifications**](../specs/README.md)  
+  7-layer engineering specifications (`001` agent harness & `manvi serve` host plane; `002` policy enforcement, hardening & computer-use privacy) and cross-repo stack boundaries.
 - [**Contributing Guide**](../CONTRIBUTING.md)  
   What to install, how to read `./verify.sh`'s verdict, what the gate refuses, how the parity fixtures are regenerated, and the commit conventions.
 - [**Changelog**](../CHANGELOG.md)  

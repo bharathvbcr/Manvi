@@ -37,10 +37,22 @@ func (r *Registry) currentTask(ctx context.Context) (*dc.Task, error) {
 
 func (r *Registry) policyCheck(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
-		Path string `json:"path"`
+		Path      string `json:"path"`
+		Operation string `json:"operation"`
 	}
 	if err := decode(call, &args); err != nil {
 		return tools.Errorf("bad arguments: %v", err)
+	}
+	op := dc.OpWrite
+	switch args.Operation {
+	case "", "modify":
+		op = dc.OpWrite
+	case "create":
+		op = dc.OpCreate
+	case "delete":
+		op = dc.OpDelete
+	default:
+		return tools.Errorf("invalid operation %q: must be create, modify, or delete", args.Operation)
 	}
 	// The same resolution devcouncil_write_file performs, through the same
 	// owner, and deliberately not a stricter one.
@@ -59,7 +71,7 @@ func (r *Registry) policyCheck(ctx context.Context, call tools.Call) tools.Resul
 	if refusal != nil {
 		return *refusal
 	}
-	decision, err := r.deps.Gate.EvaluateWrite(args.Path, task, dc.OpWrite)
+	decision, err := r.deps.Gate.EvaluateWrite(args.Path, task, op)
 	if err != nil {
 		return unavailable("policy decision", err)
 	}

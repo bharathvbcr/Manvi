@@ -262,7 +262,7 @@ func (r *Registry) Tools() []tools.Tool {
 	}
 	set := []tools.Tool{
 		// --- task lifecycle ---
-		{
+		sharedTool(tools.Tool{
 			Schema: schema("devcouncil_next_task",
 				"Find the next task that is ready to work and not already held by another agent. "+
 					"Call this first when you have no task; it does not claim anything.",
@@ -270,7 +270,7 @@ func (r *Registry) Tools() []tools.Tool {
 			ReadOnly: true,
 			Group:    tools.GroupTask,
 			Handler:  r.nextTask,
-		},
+		}),
 		{
 			Schema: schema("devcouncil_get_task",
 				"Read a task's scope: planned files, allowed commands, expected tests, and prohibitions. "+
@@ -281,7 +281,7 @@ func (r *Registry) Tools() []tools.Tool {
 			Handler:  r.getTask,
 			Extended: true,
 		},
-		{
+		sharedTool(tools.Tool{
 			Schema: schema("devcouncil_checkout_task",
 				"Claim a task by taking its lease. One agent holds a task at a time. "+
 					"Call this before any write; writes without a lease are refused.",
@@ -294,8 +294,8 @@ func (r *Registry) Tools() []tools.Tool {
 			// already finished. Whatever profile offers the acquire must offer
 			// the release.
 			Requires: []string{"devcouncil_release_task"},
-		},
-		{
+		}),
+		sharedTool(tools.Tool{
 			Schema: schema("devcouncil_renew_lease",
 				"Extend the current lease before it expires. Renewal only works before expiry; "+
 					"after that, check the task out again.",
@@ -304,8 +304,8 @@ func (r *Registry) Tools() []tools.Tool {
 			Handler:  r.renew,
 			Extended: true,
 			Requires: []string{"devcouncil_checkout_task"},
-		},
-		{
+		}),
+		sharedTool(tools.Tool{
 			Schema: schema("devcouncil_release_task",
 				"Release the current lease so another agent can take the task. "+
 					"Call this when you finish, or when you are abandoning the work.",
@@ -313,18 +313,19 @@ func (r *Registry) Tools() []tools.Tool {
 			Group:    tools.GroupTask,
 			Handler:  r.release,
 			Requires: []string{"devcouncil_checkout_task"},
-		},
+		}),
 
 		// --- guarded mutation ---
-		{
+		sharedTool(tools.Tool{
 			Schema: schema("devcouncil_policy_check_write",
 				"Ask whether a write would be allowed, without performing it. "+
-					"Call this when you are unsure whether a path is in scope — it is cheaper than a refused write.",
-				`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+					"Call this when you are unsure whether a path is in scope — it is cheaper than a refused write. "+
+					"operation is create, modify (the default), or delete.",
+				`{"type":"object","properties":{"path":{"type":"string"},"operation":{"type":"string","enum":["create","modify","delete"]}},"required":["path"]}`),
 			ReadOnly: true,
 			Group:    tools.GroupCore,
 			Handler:  r.policyCheck,
-		},
+		}),
 		{
 			Schema: schema("devcouncil_read_file",
 				"Read a file from the repository. Pass offset and limit to read only a line range; "+
@@ -463,7 +464,7 @@ func (r *Registry) Tools() []tools.Tool {
 		},
 
 		// --- evidence ---
-		{
+		sharedTool(tools.Tool{
 			Schema: schema("devcouncil_get_diff",
 				"Show the working-tree changes for the current task, with the files each touches.",
 				`{"type":"object","properties":{}}`),
@@ -471,8 +472,8 @@ func (r *Registry) Tools() []tools.Tool {
 			Group:     tools.GroupCore,
 			Handler:   r.getDiff,
 			Batchable: true,
-		},
-		{
+		}),
+		sharedTool(tools.Tool{
 			Schema: schema("devcouncil_verify_task",
 				"Run the deterministic verifier over the working tree: are the changed files inside "+
 					"the task's declared scope? Returns passed, blocking gaps, and typed next actions. "+
@@ -487,8 +488,8 @@ func (r *Registry) Tools() []tools.Tool {
 			// which the gate can judge on a nil task, a scope report with no
 			// scope is not a weaker answer, it is no answer.
 			Requires: []string{"devcouncil_checkout_task"},
-		},
-		{
+		}),
+		sharedTool(tools.Tool{
 			Schema: schema("devcouncil_get_gaps",
 				"List the verification gaps blocking the current task.",
 				`{"type":"object","properties":{}}`),
@@ -497,7 +498,7 @@ func (r *Registry) Tools() []tools.Tool {
 			Handler:  r.getGaps,
 			Extended: true,
 			Requires: []string{"devcouncil_checkout_task"},
-		},
+		}),
 		{
 			Schema: schema("devcouncil_get_next_actions",
 				"Get the typed, machine-routable repair steps for the current task's gaps. "+
@@ -554,6 +555,20 @@ func schema(name, description, input string) llm.ToolSchema {
 		Description: description,
 		InputSchema: json.RawMessage(input),
 	}
+}
+
+// sharedTool validates that a shared devcouncil_* tool declaration matches a
+// canonical name in DevCouncil's dc.SharedToolSpecs() while keeping the
+// schema(...) call site intact for profile_test.go's AST definition check.
+func sharedTool(tl tools.Tool) tools.Tool {
+	spec, ok := dc.SharedToolSpecByName(tl.Schema.Name)
+	if !ok {
+		panic(fmt.Sprintf("devcouncil: canonical shared tool spec %q missing from dc.SharedToolSpecs()", tl.Schema.Name))
+	}
+	if tl.Schema.Description == "" {
+		tl.Schema.Description = spec.Description
+	}
+	return tl
 }
 
 // --- helpers ---

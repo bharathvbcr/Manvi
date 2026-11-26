@@ -245,12 +245,11 @@ func TestAdvB29ResidueNoCallerReachesDevCouncilDcverifyClient(t *testing.T) {
 	}
 }
 
-// Attack 5: gapsFrom wording against next_actions.go at the pin, for every gate
-// dc-verify can emit. Expected text is built from actionText's literals, and the
-// literals are checked to still be in the pinned source.
+// Attack 5: gapsFrom wording against DevCouncil's canonical dc.RigorActionText
+// (dc/verify_actions.go), for every gate dc-verify can emit. Expected text is
+// checked against the canonical source literals directly.
 func TestAdvB29ResidueGapsFromWordingMatchesDevCouncilForEveryGate(t *testing.T) {
-	na := advRead(t, "backend/go_orchestrator/devcouncil/verify/next_actions.go")
-	rg := advRead(t, "backend/go_orchestrator/devcouncil/verify/rigor.go")
+	va := advRead(t, "backend/go_orchestrator/dc/verify_actions.go")
 	for _, lit := range []string{
 		"Remove the detected secret/finding from the diff and rotate any exposed credential.",
 		"Replace the stub/placeholder at ",
@@ -260,17 +259,11 @@ func TestAdvB29ResidueGapsFromWordingMatchesDevCouncilForEveryGate(t *testing.T)
 		"; replace it before marking done.",
 		"Remove the test-runner hijack in ",
 		"Replace the Lean 4 TCB soundness hole",
-	} {
-		if !strings.Contains(na, lit) {
-			t.Fatalf("pinned next_actions.go no longer contains %q", lit)
-		}
-	}
-	for _, lit := range []string{
 		"Make the added test assert on the behaviour it is named for, or call a helper that does.",
 		"Remove the unconditional skip, or make the skip conditional on what the test needs.",
 	} {
-		if !strings.Contains(rg, lit) {
-			t.Fatalf("pinned rigor.go no longer contains %q", lit)
+		if !strings.Contains(va, lit) {
+			t.Fatalf("DevCouncil dc/verify_actions.go no longer contains %q", lit)
 		}
 	}
 	const path = "pkg/a.go"

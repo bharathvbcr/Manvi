@@ -1,0 +1,19 @@
+# Tasks: 001 - Agent Harness, Tool Registry, and `manvi serve` Host Plane
+
+**Spec**: `specs/001-agent-harness-and-serve-plane/spec.md` | **Plan**: `specs/001-agent-harness-and-serve-plane/plan.md`
+
+## Phase 1: Shipped Runtime Core & Host Plane
+
+- [x] [T-01] [US1] Implement agent turn lifecycle hooks (`PreStep`, `LLMRequest`, `TurnStopping`, `TurnStarting`), compaction, and provider-qualified tier resolution with fallback chains in manvi/agent/loop.go and manvi/cmd/manvi/tiers.go | tests: go -C manvi test ./agent/... ./cmd/manvi/...
+- [x] [T-02] [US2] Implement 55-tool native Registry, bounded `devcouncil_debate`, and host-bound `work_*` tools in manvi/devcouncil/tools.go, manvi/devcouncil/debate.go, and manvi/devcouncil/work_tools.go | depends_on: [T-01] | tests: go -C manvi test ./devcouncil -run TestDocumentedToolCountMatchesRegistry -count=1
+- [x] [T-03] [US3] Implement NDJSON `manvi serve` host plane (`ProtocolVersion = 1`), per-server `Router`/`Module` seam, and `WorkbenchModule` in manvi/serve/server.go, manvi/serve/protocol.go, manvi/serve/module.go, and manvi/serve/workbench.go | tests: go -C manvi test ./serve/...
+- [x] [T-04] [US3] Implement lease-free `VerifyPresent` (`PathReport`), `rigorClient` (`dcverify`), and background `VerifyRunner` with batched `devmap` queries in manvi/devcouncil/verify_paths.go, manvi/devcouncil/rigor.go, manvi/serve/verify.go, and manvi/serve/verify_checks.go | depends_on: [T-02, T-03] | tests: go -C manvi test ./devcouncil/... ./serve/...
+- [x] [T-05] [US4] Maintain single-line TUI status bar, paste chip rendering (`input.Paste`), and output sanitization (`ui.Sanitize`) in manvi/ui/ | depends_on: [T-01] | tests: go -C manvi test ./ui/...
+
+## Phase 2: Cross-Repo Overlap Audit & Closure
+
+- [ ] [T-06] [US2] Close remaining `OV-VERIFY-01` DTO overlap (DevCouncil specs/003 T-006): `manvi/devcouncil/rigor.go` now delegates to `dc.RigorActionText` & `dc.CategoryForGapType`; retire remaining parallel `Gap` / `NextAction` / `Report` structs and `changedFiles` matching in manvi/devcouncil/verify.go (`22-64`, `131-181`, `991-1040`) onto DevCouncil `devcouncil/verify` types while keeping async job lifecycle in manvi/serve/verify.go | depends_on: [T-04] | tests: go -C manvi test ./devcouncil/... ./serve/...
+- [x] [T-07] [US2] Close `OV-TOOLS-01` (DevCouncil specs/003 T-007): validate all 8 shared `devcouncil_*` tools via `sharedTool` -> `dc.SharedToolSpecByName`, add `operation` support to `devcouncil_policy_check_write`, and verify session-bound omissions in manvi/devcouncil/tools.go, manvi/devcouncil/policy_tools.go, and manvi/devcouncil/shared_tools_test.go | depends_on: [T-02] | tests: go -C manvi test ./devcouncil -run 'TestEverySharedDevCouncilToolIsRegistered|TestPolicyCheckWriteSupportsOperation' -count=1
+- [x] [T-08] [US3] Reconcile specs/001-agent-harness-and-serve-plane/contracts/serve-and-harness-boundary.schema.json and ownership table against `DevCouncil/specs/003-stack-boundaries-and-non-overlap/contracts/ownership-matrix.json` in specs/001-agent-harness-and-serve-plane/spec.md | depends_on: [T-04] | tests: devcouncil spec validate 001 --strict --project-root /Users/bharath/Code/devtools/Manvi
+- [ ] [T-09] [US1] Close `DRIFT-PIN-01` (DevCouncil specs/003 T-012): advance DevCouncil and gusset commits in scripts/module-pins.txt after Lane A lands | depends_on: [T-06, T-07] | tests: go -C manvi test ./devcouncil -run TestCratePins -count=1
+- [ ] [T-10] [US3] Close `GAP-LABS-APPROVAL-01` and `GAP-LABS-SPEND-01` (DevCouncil specs/003 T-013): add typed `manvi serve` seams for remote command approval (`gitpulse-relay`) and session `CostNanoUSD` rollup queries in manvi/serve/ | depends_on: [T-03] | tests: go -C manvi test ./serve/...

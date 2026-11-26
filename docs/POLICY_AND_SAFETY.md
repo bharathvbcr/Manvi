@@ -148,8 +148,9 @@ accepted cost is that a parent environment can point it somewhere the gate did
 not see. Writes under the temporary directories (`$TMPDIR`, `/tmp`,
 `/private/tmp`) are allowed although they leave the root, unless the root itself
 lives there. Operands a command only writes (`cp`'s destination, `tee`, `sed -i`) are the
-write rungs' to judge, and commands that only print a name (`echo`, `ls`, `rm`)
-are not reads.
+write rungs' to judge, commands that only print a name (`echo`, `ls`, `rm`)
+are not reads, and search/text-tool program or pattern operands (for example
+`grep -o 'gh:.*'`) are not judged as file paths.
 
 What this rung does not do is stated, not implied. It reads the command line, so
 it does not see a script on disk, an interpreter's own argument
@@ -178,7 +179,7 @@ Three properties make that hold rather than merely intend it:
   and ungrantable, so the command cannot run. Every other outcome — including a
   *soft* denial — has its redirections judged, because a soft denial is exactly
   what a gate mode demotes or a grant clears. The two verdicts are merged by
-  `policy.BlockStrength`, so the stronger survives into the grant-and-mode step.
+  DevCouncil's `BlockStrength` (`DevCouncil/backend/go_orchestrator/policy/decision.go`), so the stronger survives into the grant-and-mode step.
 - **A target that cannot be resolved refuses.** `> $HOME/x`, `> ~/.ssh/keys`, and
   any target inside a construct that could not be read to its end are refused as
   unverifiable writes rather than skipped.
@@ -200,7 +201,7 @@ than truncate:
   line. It is not a rung inside the ladder, because a rung is reached per clause
   — after the splitter has already walked the whole input, which is most of the
   cost it exists to avoid.
-- `maxRedirectTargets` (64 distinct paths) bounds how many writes one command
+- `maxRedirectTargets` (64 distinct paths, `DevCouncil/backend/go_orchestrator/policy/command_redirect.go`) bounds how many writes one command
   line may be judged to perform. Exceeding it is reported as an *incomplete*
   enumeration, so the caller fails closed instead of judging the first sixty-four
   and ignoring the rest.

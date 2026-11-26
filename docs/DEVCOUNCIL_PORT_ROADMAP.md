@@ -5,7 +5,7 @@
 > `import devcouncil` as a Python package. Live map/query is `devmap`.
 
 > **Re-baselined 2026-10-10 against DevCouncil's Phase 7 decisions** —
-> `DevCouncil/docs/PHASE7_LONG_TAIL.md` (the retirement table), `docs/TODO.md`
+> `DevCouncil/docs/PHASE7_LONG_TAIL.md` (the retirement table), `DevCouncil/docs/TODO.md`
 > (the follow-ups) — with DevCouncil at the pin in `scripts/module-pins.txt`
 > (`acb5e3b9`). Every row below says which of **done**, **retired by Phase 7**,
 > **superseded** or **open** it is, with the evidence. Rows keep their
@@ -62,9 +62,10 @@ into `../../DevCouncil/rust/dc-*` (`ls -la crates`; `crates/README.md`), so ther
 is one copy of the sources. `manvi/go.mod` replaces DevCouncil by path, and the
 release builds the commit pinned in `scripts/module-pins.txt`. Drift is no longer
 possible between copies, and drift between the working checkout and the pin is
-caught by `scripts/check-release.mjs` `crateMirrorProblems` (inherited manifest
-values compared at the pin) and `manvi/devcouncil/crate_pins_test.go` (resolved
-dependencies). The two-commit "edit in DevCouncil, mirror to MANVI" rule is gone.
+caught by `scripts/check-release.mjs` (sibling pin checks) and
+`manvi/devcouncil/crate_pins_test.go` (inherited manifest values and resolved
+dependencies compared against the pin; the earlier `crateMirrorProblems` JS check
+was retired into `crate_pins_test.go`). The two-commit "edit in DevCouncil, mirror to MANVI" rule is gone.
 **Verified** by `ls -la crates` and by reading both checks; the checks themselves
 were not re-run for this edit. **P0.1 is done.**
 
@@ -145,7 +146,7 @@ port". The Python is deleted, and Phase 7 decided each row. Sizes are the
 
 | DevCouncil subsystem | Python LOC | Status | Evidence |
 |---|---|---|---|
-| `integrations` (MCP server) | 11,284 | **Superseded.** The Go host serves MCP with **8 tools**; the thick surface is MANVI's native registry (40 `devcouncil_*` tools listed in `TOOLS_REFERENCE.md`). The "29 tools, headline deliverable" framing is gone. | `backend/go_orchestrator/cmd/devcouncil/main.go:70`, `devcouncil/registry.go`; `docs/TODO.md` `GAP-P7-MCP-HOST-THIN`; `PHASE7_LONG_TAIL.md` "Thick MCP" |
+| `integrations` (MCP server) | 11,284 | **Superseded.** The Go host serves MCP with **8 tools**; the thick surface is MANVI's native registry (`TOOLS_REFERENCE.md`). The "29 tools, headline deliverable" framing is gone. | `DevCouncil/backend/go_orchestrator/cmd/devcouncil/main.go:70`, `devcouncil/registry.go`; `DevCouncil/docs/TODO.md` `GAP-P7-MCP-HOST-THIN`; `DevCouncil/docs/PHASE7_LONG_TAIL.md` "Thick MCP" |
 | `cli` | 16,547 | **Done (P5.12).** The Go host's `commands` map is the CLI: `mcp`, `integrate`, `skills`, `verify`, `grep`, `install`, `gate`, `hook`, `map`/`graph`/`ast`, and more. Commands that were application glue were dropped (exit 2). | `main.go:69-93`; `PHASE7_LONG_TAIL.md` "dev / devcouncil is the Go binary" |
 | `verification` | 9,800 | **Done, in four parts.** AST stub detection and test-rigor in `dc-verify` (P4.1, P4.3); test execution, acceptance compiler, gap ids and next actions in Go (P4.2, P4.4, partly audited, see `PORTING_TASKS.md`). | `rust/dc-verify/src/stub_ast.rs`; `devcouncil/verify/{commands,criteria,gapid,next_actions}.go` |
 | `execution` | 5,881 | **Split, as predicted.** Lease and scope are `dcstore` and `devcouncil/{lease,gating}`; stop-gate and correction manifests are `devcouncil/{stopgate,correction}`; turn-driving is MANVI's. Not audited line by line. | `backend/go_orchestrator/devcouncil/` listing |
@@ -153,16 +154,16 @@ port". The Python is deleted, and Phase 7 decided each row. Sizes are the
 | `knowledge` | 2,338 | **Retired** (P5.1). Agent guides come from `devmap build --guides`. | `:11` |
 | `reporting` | 1,947 | **Retired** (P5.2). Successor: `devcouncil verify --json`, `devcouncil_get_gaps`, MANVI session logs. | `:12` |
 | `campaign` | 1,700 | **Retired** (P5.3). Successor: MANVI multi-agent profiles. | `:14` |
-| `storage` | 1,574 | **Done as a transcription.** `dc-store` creates the tables a reader or writer still uses, and the workbench adds the `work_*` tables. The unread core tables (`assumptions`, `project_state`, `critique_findings`, the shell and file-change tables, `semantic_diffs`, `correction_manifests`) are dropped on open. Task creation has no product command: `TASK-P7-11`. | `rust/dc-store/src/schema.rs`; `PHASE7_LONG_TAIL.md:26`; `docs/TODO.md:26` |
-| `planning` + `council` | 1,470 | **Hard-cut, successor "Manvi `llm/` + agents"; no council code exists.** See D2. | `PHASE7_LONG_TAIL.md:22,56-57` |
+| `storage` | 1,574 | **Done as a transcription.** `dc-store` creates the tables a reader or writer still uses, and the workbench adds the `work_*` tables. The unread core tables (`assumptions`, `project_state`, `critique_findings`, the shell and file-change tables, `semantic_diffs`, `correction_manifests`) are dropped on open. Task creation has no product command: `TASK-P7-11`. | `DevCouncil/rust/dc-store/src/schema.rs`; `DevCouncil/docs/PHASE7_LONG_TAIL.md:26`; `DevCouncil/docs/TODO.md:26` |
+| `planning` + `council` | 1,470 | **Hard-cut in DevCouncil; `devcouncil_debate` landed in MANVI.** DevCouncil successor "Manvi `llm/` + agents"; MANVI later added `devcouncil_debate` (`manvi/devcouncil/debate.go`) for multi-model blind debate + judge. See D2. | `DevCouncil/docs/PHASE7_LONG_TAIL.md:22,56-57`; `manvi/devcouncil/debate.go` |
 | `app` | 1,472 | **Unaudited** (P5.9). MANVI has `flags`, `bootstrap`, `core`. | — |
 | `live` | 1,212 | **Retired** (P5.4). | `:15` |
 | `optimization` | 998 | **Retired** (P5.7), no successor. | `:17` |
 | `telemetry` | 918 | **Retired** (P5.6). Successor: MANVI session NDJSON and `devmap session-report`. | `:13` |
-| `repo` | 870 | **Retired** (P5.5). SCA has no DevCouncil successor; GitPulse runs the audit tools as a related job. GitHub Checks were handed to GitPulse. | `:28`, "Successor corrections" |
+| `repo` | 870 | **Retired** (P5.5). SCA has no DevCouncil successor; Waylode runs the audit tools as a related job. GitHub Checks were handed to Waylode. | `:28`, "Successor corrections" |
 | `skills` | 487 | **Done** (P5.10): embedded skill library with `devcouncil skills` (`list`, `scaffold`). | `devcouncil/skills/` |
 | `utils` | 529 | Unaudited; internal. | — |
-| `domain` | 305 | **Partial.** Only `Gap` has a Go type in the component module (`devcouncil/verify/types.go:17`). There are no `Evidence`, `Assumption`, `CritiqueFinding` or `CheckpointRefs` types. The pydantic-parity part is dropped with the Python. | `rg '^type (Gap\|Evidence\|Assumption\|CritiqueFinding\|CheckpointRefs)\b'` over both repositories |
+| `domain` | 305 | **Partial.** Only `Gap` has a Go type in the component module (`DevCouncil/backend/go_orchestrator/devcouncil/verify/types.go:17`). There are no Go types for the retired Python domain models (`Evidence`, `Assumption`, CritiqueFinding, or CheckpointRefs). The pydantic-parity part is dropped with the Python. | `rg '^type (Gap\|Evidence\|Assumption\|CritiqueFinding\|CheckpointRefs)\b'` over both repositories |
 
 ### What decides the schedule now
 
@@ -170,11 +171,11 @@ The three items this section used to name no longer decide anything: the MCP
 server exists at the size Phase 7 chose, `domain` + `storage` is transcribed, and
 verification is ported. What remains open:
 
-1. **D2** (above): retire the council or build it in MANVI, including forced
-   tool choice in four adapters.
+1. **D2** (above): retire the old P3.1–P3.3 council schemas or align them with
+   MANVI's `devcouncil_debate`.
 2. **`TASK-P7-11` / `GAP-P7-NO-TASK-CREATE`** (`DevCouncil/docs/TODO.md:26`): no
    production code writes `tasks` or `requirements` rows. Every hit for `INTO tasks`
-   and `INTO requirements` across DevCouncil, MANVI and GitPulse is a test. P1.2
+   and `INTO requirements` across DevCouncil, MANVI and Waylode is a test. P1.2
    (`backfill_acceptance_criteria`) has no input until this lands, so it is linked
    to that task here rather than filed alone.
 3. **The `domain` types** that no consumer has yet asked for. Do not port them

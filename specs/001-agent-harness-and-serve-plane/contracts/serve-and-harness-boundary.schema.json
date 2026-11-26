@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manvi.local/specs/001/serve-and-harness-boundary.schema.json",
+  "title": "Manvi Harness and Host-Plane Boundary Contract",
+  "description": "Machine-readable ownership and operational bounds for specs/001 (Manvi agent harness, tool registry, and manvi serve host plane).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_id",
+    "owner_repo",
+    "protocol_version",
+    "max_token_count",
+    "verify_runner_bounds",
+    "debate_bounds",
+    "shared_mcp_tools",
+    "delegated_engines"
+  ],
+  "properties": {
+    "spec_id": {
+      "const": "001-agent-harness-and-serve-plane"
+    },
+    "owner_repo": {
+      "const": "Manvi"
+    },
+    "protocol_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "max_token_count": {
+      "type": "integer",
+      "const": 16777216
+    },
+    "verify_runner_bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_active_jobs", "max_changed_paths", "max_devmap_batch", "stop_grace_seconds", "outcomes"],
+      "properties": {
+        "max_active_jobs": { "type": "integer", "const": 4 },
+        "max_changed_paths": { "type": "integer", "const": 2000 },
+        "max_devmap_batch": { "type": "integer", "const": 16 },
+        "stop_grace_seconds": { "type": "integer", "const": 2 },
+        "outcomes": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["passed", "failed", "degraded"] },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "debate_bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_debaters", "max_debaters", "max_rounds", "max_question_bytes", "max_context_bytes", "max_carried_answer_bytes"],
+      "properties": {
+        "min_debaters": { "type": "integer", "const": 2 },
+        "max_debaters": { "type": "integer", "const": 4 },
+        "max_rounds": { "type": "integer", "const": 3 },
+        "max_question_bytes": { "type": "integer", "const": 16384 },
+        "max_context_bytes": { "type": "integer", "const": 65536 },
+        "max_carried_answer_bytes": { "type": "integer", "const": 8000 }
+      }
+    },
+    "shared_mcp_tools": {
+      "type": "array",
+      "description": "The 8 tools exposed standalone by DevCouncil/registry.go and mirrored in-process by Manvi/manvi/devcouncil/tools.go.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "devcouncil_get_diff",
+          "devcouncil_checkout_task",
+          "devcouncil_renew_lease",
+          "devcouncil_release_task",
+          "devcouncil_next_task",
+          "devcouncil_verify_task",
+          "devcouncil_get_gaps",
+          "devcouncil_policy_check_write"
+        ]
+      },
+      "minItems": 8,
+      "maxItems": 8,
+      "uniqueItems": true
+    },
+    "delegated_engines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["store", "rigor_verifier", "code_index", "policy_decision"],
+      "properties": {
+        "store": { "const": "DevCouncil/rust/dc-store" },
+        "rigor_verifier": { "const": "DevCouncil/rust/dc-verify" },
+        "code_index": { "const": "DevCouncil/rust/devmap-cli" },
+        "policy_decision": { "const": "DevCouncil/backend/go_orchestrator/policy" }
+      }
+    }
+  }
+}

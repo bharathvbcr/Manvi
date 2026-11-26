@@ -4,7 +4,7 @@ Owner's design (2026-11-20, stated by the owner; keep it as the north star):
 
 - **DevCouncil is modular.** Its components (devmap, dc-grep, dc-verify, dc-store, dc-glob, dc-redact, …) can be integrated into any of the owner's apps. They are developed in DevCouncil's own repository.
 - **Manvi is a custom harness that uses DevCouncil natively.** It calls those components first-hand, through adapters, and never reimplements them. The adapters are DevCouncil's Go clients in `backend/go_orchestrator/dc/*`, which Manvi links through its `../../DevCouncil` replace and pins in `scripts/module-pins.txt`.
-- **Rust ↔ Go interconnect is gusset** for Rust hosted in-process. Separately versioned components keep a JSON-on-stdio process contract. Which transport a component uses is decided per component in DevCouncil's `docs/gusset-candidates.md`.
+- **Rust ↔ Go interconnect is gusset** for Rust hosted in-process. Separately versioned components keep a JSON-on-stdio process contract. Which transport a component uses is decided per component in `DevCouncil/docs/gusset-candidates.md`.
 - **Agents in Manvi are forced into good behaviour by the harness, not by prompt bulk.** That means auditing before acting, navigating by the code graph, batching independent lookups, never assuming, and verifying before claiming. The prompt stays light; enforcement lives in Go.
 
 ## Done on branch feat/native-devcouncil-tools (first pass, commit d897dec)
@@ -46,7 +46,7 @@ Owner's design (2026-11-20, stated by the owner; keep it as the north star):
 
 ## 2026-11-20, third pass: Fable's decisions (owner delegated; new dependencies allowed)
 
-1. No pin bump in this run. Afterwards: land the DevCouncil branches, then one bump commit that fixes the two known off-pin failures, then GitPulse and Jarvis. Landing on DevCouncil main is the owner's call.
+1. No pin bump in this run. Afterwards: land the DevCouncil branches, then one bump commit that fixes the two known off-pin failures, then Waylode and Jarvis. Landing on DevCouncil main is the owner's call.
 2. Chaining becomes an in-process, hermetic script tool (go.starlark.net, if its current docs confirm step limits and no ambient I/O). Its only functions are the batchable tools, each admitted like a batch item. Calls, steps, time and output are bounded. A read made by a script never counts as a full read. The `go run` + `manvi tool` route is dropped.
 3. Online search: provider-hosted only, default off, operator scope, with a cap on uses per turn and results labelled untrusted. If it needs a host-side fetch, it stops at a design.
 4. Secret reads through the shell: reproduce under strict posture with a lease, then a narrow fix at an existing containment seam. Redaction only through a callable dc-redact contract. Otherwise a design plus a task.
@@ -70,7 +70,7 @@ Each lane worked in its own worktree under `Manvi/tmp/lanes/<lane>` against the 
 - **search.** Anthropic `web_search_20250305`, off by default (`llm.anthropic.web_search`, `llm.anthropic.web_search_max_uses` 1–20, default 3, operator scope). Security impact: query text reaches a third party, and results come back encrypted, so Manvi cannot frame them as untrusted. A live Haiku run cost $0.0134.
 - **testsel.** The end-of-turn check reports the tests the changed files reach (devmap affected) as "selected, not run". It never executes them and fails closed.
 - **script.** `devcouncil_script` runs a Starlark script whose calls go through the same admission as a batch, run sequentially, with bounds of 16 calls, 16 KiB of script, 1e6 steps, 30 s, 32 KiB per answer and 128 KiB in total. A read inside a script does not satisfy the overwrite guard (`TestAScriptReadDoesNotSatisfyTheOverwriteGuard`). `harness.batch_tool: off` withholds it too.
-- **content keys, DevCouncil side** (`lane/devmap-withheld-marker`). devmap now publishes `CONTENT_BEARING_KEYS` (`source`, `source_span`, `source_indent`, `signature`, `value`), and a contract test pins them. Manvi's read gate covers all five (`TestCodeGraphGatesEveryPublishedContentKey`). Landing note: devmap-query changed, so GitPulse must re-vendor; no schema constant changed.
+- **content keys, DevCouncil side** (`lane/devmap-withheld-marker`). devmap now publishes `CONTENT_BEARING_KEYS` (`source`, `source_span`, `source_indent`, `signature`, `value`), and a contract test pins them. Manvi's read gate covers all five (`TestCodeGraphGatesEveryPublishedContentKey`). Landing note: devmap-query changed, so Waylode must re-vendor; no schema constant changed.
 - **bench** (`bench/batching`, pre-registered in `PREREG.md` before any run). 4 read-only lookup tasks on claude-haiku-5-5, 3 arms (A batch off, B batch on with serial-lookup refusal off, C default), 12 paired task-reps, $0.43 spent.
   - Batching cut steps: 4.58 → 3.92 (B) and 4.00 (C), with CIs excluding zero.
   - It did **not** show an input-token saving at the pre-registered n=12: C−A was −8.3k tokens, 95% CI [−20.9k, +3.6k].
@@ -80,14 +80,14 @@ Each lane worked in its own worktree under `Manvi/tmp/lanes/<lane>` against the 
 
 ### Still open after the third pass
 
-- **Pin bump.** The order is: land the DevCouncil branches (`feat/devmap-ask-evidence` and `lane/devmap-withheld-marker`), bump Manvi's pin, fix the two off-pin test failures, then re-vendor GitPulse and bump Jarvis. Each step needs the owner's go-ahead; landing on DevCouncil main is the owner's call.
+- **Pin bump.** The order is: land the DevCouncil branches (`feat/devmap-ask-evidence` and `lane/devmap-withheld-marker`), bump Manvi's pin, fix the two off-pin test failures, then re-vendor Waylode and bump Jarvis. Each step needs the owner's go-ahead; landing on DevCouncil main is the owner's call.
 - **Secret containment** (above): needs an exec seam and a dc-redact contract.
 - **The refusal rule is unmeasured.** No benchmark task has yet provoked five lone lookups in a row.
 
 ## 2026-11-21, fourth pass (wave 3; Fable scoped it, Sonnet lanes; branch integrate/wave3)
 
 Owner decisions, delegated on 2026-11-21 ("choose best"):
-- **Pin target:** DevCouncil origin/main `d938f7f8`. It is pushed and descends from the current pin. Local DevCouncil main is 110 commits ahead of origin and unpushed, so pinning it, or the feat branches, would break Jarvis and GitPulse fetches. `ask_evidence` and the Manvi `dcredact` wrapper wait for the bump after the owner lands and pushes those branches.
+- **Pin target:** DevCouncil origin/main `d938f7f8`. It is pushed and descends from the current pin. Local DevCouncil main is 110 commits ahead of origin and unpushed, so pinning it, or the feat branches, would break Jarvis and Waylode fetches. `ask_evidence` and the Manvi `dcredact` wrapper wait for the bump after the owner lands and pushes those branches.
 - **"dc-verify in manvi should be executed to the end to ensure it's built properly":** this means both things. The full `verify.sh` runs to a verdict every wave. The end-of-turn verification always reaches an honest verdict.
 
 Built and merged:
@@ -108,11 +108,11 @@ Built and merged:
   - The refusal rule fires (15/120 default runs) but shows no token effect (CI [−102k, +39k]).
   - The power calculation was off by about 6×, because trail runs range from 39k to 886k tokens, so the refusal null says little.
   - Correctness was 717–719 of 720 in every arm.
-- **dcredact (DevCouncil, feat/devmap-ask-evidence `a6282446`).** A JSON-on-stdio redaction binary over the unchanged dc-redact library. It is registered in the install catalog, and its parity test checks it against `redact_secrets`. No gusset: a spawn costs about 2.6 ms and a call takes microseconds, which is below choosing.md's bar. DevCouncil's own gate now runs in a lane by sourcing `rust/gusset-engine/cgo-env.sh`. One Go test, `TestEveryHostRegistersDevCouncilAndAChecksAgrees` (claude host), fails identically on base 1b5dc133.
+- **dcredact (DevCouncil, feat/devmap-ask-evidence `a6282446`).** A JSON-on-stdio redaction binary over the unchanged dc-redact library. It is registered in the install catalog, and its parity test checks it against `redact_secrets`. No gusset: a spawn costs about 2.6 ms and a call takes microseconds, which is below choosing.md's bar. DevCouncil's own gate now runs in a lane by sourcing `rust/gusset-engine/cgo-env.sh`. One DevCouncil Go test (TestEveryHostRegistersDevCouncilAndAChecksAgrees in `DevCouncil/backend/go_orchestrator/devcouncil/integrate/delegation_test.go`, claude host) fails identically on base 1b5dc133.
 
 ## Open decisions (owner)
 
-1. **Pin bump.** Manvi pins DevCouncil at 230bbf04, which is 147 commits behind main as of 2026-11-20 (about 60 of them touch the paths Manvi links; see the second pass). Bump it so Manvi can expose `ask_evidence`, then carry the bump to GitPulse (re-vendor) and Jarvis. Ask before bumping.
+1. **Pin bump.** Manvi pins DevCouncil at 230bbf04, which is 147 commits behind main as of 2026-11-20 (about 60 of them touch the paths Manvi links; see the second pass). Bump it so Manvi can expose `ask_evidence`, then carry the bump to Waylode (re-vendor) and Jarvis. Ask before bumping.
 2. **True code-mode chaining.** Built in the third pass as `devcouncil_script` (Starlark via go.starlark.net, a new dependency the owner approved).
 3. **Online search for agents.** Built in the third pass as Anthropic server-side web search, default off, operator scope only; the security impact is written in the CHANGELOG entry and below.
 4. **Deeper gusset.** The measured record and a 2026-11-20 survey (Sonnet survey, Fable review) found no Manvi hot path that meets the revisit bar. The one experiment worth running is pattern redaction of tool results through dc-redact, framed as a security feature, behind an isolated interleaved A/B and a parity oracle. Moving dcgrep, devmap, dcverify or dcstore in-process would reverse a measured decision.

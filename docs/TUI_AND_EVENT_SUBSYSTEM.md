@@ -336,14 +336,14 @@ flowchart TB
 | `Ctrl+F` / `/`, `n` / `N` | Transcript | Search transcript / next or previous match |
 | `y` / `Y` | Transcript | Copy drag selection or entry / open Smart Copy Menu (`/copy`) |
 | `i` | Transcript | Toggle Inspector Drawer |
-| `PgUp` / `PgDn`, `Ctrl+U` / `Ctrl+D`, `g` / `G` | Transcript | Page / half-page / jump to top or bottom |
+| `pgup` / `pgdn`, `Ctrl+U` / `Ctrl+D`, `g` / `G` | Transcript | Page / half-page / jump to top or bottom |
 | `Esc` | Transcript | Return focus to composer & clear selection |
 | `]` / `[` | Inspector | Next / previous tab (`Think`, `Steps`, `Diffs`, `Info`) |
 | `←` / `h`, `→` / `l` | Inspector | Previous / next reasoning step or edited file diff |
-| `↑` / `k`, `↓` / `j`, `PgUp` / `PgDn` | Inspector | Scroll drawer body |
+| `↑` / `k`, `↓` / `j`, `pgup` / `pgdn` | Inspector | Scroll drawer body |
 | `y` | Inspector | Copy active tab content |
 | `Esc` | Inspector | Return focus to composer |
-| `↑↓←→` / `hjkl`, `PgUp` / `PgDn`, `g` / `G` | Dashboard | Navigate sessions |
+| `↑↓←→` / `hjkl`, `pgup` / `pgdn`, `g` / `G` | Dashboard | Navigate sessions |
 | `Enter` / `r` / `Ctrl+X` / `Esc` | Dashboard | Open / rename / close highlighted session / back |
 
 ### The Mark, the Tab Title and Progress
@@ -418,7 +418,7 @@ flowchart TD
 
 1. **Tab vs Ctrl+I & Kitty CSI-u Negotiation**: `term.Options.KittyKeyboard` negotiates Kitty keyboard disambiguation (`\x1b[>1u` on start/resume, `\x1b[<u` on stop, suspend, or external-editor yield), and `decodeCSI` parses `ESC [ codepoint ; modifiers u` while validating `utf8.ValidRune` so `Shift+Enter`, `Alt+E`, and `Tab` vs `Ctrl+I` resolve unambiguously without letting invalid or surrogate codepoints enter the composer.
 2. **Esc vs Arrow Keys**: Lone `0x1B` emits `KeyEscape` only when no CSI bytes follow within the read deadline.
-3. **Bracketed Paste**: Multi-line pasted text is parsed as a single `EventPaste` payload in linear time, bookmarking search offsets across chunk reads to avoid quadratic re-scans, and preventing premature submission if the paste contains carriage returns.
+3. **Bracketed Paste**: Multi-line pasted text is parsed as a single `input.Paste` payload in linear time, bookmarking search offsets across chunk reads to avoid quadratic re-scans, and preventing premature submission if the paste contains carriage returns.
 
 ---
 
@@ -468,7 +468,7 @@ flowchart TD
 To prevent accidental permission grants when an operator is typing into the composer as an approval request arrives:
 - **Activation Quiet Period**: An approval card takes no input until it has been painted and 400 ms have passed since the later of that paint and the last input it refused. Type-ahead bursts of any length are dropped rather than replayed.
 - **Mouse Safety**: Only the left mouse button operates the card; middle or right clicks do nothing. Wheel scrolling over the card navigates choices without confirming.
-- **Whole Subject**: The card, the transcript entry and the line renderer lay the subject out through one function (`ui.DecisionRows`): wrapped, never cut, with newlines and tabs drawn as `\n` and `\t`, and labelled `command` or `path` from the event's `subject`. A subject longer than 8 rows scrolls with `PgUp`/`PgDn`, and the allow option stays unarmed until the last row has been on screen. Deny is never gated.
+- **Whole Subject**: The card, the transcript entry and the line renderer lay the subject out through one function (`ui.DecisionRows`): wrapped, never cut, with newlines and tabs drawn as `\n` and `\t`, and labelled `command` or `path` from the event's `subject`. A subject longer than 8 rows scrolls with `pgup`/`pgdn`, and the allow option stays unarmed until the last row has been on screen. Deny is never gated.
 - **Withdrawn Cards**: When the request's context is cancelled or times out, the card is retired with a `withdrawn: cancelled before an answer` entry, and a late answer to it is refused.
 - **Escape / Quit Priority**: `Esc`, `Ctrl+C`, and quit shortcuts remain active immediately without activation delay to refuse or abort.
 - **Overlay Isolation**: Closing an overlay (such as the command palette) over a card restarts the 400 ms quiet period.

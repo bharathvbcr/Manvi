@@ -7,7 +7,7 @@
 > Do not install or `import devcouncil` as a Python package.
 >
 > **Re-baselined 2026-10-10** against DevCouncil's Phase 7 decisions
-> (`DevCouncil/docs/PHASE7_LONG_TAIL.md`, `docs/TODO.md`; DevCouncil at the pin
+> (`DevCouncil/docs/PHASE7_LONG_TAIL.md`, `DevCouncil/docs/TODO.md`; DevCouncil at the pin
 > `acb5e3b9`). §6.0 gives the status of every task; §7 gives the decisions as
 > settled. The task text below is the original brief and is kept as the record
 > where §6.0 does not say otherwise.
@@ -144,7 +144,9 @@ requirements" from "this component does not report requirements."
 The crate sources used to exist in both repositories with nothing detecting drift.
 `crates/dc-*` are now symlinks into DevCouncil, so there is one copy. What can
 still drift is the working checkout against the pin: `scripts/check-release.mjs`
-`crateMirrorProblems` and `manvi/devcouncil/crate_pins_test.go` catch that.
+(sibling pin checks) and `manvi/devcouncil/crate_pins_test.go` (inherited
+manifest values and resolved dependencies; replacing the earlier
+`crateMirrorProblems` JS check) catch that.
 
 **What to do:** change components in DevCouncil, move the pin in
 `scripts/module-pins.txt`, and let the two checks say whether the workspace
@@ -255,7 +257,7 @@ skipped gate as passed. "I could not verify this" is a complete answer.
 
 Every task. Copy this into the PR description and tick it.
 
-- [ ] The component is a binary or MCP tool meeting the [§1 contract](COMPONENTS_AND_HARNESS.md#1-the-contract-a-component-satisfies) — not a library MANVI links.
+- [ ] The component is a binary or MCP tool meeting the [§2 contract](COMPONENTS_AND_HARNESS.md#2-the-contract-a-component-satisfies) — not a library MANVI links.
 - [ ] `health` names it and its schema version.
 - [ ] Every failure path emits JSON on **stdout**; nothing panics to stderr with an empty stdout.
 - [ ] A negative or contended result is a normal answer with a `code`, not an error.
@@ -290,30 +292,30 @@ rows taken from a DevCouncil ledger without checking are marked *ledger*.
 
 | ID | Status | Evidence |
 |---|---|---|
-| **P0.1** drift between source copies | **Done**, by D1 option 3 (consume by path) rather than the digest proposed here | `crates/dc-*` symlinks; `manvi/go.mod` replace; `scripts/module-pins.txt`; `check-release.mjs` `crateMirrorProblems`; `manvi/devcouncil/crate_pins_test.go` (*read*) |
+| **P0.1** drift between source copies | **Done**, by D1 option 3 (consume by path) rather than the digest proposed here | `crates/dc-*` symlinks; `manvi/go.mod` replace; `scripts/module-pins.txt`; `scripts/check-release.mjs` sibling pin checks; `manvi/devcouncil/crate_pins_test.go` (*read*) |
 | **P0.2** CI for both workspaces, on Linux | **Done** for Linux and macOS (`verify.sh`), plus a `windows-latest` job that installs the pinned Rust toolchain, restores the Go and cargo caches, prebuilds `dcstore`/`dcverify`/`dcgrep` with cargo, then runs the `CGO_ENABLED=0` Go build and `go test ./...` (`verify.sh` bash/Rust gates do not run on Windows). | `.github/workflows/verify.yml` (`ubuntu-latest`, `macos-latest`, `windows-latest`); `docs/VERIFICATION_AND_PARITY.md` |
 | **P0.3** Go component home | **Done**, by D3 | `DevCouncil/backend/go_orchestrator/`; `DevCouncil/go/` does not exist (*read*) |
-| **P1.1** domain schemas | **Partial.** Only `Gap` has a Go type (`devcouncil/verify/types.go:17`); no `Evidence`, `Assumption`, `CritiqueFinding` or `CheckpointRefs`. The pydantic-parity part is **dropped** with the Python. | search over both repositories (*read*); `dc/requirement_interop_test.go` retirement marker |
-| **P1.2** `backfill_acceptance_criteria` | **Open, and has no input.** No production code writes `tasks` or `requirements` rows. Linked to DevCouncil `TASK-P7-11` / `GAP-P7-NO-TASK-CREATE` (`docs/TODO.md:26`), board card `ft-aeb4a53f`, not filed alone. | `rg -uu 'INTO tasks'` and `'INTO requirements'`: every hit a test (*read*, per the audit that opened this task, not re-run here); `dcstore` has `task`/`ready`/`list`, no create |
-| **P1.3** storage tables | **Done as transcription** (`PHASE7_LONG_TAIL.md:26`); schema-only tables are `ft-46ab2b` | `rust/dc-store/src/schema.rs` creates 18 tables (*read*) |
-| **P2.1** MCP server skeleton | **Done** in the Go host | `cmd/devcouncil/main.go:70` (*read*) |
+| **P1.1** domain schemas | **Partial.** Only `Gap` has a Go type (`DevCouncil/backend/go_orchestrator/devcouncil/verify/types.go:17`); no Go types exist for the retired Python domain models (`Evidence`, `Assumption`, CritiqueFinding, CheckpointRefs). The pydantic-parity part is **dropped** with the Python. | search over both repositories (*read*); `dc/requirement_interop_test.go` retirement marker |
+| **P1.2** `backfill_acceptance_criteria` | **Open, and has no input.** No production code writes `tasks` or `requirements` rows. Linked to DevCouncil `TASK-P7-11` / `GAP-P7-NO-TASK-CREATE` (`DevCouncil/docs/TODO.md:26`), board card `ft-aeb4a53f`, not filed alone. | `rg -uu 'INTO tasks'` and `'INTO requirements'`: every hit a test (*read*, per the audit that opened this task, not re-run here); `dcstore` has `task`/`ready`/`list`, no create |
+| **P1.3** storage tables | **Done as transcription** (`DevCouncil/docs/PHASE7_LONG_TAIL.md:26`); schema-only tables are `ft-46ab2b` | `DevCouncil/rust/dc-store/src/schema.rs` creates 18 tables (*read*) |
+| **P2.1** MCP server skeleton | **Done** in the Go host | `DevCouncil/backend/go_orchestrator/cmd/devcouncil/main.go:70` (*read*) |
 | **P2.2** task and lease handlers | **Done in part:** `checkout_task`, `renew_lease`, `release_task`, `next_task` are among the host's 8 tools; `handoff` and `status` are not tools | `devcouncil/registry.go` (*read*) |
 | **P2.3** verification handlers | **Done:** `verify_task`, `get_gaps`, `policy_check_write` | `devcouncil/registry.go` (*read*) |
-| **P2.4** code-intelligence handlers | **Superseded:** served by `devmap`'s own MCP server, not by Go handlers | `docs/TODO.md` `GAP-P7-DEVMAP-MCP-CLI` (*ledger*) |
-| **P2.5** filesystem and exec handlers | **Superseded:** MANVI's native registry, the "thick successor" | `PHASE7_LONG_TAIL.md:79` |
+| **P2.4** code-intelligence handlers | **Superseded:** served by `devmap`'s own MCP server, not by Go handlers | `DevCouncil/docs/TODO.md` `GAP-P7-DEVMAP-MCP-CLI` (*ledger*) |
+| **P2.5** filesystem and exec handlers | **Superseded:** MANVI's native registry, the "thick successor" | `DevCouncil/docs/PHASE7_LONG_TAIL.md:79` |
 | **P2.6** knowledge and adjuncts | **Retired** with their subsystems | rows 11-17 |
 | **P2.7a-d** call-graph blackout | **Done** per the 2026-10-06 note below, with a Ruby residue (`DevCouncil` board `ft-6c5d9e9e`) | `KNOWN_GAPS.md` GAP-1 |
 | **P3.1** schema-constrained completion | **Absent, and the plan was wrong:** `llm.Request` has no tool-choice field, so this needs a new field in all four adapters, not "no provider-seam change". Open only if D2 is "council in MANVI". | `manvi/llm/provider.go` (*read*); `rg -uu -i 'toolchoice\|tool_choice' manvi` finds nothing |
-| **P3.2, P3.3** council schemas, prompts, protocol | **Absent; hard-cut.** Successor named as "Manvi `llm/` + agents" but no code exists in either repository. Decision D2. | `PHASE7_LONG_TAIL.md:22,56-57` |
+| **P3.2, P3.3** council schemas, prompts, protocol | **Hard-cut in DevCouncil; `devcouncil_debate` landed in MANVI.** DevCouncil's `planning/` and `council/` were retired with successor "Manvi `llm/` + agents"; MANVI later added `devcouncil_debate` (`manvi/devcouncil/debate.go`) for multi-model blind debate + judge. See D2. | `DevCouncil/docs/PHASE7_LONG_TAIL.md:22,56-57`; `manvi/devcouncil/debate.go` |
 | **P4.1** differential measurement | **Moot.** The Python it measured against is deleted; the AST detector it motivated landed. | `stub_ast.rs`, `tests/false_accept.rs` |
-| **P4.2** test execution, sandbox, instrumentation | **Partial.** Command running is in Go (`verify/commands.go`). Sandboxing is deliberately `local` only: `verify.ParseSandbox` refuses the rest, and a sandbox is a separate DevCouncil decision (`PHASE7_LONG_TAIL.md`, "Isolated verification sandbox"). Coverage instrumentation was not audited. | `devcouncil/verify/{commands,cli}.go` (*read*, not line by line) |
-| **P4.3** AST stub detection | **Done**, in `dc-verify` rather than inside `devmap`; Rust, Go, Python and TypeScript get the full rigor checks, Java and C# placeholders only | `rust/dc-verify/src/stub_ast.rs:1-27` (*read*); DevCouncil `c6b48a28`, `9b0b9e5c` both ancestors of the pin |
-| **P4.4** acceptance compiler, gap ids, next actions | **Present, not audited against the Python:** `criteria.go`, `gapid.go` (`StableGapID`), `next_actions.go` (`NextActionFor`, `BuildNextActions`) | `devcouncil/verify/` (*read*: file and function names only) |
-| **P5.1** knowledge | **Retired** | `PHASE7_LONG_TAIL.md:11` |
+| **P4.2** test execution, sandbox, instrumentation | **Partial.** Command running is in DevCouncil Go (`DevCouncil/backend/go_orchestrator/devcouncil/verify/commands.go`). Sandboxing is deliberately `local` only: ParseSandbox (`orchestrate.go`) refuses the rest, and a sandbox is a separate DevCouncil decision (`DevCouncil/docs/PHASE7_LONG_TAIL.md`, "Isolated verification sandbox"). Coverage instrumentation was not audited. | `DevCouncil/backend/go_orchestrator/devcouncil/verify/{commands,cli}.go` (*read*, not line by line) |
+| **P4.3** AST stub detection | **Done**, in `dc-verify` rather than inside `devmap`; Rust, Go, Python and TypeScript get the full rigor checks, Java and C# placeholders only | `DevCouncil/rust/dc-verify/src/stub_ast.rs:1-27` (*read*); DevCouncil `c6b48a28`, `9b0b9e5c` both ancestors of the pin |
+| **P4.4** acceptance compiler, gap ids, next actions | **Present, not audited against the Python:** `criteria.go`, `gapid.go` (StableGapID), `next_actions.go` (NextActionFor, BuildNextActions) in `DevCouncil/backend/go_orchestrator/devcouncil/verify/` | `DevCouncil/backend/go_orchestrator/devcouncil/verify/` (*read*: file and function names only) |
+| **P5.1** knowledge | **Retired** | `DevCouncil/docs/PHASE7_LONG_TAIL.md:11` |
 | **P5.2** reporting | **Retired** | `:12` |
 | **P5.3** campaign | **Retired** | `:14` |
 | **P5.4** live | **Retired** | `:15` |
-| **P5.5** repo / SCA | **Retired**; no successor (GitPulse runs audit tools) | `:28` |
+| **P5.5** repo / SCA | **Retired**; no successor (Waylode runs audit tools) | `:28` |
 | **P5.6** telemetry | **Retired** | `:13` |
 | **P5.7** optimization | **Retired** | `:17` |
 | **P5.8** gating | **Done** | `devcouncil/gating/policy.go` (*read*) |
@@ -334,7 +336,7 @@ rows taken from a DevCouncil ledger without checking are marked *ledger*.
 
 | ID | Task | Lang | Depends | Size |
 |---|---|---|---|---|
-| **P1.1** | **Domain schemas.** Port `Gap`, `Evidence`, `Assumption`, `CritiqueFinding`, `CheckpointRefs` (`src/devcouncil/domain/`, 305 lines) with the same treatment `Requirement` got: hand-decoding for defaults, enum validation, and a parity test reading the Python `Literal`s. These are the contract every other component reads, so they lead. | Go (+Rust where a component stores them) | P0.3 | M |
+| **P1.1** | **Domain schemas.** Port `Gap`, `Evidence`, `Assumption`, CritiqueFinding, CheckpointRefs (historical Python `src/devcouncil/domain/`, 305 lines) with the same treatment `Requirement` got: hand-decoding for defaults, enum validation, and a parity test reading the Python `Literal`s. These are the contract every other component reads, so they lead. | Go (+Rust where a component stores them) | P0.3 | M |
 | **P1.2** | **Open, no input yet; linked to DevCouncil `TASK-P7-11`.** Original brief: ~50 lines of pure logic from `planning/plan_service.py`, now deleted with the Python. See §6.0. | Go | P1.1 | S |
 | **P1.3** | **`storage`: the 14 remaining tables.** `dcstore` covers `tasks` and `task_leases`; DevCouncil has 16 SQLModel tables. Port requirements, critique findings, gaps, evidence, assumptions, artifact graph, planning state, shell sessions/commands, file-change events, semantic diffs, handoffs, correction manifests, verification runs, project state. **Rust, and in `dcstore`** — splitting one SQLite file across two languages means two writers with different assumptions. | Rust | P1.1 | L |
 
@@ -443,7 +445,7 @@ owner records the outcome.
 | ID | Task | Lang | Depends | Size |
 |---|---|---|---|---|
 | **P3.1** | **Absent; open only if D2 is "council in MANVI".** Original brief claimed a forced single tool call needs no provider-seam change; that was wrong, `llm.Request` has no tool-choice field. See §6.0. | Go (harness) | — | M |
-| **P3.2** | **Council schemas and prompts as components.** `PlanOutput`, `CritiqueOutput`, `RebuttalOutput`, plus the eight prompts in `src/devcouncil/council/prompts/` (planner_a/b, critic_a/b, rebuttal, arbiter, spec_writer, implementation_reviewer). This is the reusable part — the encoded knowledge of *how to run a council*. | Go (DevCouncil) | P3.1, D2 | M |
+| **P3.2** | **Council schemas and prompts as components.** Historical brief for Python council types (PlanOutput, CritiqueOutput, RebuttalOutput) and the eight prompts in `src/devcouncil/council/prompts/` (planner_a/b, critic_a/b, rebuttal, arbiter, spec_writer, implementation_reviewer). Superseded by Phase 7 hard-cut in DevCouncil and `devcouncil_debate` in MANVI. | Go (DevCouncil) | P3.1, D2 | M |
 | **P3.3** | **The debate protocol.** Two rival planners → critics cross-assigned to the *other* plan → rebuttal → arbiter. **Caution:** DevCouncil degrades an unparseable critique to "no findings" so a weak model cannot crash a run. Port that *and* make it visible — an empty critique and a critique that could not run must not read the same to the arbiter (**C1**). | Go (harness) | P3.2 | L |
 
 ### Wave 4 — Verification
@@ -481,8 +483,9 @@ says hurts most once Wave 2 lands.
 
 - **D1 — MANVI's copy of the component sources: settled, option 3.** Consume by
   path. `crates/dc-*` are symlinks into DevCouncil, `manvi/go.mod` replaces by path,
-  and `scripts/module-pins.txt` pins the commit; `check-release.mjs`
-  `crateMirrorProblems` and `crate_pins_test.go` catch drift. P0.1 is done. Detail
+  and `scripts/module-pins.txt` pins the commit; `scripts/check-release.mjs`
+  (sibling pin checks) and `manvi/devcouncil/crate_pins_test.go` (inherited
+  manifest values and resolved dependencies) catch drift. P0.1 is done. Detail
   in [`DEVCOUNCIL_PORT_ROADMAP.md` §1](DEVCOUNCIL_PORT_ROADMAP.md).
 - **D2 — Where the council lives: open, owner to record one of two outcomes.**
   Phase 7 hard-cut `planning/` with the successor "Manvi `llm/` + agents" and says
@@ -509,4 +512,4 @@ says hurts most once Wave 2 lands.
 | MANVI harness | `Manvi/manvi/` |
 | Symlinks to DevCouncil's component crates | `Manvi/crates/` |
 | Component ledger | `DevCouncil/rust/STATUS.md` |
-| Full gate suite | `Manvi/verify.sh` |
+| Full gate suite | `verify.sh` |

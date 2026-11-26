@@ -8,7 +8,7 @@ file for its profile; opening that file also creates the store's legacy tables,
 but workbench operations only access `work_*` tables.
 
 This implementation provides storage, the local host API, asynchronous enhancement
-generation and a durable proposal lifecycle. GitPulse has basic boards, editors,
+generation and a durable proposal lifecycle. Waylode has basic boards, editors,
 enhancement review, terminal handoffs, a structured request inspector and a macOS
 notification adapter. Managed Codex, managed Claude, and Antigravity ACP (`manvi/codingagent`) now run
 through the Go host plane (`manvi serve`, including detached Unix-socket mode
@@ -134,7 +134,7 @@ and oversized replies instead of dropping repositories or truncating instruction
 The complete response fits the existing 2 MiB transport budget; large valid briefs
 can exceed both the 256 KiB request limit and an individual terminal argument.
 
-GitPulse's **Copy saved brief** reads this operation and validates the returned
+Waylode's **Copy saved brief** reads this operation and validates the returned
 task/repository revision vector. Unsaved edits are excluded and identified in the
 copy result; uncertain saves and active enhancement writes disable copying.
 Clipboard content is the store's Markdown, with no second frontend formatter.
@@ -266,7 +266,7 @@ orders creation position and ID descending; the default remains ascending.
 Keep the same filters and direction when following a cursor. Equal timestamps
 use the ID as a stable tie-breaker, so pagination does not omit tied attempts.
 
-GitPulse adds native `runs.prepare_terminal` through its existing workbench IPC.
+Waylode adds native `runs.prepare_terminal` through its existing workbench IPC.
 It accepts the preparation IDs/revisions/provider/mode and `repo_path`, validates
 an actual working checkout, and supplies observed Git directories, commit and
 branch to `runs.prepare`. It accepts linked worktrees and refuses mismatched
@@ -277,7 +277,7 @@ filesystem/profile I/O. Filesystem checks are observations, not locks against
 external Git tools or proof of checkout identity after a directory is replaced
 with an otherwise identical clone. Launch-time fencing remains required.
 
-GitPulse's Runs panel now prepares and opens these attempts through its existing
+Waylode's Runs panel now prepares and opens these attempts through its existing
 PTY manager, with private brief files, CLI help negotiation, child environment
 normalization and process outcome receipts. Terminal handoffs delegate requests
 to the provider terminal. Managed Codex and Claude have the separate protocol below; complete
@@ -292,13 +292,13 @@ initialization and permits a failure receipt without an invented thread. Both
 binaries must support schema ten. Its transactional contract-version migration
 preserves existing attempts and does not reclaim unresolved legacy launches.
 
-GitPulse adds `runs.prepare_managed`, `runs.launch_managed`,
+Waylode adds `runs.prepare_managed`, `runs.launch_managed`,
 `runs.stop_managed` and `runs.follow_managed` through its existing native IPC.
 Preparation reuses the same Git checkout validation as terminals; Codex and
 Claude are supported, with native attempt IDs of at most 100 characters.
 Stop accepts only the saved ID. Launch accepts the saved ID and, only for a
 follow-up, `parent_run_id` of another saved run. Follow accepts the saved ID
-and an optional message, and GitPulse sends it only to a worker that is
+and an optional message, and Waylode sends it only to a worker that is
 already live. The native host serializes launch preparation and supplies the
 OS-observed process birth; renderer-supplied process identity, a provider
 thread id, raw `runs.started`, `runs.finish`, `runs.protocol`, and the managed
@@ -311,9 +311,9 @@ The owning `manvi serve --workbench-db` host advertises six methods (the sixth,
    consumes the canonical claim and starts only the stdio process. It returns
    `protocol_version:2`, `phase:awaiting_activation` and the same owner/session/PID
    for an exact retry in that live host. It has not initialized a provider thread
-   or sent the task. GitPulse rejects incompatible receipts and requests cleanup.
+   or sent the task. Waylode rejects incompatible receipts and requests cleanup.
    Unactivated helpers expire after five
-   minutes. GitPulse uses a stable `managed_launch_<run ID>` request identity.
+   minutes. Waylode uses a stable `managed_launch_<run ID>` request identity.
    The claim's `owner_id` is `manvi-{pid}-{unix nanos}-{random}`: this Manvi
    process and the moment it claimed. A host reconciling after a crash
    releases an attempt that never recorded a provider process only when no
@@ -326,7 +326,7 @@ The owning `manvi serve --workbench-db` host advertises six methods (the sixth,
    the new process resumes that saved session and its one turn is the queued
    message. A first turn is unchanged.
    An uncertain activation consumes its latch;
-   it cannot authorize a second turn. GitPulse rechecks the checkout immediately
+   it cannot authorize a second turn. Waylode rechecks the checkout immediately
    before this call and stops the prepared session if activation cannot complete.
 3. `runs.managed.stop` accepts `id` and requests cancellation of the exact locally
    owned session. Its reply confirms the request, not process termination.
@@ -335,7 +335,7 @@ The owning `manvi serve --workbench-db` host advertises six methods (the sixth,
    managed job on this host; an unknown or ended run still answers ok. It does
    not read the store. The drive loop reads saved decisions when it is woken,
    and again before it fails a run whose unanswered callback has reached its
-   own deadline. GitPulse calls it after a successful `decisions.decide`, on
+   own deadline. Waylode calls it after a successful `decisions.decide`, on
    the worker that is already live.
 5. `runs.managed.follow` takes `id` and an optional `message`. One nonblank
    message of at most 128 KiB may be queued while that run is still going. A
@@ -552,11 +552,11 @@ is shown as `\xNN` or `\u{XXXX}`, and a literal backslash is written `\\`, so
 Tool input is neutralised when the snapshot is written and stays valid JSON
 (the same escapes as `\uXXXX`); an approval's payload is kept as the provider
 sent it, because its digest is over those bytes. A permission denial stays one text line and is not a tool row. Run
-history excludes the output and the effective configuration; GitPulse loads one
+history excludes the output and the effective configuration; Waylode loads one
 detailed record on demand. Output truncation is explicit.
 
 Verified with installed Codex 0.153.4: ephemeral read-only handshake, canonical
-checkout comparison, one completed marker turn, and the native GitPulse → Manvi
+checkout comparison, one completed marker turn, and the native Waylode → Manvi
 → Codex → profile-store path. Scripted protocol processes verify file/question
 callbacks, foreign identities, widened settings, duplicate delivery, resolved
 requests and frame floods. Real approval/account variants, unsupported callbacks,
@@ -594,7 +594,7 @@ their producing workflows to be implemented before they can emit notices.
   reuse the complete request. These actions change only the notice and its
   history; they cannot grant permissions, dismiss a proposal or accept a task.
 
-GitPulse exposes the inbox in each board and mounts at most one page of 30
+Waylode exposes the inbox in each board and mounts at most one page of 30
 notices. Closed inboxes do no reads; open inboxes use coalesced change/focus hints,
 with no per-notice timer. Native delivery settings and receipts are described
 below; OS behavior is owned by the desktop adapter and requires platform tests.
@@ -634,7 +634,7 @@ the ID is routing identity, not an authorization credential.
   reopen an acknowledged record.
 
 These methods are available through the existing store CLI and Go profile
-client. The GitPulse renderer cannot author claim, finish or activation receipts;
+client. The Waylode renderer cannot author claim, finish or activation receipts;
 its native coordinator owns those operations and public OS calls. The initial
 adapter supports macOS, private previews, explicit OS authorization and Open
 task activation. Physical delivery, click-after-quit and complete callback
@@ -686,7 +686,7 @@ also confirm that the same callback is still open before claiming; a stored
 is currently 1 because run permission policy is immutable. Effective provider
 configuration and a future policy-changing protocol need separate receipts.
 
-GitPulse's renderer can list/read requests and save a human decision. It cannot
+Waylode's renderer can list/read requests and save a human decision. It cannot
 create callbacks, consume delivery claims or write provider resolution records.
 The inspector verifies the digest, preserves the captured payload text exactly,
 retains the original request ID after an uncertain response, and distinguishes
@@ -774,7 +774,7 @@ Fourteen gives items a validated `scope` (planned files, forbidden changes,
 allowed commands, expected tests, requirement links). It changes no table, and
 is a hard fence because a host that builds an item body without it would erase
 the scope of every task it saves.
-Fifteen admits CI results: `signals.record` (a GitPulse write through the Rust
+Fifteen admits CI results: `signals.record` (a Waylode write through the Rust
 store, not a Go or `manvi serve` op) stores `run_ci_passed`, `run_ci_failed` and
 `run_ci_cancelled` attention rows that a schema fourteen host cannot read. It
 changes no table, and is a hard fence for that reason.
@@ -911,7 +911,7 @@ Both return `ok`, `state`, `reason`, `task_id`, `proposal_id` and
 These describe this coordinator, not proof of another host or provider's liveness.
 
 The Go host wakes after committed text saves and automation setting changes.
-GitPulse persists through the canonical native store, then sends a coalesced wake
+Waylode persists through the canonical native store, then sends a coalesced wake
 hint; a failed hint is displayed separately and never turns a saved task into a
 failed write. Opening an active board also resumes durable saved work. Empty
 queues block without an idle timer. Only eligible queued tasks are prepared;
@@ -922,7 +922,7 @@ Known contention waits are bounded, and failures/uncertain delivery never trigge
 another provider attempt. Shutdown cancels the coordinator and active generation
 within one shared five-second acknowledgment window.
 
-GitPulse exposes profile enablement, inherited or explicit provider/model selection,
+Waylode exposes profile enablement, inherited or explicit provider/model selection,
 queued count, stop and resume controls. Visible boards share one two-second status
 timer while work is active; idle, paused and hidden boards have none. Automatic
 results appear in the task review panel without replacing an edited suggestion.
@@ -948,7 +948,7 @@ returns an empty model with source `none`; the user must choose one. This endpoi
 resolves a provider, checks credentials, discovers models or starts inference.
 Unknown request fields are refused.
 
-GitPulse opens its separate profile host lazily through the shared sidecar
+Waylode opens its separate profile host lazily through the shared sidecar
 transport. Unsupported operations produce an upgrade error. Opening the panel
 loads configuration and proposal history; manual generation remains an explicit action.
 The editor reviews the original and suggested fields, edits suggestions while
@@ -1076,7 +1076,7 @@ integration remains outstanding: the owner decided on 2026-11-07 that generation
 moves to managed coding agents (see
 [Owner decisions of 2026-11-07](#owner-decisions-of-2026-11-07)); this section
 describes the direct provider path that still ships. Configured selection, automatic saved-text
-generation and the GitPulse generation/review UI are implemented. Board movement,
+generation and the Waylode generation/review UI are implemented. Board movement,
 selection and acceptance do not enqueue inference. Board activation may resume
 previously saved work.
 
@@ -1197,7 +1197,7 @@ not.** Both were checked in code, not assumed.
   pointed at, and no tool ever creates a repository. If the row is absent (a fresh
   database, or a profile board that has no such row), every tool refuses with
   `repository_unmapped`, which says there is no mapping, and makes zero writes.
-  **On a GitPulse or profile board database the tools therefore bind to the legacy
+  **On a Waylode or profile board database the tools therefore bind to the legacy
   `this-repo` constant and cannot see tasks linked to a real repository.** Reaching
   that board needs the `identity_key` mapping (a path-to-`repository_id` match
   through `repositories.put`), which does not exist. It is a follow-up and part of
@@ -1217,7 +1217,7 @@ liveness rule (run state `running` with matching `owner_id` and `session_id`) an
 the `runs.get` projection need a run record, and the in-process agent has none:
 no `runs.prepare` precedes it. No tool takes a run id, and none returns a run.
 The launch UI's provenance banner on agent-proposed or agent-logged tasks is
-GitPulse's, not Manvi's; Manvi supplies what it keys on (the `agent-proposed`
+Waylode's, not Manvi's; Manvi supplies what it keys on (the `agent-proposed`
 label and the tagged log block) and does not claim the banner.
 
 **Where the build differs from the specification below, on purpose.**
@@ -1296,7 +1296,7 @@ label and the tagged log block) and does not claim the banner.
     constant every task in the repository's own `.devcouncil/state.sqlite` names)
     and **refuse with `repository_unmapped`, writing nothing, when that row is
     absent**.
-  - *Which tasks.* **On a GitPulse or profile board database they cannot see
+  - *Which tasks.* **On a Waylode or profile board database they cannot see
     real-repository tasks:** those are linked to a real `repository_id`, not to
     `this-repo`, so a read of one answers `not_found` and the list omits it (and
     when the profile database has no `this-repo` row at all, every tool refuses
@@ -1311,7 +1311,7 @@ label and the tagged log block) and does not claim the banner.
     checklist, append to its tagged log region or add a `related` link, never
     `done` and never any other field. Choosing which task to hold remains the
     agent's, bounded by the repository link check.
-- **Self-escalation is the main risk.** GitPulse builds the `HostScope` that
+- **Self-escalation is the main risk.** Waylode builds the `HostScope` that
   bounds an agent's file writes and commands from the board task's `scope`
   (`serve/policy.go`, `HostScope`: planned files, forbidden changes, allowed
   commands; item `scope` is schema fourteen). An agent able to write its own
@@ -1492,7 +1492,7 @@ Bounds the agent surface adds (acceptance criteria for the implementation card):
 **Gap:** no per-session or per-profile write quota exists in the store ("Quota
 enforcement is still unspecified", in the retention paragraph on `store.compact`).
 A store-level atomic count is the real fix, and it is a cross-app schema change
-(DevCouncil owns it; GitPulse re-vendors; Manvi's pin moves) that needs approval;
+(DevCouncil owns it; Waylode re-vendors; Manvi's pin moves) that needs approval;
 the host mutex is the interim, and the counts are read from the store's own
 records (the repository's listing and the tagged log block), not from a counter
 file; see "What shipped". **Still open and needing approval:** the store-level
@@ -1792,7 +1792,7 @@ every revision of an open decision or a live run, and keeps any event a
 surviving receipt or attention row points at. A pass is bounded per table and
 reports `deleted`, `eligible` and `truncated`, so a capped pass is never read as
 a complete one. The full policy, its consequences for retries and `events.list`
-cursors, and its tests are in DevCouncil's `docs/workbench-retention.md`.
+cursors, and its tests are in `DevCouncil/docs/workbench-retention.md`.
 Quota enforcement is still unspecified. Unresolved decisions are never pruned.
 
 ## Verification
@@ -1811,13 +1811,13 @@ From `manvi/`, run `go test ./serve ./cmd/manvi` and `go test -race ./serve`; th
 `go test -race ./dc/store`. Real binaries exercise persistence across
 restart, three board scopes, process reuse, lease isolation, idempotency, stale
 edits, an eight-writer race, grouping, page byte bounds and logical refusal
-recovery. `FuzzWorkbenchNeverAcceptsPartialOrFailedChildOutput` attacks the Go/Rust
+recovery. The store-boundary fuzzer (FuzzWorkbenchNeverAcceptsPartialOrFailedChildOutput in
+`DevCouncil/backend/go_orchestrator/dc/store/workbench_test.go`) attacks the Go/Rust
 response boundary; it is independent of whole-app profiling and provider testing.
 
-`BenchmarkWorkbenchProfile` seeds 10,000 tasks, 100 repositories, ten workspaces
-and 100,110 events through the real public API. `BenchmarkWorkbenchProfileStress`
-spreads the same 100,000 task mutations across 100,000 distinct tasks with one
-revision each. Both measure global/workspace/repository/history reads, broad and
+The DevCouncil benchmarks (`BenchmarkWorkbenchProfile` and `BenchmarkWorkbenchProfileStress` in
+`DevCouncil/backend/go_orchestrator/dc/store/workbench_bench_test.go`) seed 10,000 tasks, 100 repositories, ten workspaces
+and 100,110 events (or spread 100,000 mutations across 100,000 distinct tasks) through the real public API. Both measure global/workspace/repository/history reads, broad and
 rare search, scoped search, empty status and committed text edits. Read cases
 check exact totals and page sizes before timing; edit cases verify one additional
 event per mutation afterward. Run explicitly from
@@ -1829,7 +1829,7 @@ go test ./dc/store -run '^$' -bench '^BenchmarkWorkbenchProfile(Stress)?$' -benc
 
 Measured on Apple M5 Pro (`darwin/arm64`). Mean milliseconds are `ns/op / 1e6`. p95 is the benchmark's own `p95-ms`. `events.list` counts at most 10,000 rows and sets `total_exact` false above that; the fixture check uses `latest_sequence`, the AUTOINCREMENT high-water mark.
 
-The 10,000-task run (10 revisions each, 100,110 events, seed 7m31s, `-benchtime=20x`) is the earlier run recorded in DevCouncil `docs/workbench-retention.md`. Mean / p95 in milliseconds: global list 3.32 / 3.79, workspace 8.29 / 9.31, repository 1.90 / 2.33, search 10.2 / 12.95, history 0.59 / 0.79, edit 2.16 / 2.83. One `store.compact {"keep_revisions":1,"limit":100000}` deleted 90,021 revisions (eligible 90,021, not truncated) in 2.94 s. Receipts and events were fresh, so none were eligible. That write-up does not include rare search, scoped search or empty status.
+The 10,000-task run (10 revisions each, 100,110 events, seed 7m31s, `-benchtime=20x`) is the earlier run recorded in `DevCouncil/docs/workbench-retention.md`. Mean / p95 in milliseconds: global list 3.32 / 3.79, workspace 8.29 / 9.31, repository 1.90 / 2.33, search 10.2 / 12.95, history 0.59 / 0.79, edit 2.16 / 2.83. One `store.compact {"keep_revisions":1,"limit":100000}` deleted 90,021 revisions (eligible 90,021, not truncated) in 2.94 s. Receipts and events were fresh, so none were eligible. That write-up does not include rare search, scoped search or empty status.
 
 The 100,000-task run is from 2026-10-13, `-benchtime=20x -count=1`, invoked as:
 
@@ -1872,4 +1872,4 @@ Go tests skipped. Lint, nil and Go vulnerability tools, incumbent lease
 interoperability, the stale flat navigation artifact (generation one versus
 index ten) and live cloud-provider checks remain unverified. The live local
 wire probe passed. These verification results do not override the measured
-100k-task search latency failures reported in GitPulse's benchmark document.
+100k-task search latency failures reported in Waylode's benchmark document.
