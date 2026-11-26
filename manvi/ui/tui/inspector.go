@@ -294,8 +294,8 @@ func (ins *Inspector) CopyContent(v *AgentView) (label, text string) {
 		return "turn steps", strings.Join(lines, "\n")
 	case TabInfo:
 		var b strings.Builder
-		fmt.Fprintf(&b, "posture: %s\nmodel: %s\nbranch: %s\ntokens: %d in / %d out\n",
-			orDash(v.Status.Posture), orDash(v.Status.Model), orDash(v.Status.GitBranch),
+		fmt.Fprintf(&b, "posture: %s\nmodel: %s\ntokens: %d in / %d out\n",
+			orDash(v.Status.Posture), orDash(v.Status.Model),
 			v.Status.InputTokens, v.Status.OutputTokens)
 		return "session info", b.String()
 	}
@@ -821,33 +821,11 @@ func (ins *Inspector) drawInfoTab(b *render.Buffer, r render.Rect, th Theme, v *
 	}
 	kv("Posture", orDash(st.Posture), th.Strong())
 	kv("Model", orDash(st.Model), th.Base())
-	if st.Provider != "" {
-		kv("Provider", st.Provider, th.Muted())
-	}
-	if st.GitBranch != "" {
-		br := st.GitBranch
-		if st.GitDirty > 0 {
-			br += fmt.Sprintf(" (%d dirty)", st.GitDirty)
-		}
-		kv("Branch", br, th.Muted())
-	}
 	if st.TaskID != "" {
 		task := st.TaskID
-		if !st.LeaseExpiry.IsZero() {
-			rem := time.Until(st.LeaseExpiry)
-			if rem <= 0 {
-				task += " (EXPIRED)"
-			} else {
-				task += " (" + shortDuration(rem) + " left)"
-			}
-		}
 		kv("Lease", task, th.Status(StatusInfo))
 	}
 	kv("Tokens", fmt.Sprintf("%s in / %s out", groupDigits(st.InputTokens), groupDigits(st.OutputTokens)), th.Muted())
-	if st.ContextMax > 0 {
-		pct := (st.ContextUsed * 100) / st.ContextMax
-		kv("Context", fmt.Sprintf("%d%% (%s / %s)", pct, compactCount(st.ContextUsed), compactCount(st.ContextMax)), th.Muted())
-	}
 
 	strict, why := st.StrictSummary()
 	lines = append(lines, render.Line{})

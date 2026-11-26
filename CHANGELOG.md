@@ -23,6 +23,11 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- TUI status bar, dashboard and inspector: removed the segments no session could
+  ever show (model provider suffix, task lease countdown, git branch chip,
+  context gauge, step counter). Nothing set the fields behind them;
+  `TestEveryStatusFieldIsSetByProductionCode` now fails if a `Status` field has
+  no production setter.
 - `devcouncil_read_file` / `devcouncil_write_file`: a whole-file read whose text
   the credential scrubber changed no longer counts as "read in full" for the
   overwrite guard (the model saw placeholders, not the file's bytes), and it

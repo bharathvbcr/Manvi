@@ -354,9 +354,6 @@ func (d *Dashboard) drawPreview(b *render.Buffer, r render.Rect, th Theme, v *Ag
 	lines = append(lines, postureLine)
 
 	modelText := orDash(st.Model)
-	if st.Provider != "" {
-		modelText += " · " + st.Provider
-	}
 	if st.InputTokens > 0 || st.OutputTokens > 0 {
 		modelText += " · " + compactCount(st.InputTokens) + "↓ " + compactCount(st.OutputTokens) + "↑"
 	}
@@ -367,15 +364,6 @@ func (d *Dashboard) drawPreview(b *render.Buffer, r render.Rect, th Theme, v *Ag
 	if st.TaskID != "" {
 		leaseText = st.TaskID
 		leaseStyle = th.Status(StatusInfo)
-		if !st.LeaseExpiry.IsZero() {
-			rem := st.LeaseExpiry.Sub(now)
-			if rem <= 0 {
-				leaseText += " (EXPIRED)"
-				leaseStyle = th.Status(StatusBlock).With(render.Bold)
-			} else {
-				leaseText += " (" + shortDuration(rem) + " left)"
-			}
-		}
 	}
 	grantLabel := itoa(st.Grants) + " grant(s)"
 	grantStyle := th.Muted()
