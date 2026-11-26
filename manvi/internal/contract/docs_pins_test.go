@@ -93,7 +93,7 @@ func TestPinClaimMatcherRecognisesBothForms(t *testing.T) {
 // not read sibling checkouts. So the number is read BY HAND at a named pin and
 // recorded here; moving the pin fails this test until it is re-read.
 const (
-	schemaVerifiedAtPin  = "2acef200df69622b459278e1d88745bfb393d043"
+	schemaVerifiedAtPin  = "63ca82ea6fe7ba87b2d901281db03d378c583668"
 	workbenchSchemaAtPin = 17 // WORKBENCH_SCHEMA, rust/dc-store/src/workbench/mod.rs:43
 	dcStoreSchemaAtPin   = 11 // SCHEMA_VERSION, rust/dc-store/src/lib.rs:61
 )
