@@ -8,6 +8,17 @@ This directory holds Manvi's canonical 7-layer specifications (`spec.md`, `plan.
 | --- | --- | --- | --- |
 | `001` | [Agent Harness, Tool Registry, and `manvi serve` Host Plane](001-agent-harness-and-serve-plane/spec.md) | Turn loop, `feat/team-harness`, 55-tool native `Registry`, `devcouncil_debate`, TUI/event stream, `manvi serve` NDJSON host plane & `VerifyRunner`; audits `manvi/devcouncil/verify.go` vs DevCouncil `verify` and shared `devcouncil_*` tools. | Active (core shipped; overlap closures tracked) |
 | `002` | [Policy Enforcement, Gusset/Hardening, and Computer-Use Privacy](002-policy-enforcement-and-hardening/spec.md) | Runtime enforcement of DevCouncil policy + Gusset engine, 6-rung gate & 8-state verdict contract, `command.secret_read`, `containment.go`, `commitscan.go`, `refguard.go`, `memguard`, `b27`–`b32` hardening, and Jarvis computer-use privacy masking. | Active (controls shipped; matrix sync tracked) |
+| `003` | [Model Provider Plane, Spend Ledger, MCP Trust, and Session Log](003-provider-plane-mcp-trust-and-session-log/spec.md) | `manvi/llm/` (provider seam, five adapters, `SettleCall`, local discovery, `budget` ledger), `manvi/mcp/` (fingerprint authorization of workspace-declared servers), `manvi/session/` (append-only log, checksummed store, `AssertModelVisible`). | Active (shipped; no open work recorded) |
+
+## Validation
+
+Run from the repository root:
+
+```bash
+bun run check:specs   # devcouncil spec validate --all --strict
+```
+
+The command fails loudly when the `devcouncil` binary is missing. It is deliberately not part of `verify.sh` or the GitHub Actions workflows, because CI runners do not carry the binary. Packages not covered by any spec are listed in `003-provider-plane-mcp-trust-and-session-log/research.md`.
 
 ## Cross-Repository Boundary Reference
 

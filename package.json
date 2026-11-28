@@ -30,7 +30,8 @@
     "check-mermaid": "./scripts/check-mermaid.mjs"
   },
   "scripts": {
-    "check:mermaid": "node scripts/check-mermaid.mjs"
+    "check:mermaid": "node scripts/check-mermaid.mjs",
+    "check:specs": "devcouncil spec validate --all --strict"
   },
   "devDependencies": {
     "jsdom": "^31.0.0",

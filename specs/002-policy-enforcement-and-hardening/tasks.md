@@ -12,6 +12,6 @@
 
 ## Phase 2: Cross-Repo Matrix & Hardening Verification
 
-- [x] [T-06] [US2] Reconcile specs/002-policy-enforcement-and-hardening/contracts/enforcement-boundary.schema.json and ownership matrix entries against `DevCouncil/specs/003-stack-boundaries-and-non-overlap/contracts/ownership-matrix.json` in specs/002-policy-enforcement-and-hardening/spec.md | depends_on: [T-03] | tests: devcouncil spec validate 002 --strict --project-root /Users/bharath/Code/devtools/Manvi
+- [x] [T-06] [US2] Reconcile specs/002-policy-enforcement-and-hardening/contracts/enforcement-boundary.schema.json and ownership matrix entries against `../DevCouncil/specs/003-stack-boundaries-and-non-overlap/contracts/ownership-matrix.json` in specs/002-policy-enforcement-and-hardening/spec.md | depends_on: [T-03] | tests: devcouncil spec validate 002 --strict --project-root /Users/bharath/Code/devtools/Manvi
 - [ ] [T-07] [US3] Add automated CI check validating `b32-benchverify` malformed-RPC fail-closed tests beside `./verify.sh` harness checks in scripts/verify-expected-gaps.json and docs/VERIFICATION_AND_PARITY.md | depends_on: [T-04] | tests: GOMAXPROCS=4 go -C manvi test ./internal/contract/...
 - [ ] [T-08] [US2] Close `GAP-LABS-BUNDLE-01` (DevCouncil specs/003 T-013): add host-plane seam for org-signed `policy_bundles` enforcement via `manvi serve` / Gusset in manvi/serve/policy.go and manvi/serve/protocol.go | depends_on: [T-06] | tests: go -C manvi test ./serve/... ./internal/contract/...

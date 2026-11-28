@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://manvi.local/specs/003/provider-plane-boundary.schema.json",
+  "title": "Manvi Spend Ledger Snapshot and MCP Trust File",
+  "description": "Persisted shapes owned by specs/003: the spend ledger file written by manvi/llm/budget (schema_version 2) and the MCP authorization file read by manvi/mcp (mcp-trust.json).",
+  "$defs": {
+    "attempt": {
+      "type": "object",
+      "required": ["id", "model", "state", "reserved_nano_usd", "pid", "started_unix"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "model": { "type": "string" },
+        "state": { "enum": ["reserved", "accepted"] },
+        "reserved_nano_usd": { "type": "integer", "minimum": 0 },
+        "pid": { "type": "integer" },
+        "started_unix": { "type": "integer" },
+        "owner": { "type": "string" },
+        "owner_start": { "type": "integer" }
+      }
+    },
+    "ledgerSnapshot": {
+      "type": "object",
+      "required": ["schema_version", "spent_nano_usd", "retained_nano_usd", "settled", "retained_attempts", "overruns", "next_id", "in_flight"],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "spent_nano_usd": { "type": "integer", "minimum": 0 },
+        "retained_nano_usd": { "type": "integer", "minimum": 0 },
+        "settled": { "type": "integer", "minimum": 0 },
+        "retained_attempts": { "type": "integer", "minimum": 0 },
+        "refused_attempts": { "type": "integer", "minimum": 0 },
+        "overruns": { "type": "integer", "minimum": 0 },
+        "next_id": { "type": "integer", "minimum": 0 },
+        "in_flight": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/attempt" } }
+      }
+    },
+    "trustFile": {
+      "type": "object",
+      "required": ["authorized"],
+      "properties": {
+        "authorized": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["fingerprint"],
+            "properties": {
+              "fingerprint": { "type": "string", "minLength": 1 },
+              "name": { "type": "string" },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/ledgerSnapshot" },
+    { "$ref": "#/$defs/trustFile" }
+  ]
+}
