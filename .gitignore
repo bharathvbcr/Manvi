@@ -251,3 +251,13 @@ wandb/
 **/.claude/agent-memory-local
 **/.claude/first-run
 **/.claude/assistant-daemon-state.json
+
+# Planning documents (port roadmap, port work packages, native-port plan and the
+# 01-03 language-decision, build-plan and strategy pages) are local-only:
+# untracked 2026-11-28; tracked docs link to them by permalink at 7aed735d13.
+/docs/NATIVE_DEVCOUNCIL_PLAN.md
+/docs/DEVCOUNCIL_PORT_ROADMAP.md
+/docs/PORTING_TASKS.md
+/docs/01-language-decision.html
+/docs/02-build-plan.html
+/docs/03-devcouncil-harness-strategy.html

@@ -7,7 +7,7 @@
 Everything known to be wrong, missing, or unproven, gathered so it is addressed
 **during** the port rather than faithfully reproduced by it.
 
-Companion to [`PORTING_TASKS.md`](PORTING_TASKS.md). Where a gap belongs to a
+Companion to [`PORTING_TASKS.md`](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/PORTING_TASKS.md). Where a gap belongs to a
 work package, its ID is named.
 
 ## How to read this
@@ -144,7 +144,7 @@ run reporting what a check that ran and passed reports.
 against a control the way SC19 and SC31 were. **Until then, dead-code output for
 those languages must be marked unavailable rather than emitted.**
 
-→ **[P2.7](PORTING_TASKS.md#p27--close-the-call-graph-blackout-gap-1-the-largest-known-defect)**,
+→ **[P2.7](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/PORTING_TASKS.md#p27--close-the-call-graph-blackout-gap-1-the-largest-known-defect)**,
 split into P2.7a (make the blackout visible — small and urgent) and P2.7b–d
 (close it, tiered by evidence). **P2.4 is blocked on P2.7a**, because
 code-intelligence handlers must not expose a confident zero.

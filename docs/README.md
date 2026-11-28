@@ -12,7 +12,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 |---|---|---|
 | **Local LLMs & Fast Inference** | `local-llm`, `ollama`, `vllm`, `lm-studio`, `kv-prefix-cache`, `wire-recovery`, `think-sanitization` | [Local LLMs](LOCAL_LLMS.md) · [Stdio Host Plane](SERVE_HOST_PLANE.md) |
 | **Policy & Safety Invariants** | `policy-ladder`, `6-rung-ladder`, `5-outcome-states`, `grants-ledger`, `write-gate`, `command-gate` | [Policy & Safety](POLICY_AND_SAFETY.md) · [Hardening Ledger](HARDENING_LEDGER.md) · [Trade-offs](TRADE_OFFS.md) |
-| **Core Architecture & Planes** | `dual-plane`, `go-rust-partition`, `stdio-ipc`, `devcouncil-components`, `zero-cgo`, `gusset` | [Philosophy](PHILOSOPHY.md) · [Architecture](ARCHITECTURE.md) · [Components & Harness](COMPONENTS_AND_HARNESS.md) · [Visual Guide](04-visual-architecture-guide.html) · [Language Decision](01-language-decision.html) |
+| **Core Architecture & Planes** | `dual-plane`, `go-rust-partition`, `stdio-ipc`, `devcouncil-components`, `zero-cgo`, `gusset` | [Philosophy](PHILOSOPHY.md) · [Architecture](ARCHITECTURE.md) · [Components & Harness](COMPONENTS_AND_HARNESS.md) · [Visual Guide](04-visual-architecture-guide.html) · [Language Decision](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/01-language-decision.html) |
 | **Agent Loop & Task Leases** | `turn-loop`, `waterfalls`, `sqlite-leases`, `context-compaction`, `concurrency`, `workbench` | [Agent & Turn Lifecycle](AGENT_AND_TURN_LIFECYCLE.md) · [Workbench](WORKBENCH.md) |
 | **Native Tools, MCP & Desktop** | `native-tools`, `55-tools`, `mcp-client`, `mcp-2.0`, `computer-use`, `tool-discovery` | [Tools Reference](TOOLS_REFERENCE.md) · [Computer-Use Foundations](COMPUTER_USE_FOUNDATIONS.md) |
 | **Terminal & Developer UI** | `tui`, `elm-loop`, `damage-diffing`, `themes`, `cli`, `exit-codes`, `flag-registry` | [TUI & Events](TUI_AND_EVENT_SUBSYSTEM.md) · [CLI & Configuration](CLI_AND_CONFIGURATION.md) |
@@ -26,9 +26,9 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 | Document | Format | Description |
 |---|---|---|
 | [**Interactive Visual Architecture Guide**](04-visual-architecture-guide.html) | HTML | Start here for a visual tour: dual-plane map, the six-rung policy ladder, outcome states, posture matrix, a live write-gate simulator, the turn lifecycle, and task leases. |
-| [**Language & Runtime Partition Decision**](01-language-decision.html) | HTML | Go vs Rust evaluation, memory safety, and dual-plane partition rationale. |
-| [**Build Plan & Seam Specifications**](02-build-plan.html) | HTML | The seven architectural seams, plugin tiers, and multi-provider replay state. |
-| [**DevCouncil Harness Strategy**](03-devcouncil-harness-strategy.html) | HTML | Original Go+Rust strategy, native integration, and phase milestones. |
+| [**Language & Runtime Partition Decision**](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/01-language-decision.html) | HTML | Go vs Rust evaluation, memory safety, and dual-plane partition rationale. |
+| [**Build Plan & Seam Specifications**](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/02-build-plan.html) | HTML | The seven architectural seams, plugin tiers, and multi-provider replay state. |
+| [**DevCouncil Harness Strategy**](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/03-devcouncil-harness-strategy.html) | HTML | Original Go+Rust strategy, native integration, and phase milestones. |
 
 ---
 
@@ -42,13 +42,13 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
   each binary is resolved, which language each remaining component belongs in,
   where a given change belongs, the checklist a newly ported one must meet, and
   how to work across the two repositories.
-- [**DevCouncil Port Roadmap**](DEVCOUNCIL_PORT_ROADMAP.md)  
+- [**DevCouncil Port Roadmap**](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/DEVCOUNCIL_PORT_ROADMAP.md)  
   What is ported, what is left, in what order, and the open decisions.
 - [**Known Gaps and Defects**](KNOWN_GAPS.md)  
   Every known defect, gap and unproven claim in DevCouncil, labelled verified or
   recorded — including the 28 Python baseline bugs a porter must not reproduce,
   and the ledger entries that are stale in both directions.
-- [**Port Work Packages**](PORTING_TASKS.md)  
+- [**Port Work Packages**](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/PORTING_TASKS.md)  
   **For anyone assigned a piece of the port.** Goals, ground rules, the cautions
   earned from real defects, the mandatory testing protocol, a definition of done,
   and the tasks themselves in dependency order.

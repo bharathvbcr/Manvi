@@ -283,7 +283,7 @@ ran and passed reports.
 
 **The Python is gone.** DevCouncil's Python package was deleted in Phase 7, and
 the port's status is a per-row decision table in
-[`DEVCOUNCIL_PORT_ROADMAP.md`](DEVCOUNCIL_PORT_ROADMAP.md), measured against
+[`DEVCOUNCIL_PORT_ROADMAP.md`](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/DEVCOUNCIL_PORT_ROADMAP.md), measured against
 `DevCouncil/docs/PHASE7_LONG_TAIL.md`. The three things that once mattered
 most have different outcomes: the MCP server is the Go host's 8 tools plus
 MANVI's native registry as the thick surface; DevCouncil's `planning/` and
@@ -502,7 +502,7 @@ and the same server serves every other coding agent too.
 
 ## 9. Porting a component: the checklist
 
-> Assigned a task? [`PORTING_TASKS.md`](PORTING_TASKS.md) carries this checklist
+> Assigned a task? [`PORTING_TASKS.md`](https://github.com/bharathvbcr/Manvi/blob/7aed735d1335c97c3981c8844d851f1a0934275b/docs/PORTING_TASKS.md) carries this checklist
 > plus the testing protocol and the cautions. This section is the short form.
 
 When a DevCouncil subsystem lands in Rust/Go, it is done when:
